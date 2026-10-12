@@ -50,6 +50,8 @@ webcpp.run value : value_test.cpp ;
 webcpp.run order : order_test.cpp ;
 # Images: moved, formatted, opened, refused, the same for the same operations.
 webcpp.run image : image_test.cpp ;
+# JavaScript's array methods.
+webcpp.run array : array_test.cpp ;
 # The sugar that throws, and its refusal in a build without exceptions.
 webcpp.run sugar : sugar_test.cpp : <exception-handling>on ;
 webcpp.compile-diagnostic no_exceptions : no_exceptions_test.cpp : <exception-handling>off ;
