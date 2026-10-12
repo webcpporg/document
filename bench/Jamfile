@@ -1,0 +1,77 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# document's benchmarks (doc/benchmarks.adoc): Boost.JSON, webcpp::document
+# and JavaScript's own objects over nativejson-benchmark's files and
+# synthetic objects, natively, and in Node.js and headless Chrome, the C++
+# compiled to WebAssembly with Emscripten. Every target here is explicit: no
+# default build and no lane runs them.
+#
+#   b2 libs/document/bench//results   measures everything on this machine
+#                                     and writes doc/benchmark-results.adoc
+#   b2 libs/document/bench//smoke     one verifying pass, on any toolset
+#
+# The library's lanes run the smoke pass as the test bench of test/Jamfile;
+# smoke here is the same program, to run it alone.
+
+project
+  : requirements
+      <library>/webcpp/document//document
+      <library>/webcpp/third_party//nativejson-benchmark
+      # Canada's polygons and the copies of a sample outgrow Emscripten's
+      # initial 16 MB.
+      <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH=1
+      <toolset>emscripten:<linkflags>-sMAXIMUM_MEMORY=4GB
+  ;
+
+import notfile ;
+import webcpp ;
+
+webcpp.targets native emscripten wasip2 wasip3 ;
+
+# Node runs the JavaScript side and drives headless Chrome through
+# Playwright, which package.json and package-lock.json pin: the target
+# node-modules installs them (tools/node/install.py).
+webcpp.original node ;
+
+webcpp.run smoke : bench.cpp : <define>WEBCPP_BENCH_SMOKE ;
+explicit smoke ;
+
+# The measured programs: natively with the request's toolset, and the
+# Emscripten module that Node and Chrome load, both in the release variant,
+# which the references of results ask for. The module runs when its
+# JavaScript calls its main, over files written into its own file system.
+exe bench-native : bench.cpp ;
+exe bench-module : bench.cpp
+  : <toolset>emscripten:<linkflags>-O3
+    <toolset>emscripten:<linkflags>-sMODULARIZE=1
+    <toolset>emscripten:<linkflags>-sEXPORT_ES6=1
+    <toolset>emscripten:<linkflags>-sENVIRONMENT=node,web
+    <toolset>emscripten:<linkflags>-sINVOKE_RUN=0
+    <toolset>emscripten:<linkflags>-sFORCE_FILESYSTEM=1
+    <toolset>emscripten:<linkflags>-sEXPORTED_RUNTIME_METHODS=FS,callMain
+  ;
+explicit bench-native bench-module ;
+
+path-constant DATA : ../../../third_party/libs/nativejson-benchmark/data ;
+path-constant RESULTS : ../doc/benchmark-results.adoc ;
+path-constant HERE : . ;
+
+# Measures every implementation and writes doc/benchmark-results.adoc, once
+# run.mjs has checked that all of them answered alike. Always run again: a
+# measurement is never up to date.
+notfile results : @measure
+  : bench-native/<variant>release
+    bench-module/<toolset>emscripten/<variant>release
+  : <dependency>node-modules ;
+always results ;
+explicit results ;
+
+actions measure
+{
+    set -e
+    node "$(HERE)/run.mjs" --native "$(>[1])" --module "$(>[2])" --data "$(DATA)" --out "$(RESULTS)"
+}

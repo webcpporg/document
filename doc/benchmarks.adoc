@@ -1,0 +1,215 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-benchmarks]
+== Benchmarks
+
+document does what JavaScript does, and does it in {cpp}: this section measures what that costs.
+Each operation is timed three ways: with Boost.JSON, the {cpp} library whose parser document uses,
+with document itself, and with JavaScript's own objects in V8, the engine whose behaviour document
+reproduces. The {cpp} runs natively, and compiled to WebAssembly with Emscripten in the same Node.js
+and the same headless Chrome as the JavaScript, so that each row compares the three where a web
+application would run them.
+
+The operations and the data come from recognised benchmarks, never from document's own tests, and
+every implementation must give the same answer to each before it is timed. One {cpp} program,
+`bench/bench.cpp`, holds the Boost.JSON and document sides; one JavaScript module, `bench/bench.mjs`,
+holds JavaScript's and the same harness, which Node runs and Chrome runs in a page; and
+`bench/run.mjs` runs them all, checks their answers and writes the results below.
+
+[#document-benchmarks-operations]
+=== The operations
+
+The fourteen operations of the survey of JSON and dictionary benchmarks that this section follows,
+each with the suites it is taken from. No recognised JSON suite times changes to a document (insert,
+update, delete, splice) or deep copies: those come from the hash-map suites, V8's own `js-perf-test`
+and Dromaeo's DOM tests. Equality, the survey's fifteenth, is left out, since no suite times it.
+
+[cols="1,3,4,3,3,3",options="header"]
+|===
+| # | Operation | Taken from | Boost.JSON | document | JavaScript
+
+| 1 | Parse | nativejson-benchmark, Boost.JSON's bench, serde's json-benchmark, nlohmann's benchmarks, JetStream 2.1
+| `parse` | `parse` | `JSON.parse`
+
+| 2 | Stringify, compact | nativejson-benchmark, Boost.JSON's bench, nlohmann, simdjson, JetStream 2.1
+| `serialize` | `stringify()` | `JSON.stringify(v)`
+
+| 3 | Prettify, indent 4 | nativejson-benchmark, nlohmann, simdjson
+| * by hand over its `serializer`, as its example `pretty.cpp` writes one | `stringify(4)` | `JSON.stringify(v, null, 4)`
+
+| 4 | Full traversal (Statistics) | nativejson-benchmark: its Stat counts of objects, arrays, numbers, strings, `true`, `false`, `null`, members, elements and string lengths
+| a walk by `kind()` | a walk by `kind()`, `entries()` and the array's range | a walk by `typeof` and `for (k in o)`
+
+| 5 | Key-path queries over `twitter.json`, parse excluded | simdjson: `find_tweet`, `top_tweet`, `distinct_user_id`
+| `at` and `as_int64`, as simdjson's `boostjson.h` | handles and `value_or` | property access
+
+| 6 | Lookup, hit and miss | Tessil's hash-map benchmark, martinus's map benchmark, V8's PropertyQueries, abseil
+| `if_contains`; `contains` | `o[key]`; `contains` | `o[key]`; `key in o`
+
+| 7 | Insert a member | Tessil, abseil's TryEmplace, V8's Map-Set
+| `insert_or_assign` | `o[key].set(i)` | `o[key] = i`
+
+| 8 | Update a member | abseil's InsertOrAssign, martinus
+| `insert_or_assign` | `o[key].set(v)` | `o[key] = v`
+
+| 9 | Delete members, then look every key up | Tessil (reads after deleting), martinus, V8's Map-Delete, Dromaeo's removeChild
+| * `stable_erase`, which keeps the order as `delete` does | `erase` | `delete o[key]`
+
+| 10 | Iterate entries | Tessil, martinus, abseil, V8's Keys and Object, Dromaeo's traverse
+| a range `for` | `entries()` | `for (k in o)` and `o[k]`
+
+| 11 | Array push and pop | Dromaeo's appendChild and removeChild, martinus
+| `push_back`, `pop_back` | `push`, `pop` | `push`, `pop`
+
+| 12 | Array splice in the middle | Dromaeo's insertBefore and removeChild
+| * `insert`, then `erase` | `splice` | `splice`
+
+| 13 | Array methods: map, filter, reduce, find, slice, join | V8's `js-perf-test` Array
+| * loops by hand; `slice` by the array's range constructor | * loops by hand; `slice` | the methods; * `join` after a `map` of the ids
+
+| 14 | Deep copy | martinus's Copy, abseil's CopyCtor, Dromaeo's cloneNode
+| the copy constructor | `clone` | `structuredClone`, and `JSON.parse(JSON.stringify(v))` apart
+|===
+
+A `*` marks the closest form of an operation an implementation has no direct form of, as the
+survey names it; the results' tables carry the same mark. Every array method of document but
+`slice` is a loop by hand: document has the methods that change an array (`push`, `pop`, `splice`
+and the others) and `slice` and `concat`, not the callbacks of `map` or `filter`. A loop that builds
+an array copies each element it keeps into a new document, where JavaScript's `map`, `filter` and
+`slice` share the elements they keep with the array they read.
+
+[#document-benchmarks-data]
+=== The data
+
+* nativejson-benchmark's three files (Milo Yip's, MIT): `canada.json`, 2.2 MB of GeoJSON, mostly
+numbers; `citm_catalog.json`, 1.7 MB of wide objects; `twitter.json`, 0.6 MB of strings, many of them
+Japanese, and escapes. The repository is a submodule pinned at `478d572`,
+`third_party/libs/nativejson-benchmark`, which `/webcpp/third_party//nativejson-benchmark` gives a
+program: the files are read where the checkout holds them, never copied.
+* For the arrays, the largest ring of the polygon of `canada.json`, an array of 14,310 points, each
+an array of two numbers, and the 100 `statuses` of `twitter.json`.
+* For the dictionaries, Tessil's synthetic objects: 10, 1,000 and 100,000 members whose keys are 15
+or 50 characters long, a letter then letters and digits, so that none is an array index, each
+member's value its index. The keys come from Mulberry32 with a fixed seed per object, in {cpp} and in
+JavaScript alike, bit for bit; the lookups take them in a shuffled order, from a seed of their own;
+the misses are as many keys of the same length from another seed. Beside them, the widest object of
+`citm_catalog.json`, `events`, of 184 members, whose keys are nine-digit integers: array indices to
+JavaScript, which keeps such keys in ascending order, as document does and as the file lists them.
+* A pass of operation 9 deletes every other key of the lookups' order, at most 1,000 of them, then
+looks every key up: Boost.JSON's `stable_erase` moves every member after the one it erases, and
+deleting half of 100,000 members takes it 25 s a pass.
+
+[#document-benchmarks-methodology]
+=== Methodology
+
+The survey's section 4, which gathers the practice of the suites above:
+
+* Loading is never timed: the files are read, and the documents an operation reads are parsed and
+built, before its first pass. An operation that changes its input, such as delete, gets fresh copies,
+made before a sample and outside its time.
+* The first pass of each operation is timed alone, before any warm-up: the first-iteration time, as
+JetStream reports it, which tells how the code runs before the JIT or the caches have seen it. Its
+answer is then checked against every other implementation's: the Stat counts of nativejson-benchmark
+for a parse, a stringify read back, a traversal or a copy; the queries' answers; the members found
+and the sums of their values; lengths and checksums for the arrays. A run whose implementations
+disagree writes no results.
+* The warm-up doubles the passes of a sample until it lasts at least 10 ms, then runs one more
+sample, which is discarded. The result is the median of 10 samples of at least 10 ms, divided by
+the passes and by the operations of a pass.
+* JavaScript runs with `--expose-gc` (in Chrome, `--js-flags=--expose-gc`), and `gc()` runs before
+each sample; its passes add their results to a checksum, which the run prints, and the {cpp} passes
+write theirs to a `volatile` object, so that no compiler drops the work.
+* Chrome loads its page from a server of the run, on 127.0.0.1, which makes it cross-origin
+isolated (COOP and COEP headers): its `performance.now` then reads 5 us rather than 100 us. Node and
+Chrome share V8's major version, 14: Node 26 and the Chrome for Testing 147 headless shell that
+Playwright 1.59 installs, which `bench/package-lock.json` pins.
+* Each implementation runs in a process of its own, or in a page of its own. The {cpp} is b2's
+release variant: `-O3` natively, and `-O3` for Emscripten too, at compilation and at link.
+* document runs under `default_traits`: exact decimal numbers and UTF-8 text. Parse and stringify
+also run under `js_traits`, binary doubles and UTF-16, which JavaScript's own representation is,
+in rows of their own.
+* A {cpp} pass frees the result of the pass before it, so its time includes freeing it, as
+Boost.JSON's own benchmark does; JavaScript's garbage is collected when V8 chooses, and `gc()` runs
+between samples.
+
+[#document-benchmarks-machine]
+=== The machine and the results
+
+`b2 libs/document/bench//results` builds the programs, measures everything, and writes the
+results below, with the machine and every version they were measured with; run again, on another
+machine, it measures that one.
+
+include::benchmark-results.adoc[]
+
+[#document-benchmarks-reading]
+=== Reading the results
+
+The figures below are this machine's medians natively unless a place is named; the tables hold
+the rest. document is not a fast JSON tree, and this first version does not try to be one: it pays,
+on every operation, for what it guarantees, JavaScript's behaviour, exact numbers and one relocatable
+image. Where it is slower, and why:
+
+* *Building and walking the tree.* document parses `canada.json` in 209 ms, where Boost.JSON takes
+2.19 ms and Node's `JSON.parse` 3.58 ms: 95 times Boost.JSON's time, 22 times on `citm_catalog.json`
+and 15 times on `twitter.json`. A full traversal is slower still, 37.0 ms against 186 us on
+`canada.json`. Every value is a node of a Boost.MultiIndex container inside the image, linked into
+three red-black trees by offset pointers: by its id, by its parent and position, and by its parent
+and key. Appending a value finds its parent by id and links the node into each tree, and a handle
+names a node by its id, so that every access looks it up again. A profile of the native parse of
+`canada.json` (macOS's `sample`) spends most of its time looking nodes up by id, inserting into and
+rebalancing the trees, and converting numbers to exact decimals; under `js_traits`, whose numbers
+are doubles, the same parse takes 175 ms, so the tree, not the decimals, is the larger cost.
+Boost.JSON appends to contiguous arrays and keeps doubles.
+* *Stringify* is 20 times Boost.JSON's time on `canada.json` (33.9 ms against 1.70 ms) and 5 times on
+`twitter.json`: it walks the same trees, and writes each exact decimal as JavaScript would write the
+number; `js_traits` brings `canada.json` down to 20.5 ms.
+* *Dictionaries.* A lookup finds its key in an ordered tree, by comparisons, where Boost.JSON and V8
+hash it: 42 ns at 10 members, 576 ns at 100,000, against 10 to 28 ns for Boost.JSON and 5 to 24 ns
+for JavaScript. Insertion (0.4 to 1.4 us), assignment and iteration (17 to 258 ns a member, against
+under 1 ns for Boost.JSON's contiguous members) pay the same trees and the same lookups by id.
+JavaScript is slower than Boost.JSON on the `events` of `citm_catalog.json` (41 ns a lookup): its
+keys are array indices, which V8 keeps apart from named properties.
+* *Arrays.* A splice in the middle of 14,310 points takes 666 us, against 2 or 3 us for Boost.JSON
+and JavaScript: every element after the splice is renumbered in the position tree. A push and a pop
+take 789 ns each, because `pop` returns the removed value as a document of its own, whose image it
+allocates; `set_length` would drop it without one. `map` and `filter` copy each element they keep
+into a new document, about 1 us an element, where JavaScript's share them, as its `slice` does.
+* *Where document is faster:* a deep copy is one copy of the image, 441 us for `canada.json`,
+against 1.12 ms for Boost.JSON's copy constructor and 5.43 ms for `structuredClone` in Node. And
+deleting from a large object keeps the order without moving the members: 709 ns a deletion from
+100,000 members, where Boost.JSON's `stable_erase` takes 644 us.
+
+Across places: the {cpp} compiled to WebAssembly takes a median 1.26 times its native time, for
+Boost.JSON and for document alike, at most 2.7 times (Boost.JSON's stringify of `canada.json`, whose
+doubles it formats more slowly in wasm32), and Node and Chrome run the same module within a quarter
+of each other, their V8 sharing a major version. Boost.JSON's splice is even faster in WebAssembly
+(855 ns) than natively (1.82 us): its values are 16 bytes in wasm32, 24 natively, and a splice moves
+them. JavaScript's
+first iteration is often several times its median, the time V8 takes to compile it, where the
+{cpp}'s first pass runs close to its median. Chrome's clock reads 5 us, so the first iteration of a
+pass shorter than that, such as ten lookups, reads in Chrome as 0 or 5 us divided by its operations.
+
+These costs are the design's, measured before any tuning, and the profile names where to begin:
+the lookup of a node by id behind every handle, the renumbering of positions on a splice, and the
+image that `pop` allocates.
+
+[#document-benchmarks-running]
+=== Running them
+
+[source,bash]
+----
+b2 libs/document/bench//results
+b2 libs/document/bench//smoke toolset=clang-wasip2 testing.launcher=wasmtime
+----
+
+The first measures on the machine it runs on, which took 9 minutes here, and writes
+`doc/benchmark-results.adoc`; it is explicit, so that neither a default build nor the continuous
+integration runs it. Node, npm and Emscripten's toolset are needed beside the native one: npm
+installs Playwright, and Playwright its headless shell, once. The second is one verifying pass of
+every operation, on any target, which fails when Boost.JSON and document answer differently; the
+library's tests run it on every target as `bench`, without the objects of 100,000 members, which run
+the same code as those of 1,000 and would take most of its time in a debug build.

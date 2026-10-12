@@ -1,0 +1,10 @@
+{
+  "name": "webcpp-document-bench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "document's benchmarks: the JavaScript side, run by Node and by headless Chrome through Playwright, whose Chromium 147 has V8 14, Node 26's major.",
+  "devDependencies": {
+    "playwright": "1.59.0"
+  }
+}

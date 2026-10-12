@@ -58,6 +58,8 @@ include::errors.adoc[]
 
 include::testing.adoc[]
 
+include::benchmarks.adoc[]
+
 [#reference]
 == Reference
 

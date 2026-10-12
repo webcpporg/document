@@ -45,22 +45,26 @@ webcpp.run tree : tree_test.cpp ;
 webcpp.run literal : literal_test.cpp ;
 # Every settable type into an item, and a node back into every readable type.
 webcpp.run convert : convert_test.cpp ;
-# The document and its handles: navigation, reading, writing, equality, iteration.
+# The document and its handles: navigation, reading, writing, equality,
+# iteration.
 webcpp.run value : value_test.cpp ;
-# Object keys in JavaScript's order through the handles, under each order policy.
+# Object keys in JavaScript's order through the handles, under each order
+# policy.
 webcpp.run order : order_test.cpp ;
 # Images: moved, formatted, opened, refused, the same for the same operations.
 webcpp.run image : image_test.cpp ;
-# stringify and stringify_to, as JSON.stringify writes. A document nested 100,000
-# levels deep outgrows Emscripten's initial 16 MB, so its memory may grow there.
+# stringify and stringify_to, as JSON.stringify writes. A document nested
+# 100,000 levels deep outgrows Emscripten's initial 16 MB, so its memory may
+# grow there.
 webcpp.run stringify : stringify_test.cpp
   : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
-# parse, whole or in chunks, as JSON.parse reads; and the parse that throws. A 64 MB string
-# and an object of 100,000 keys outgrow Emscripten's initial 16 MB, so its memory may grow.
+# parse, whole or in chunks, as JSON.parse reads; and the parse that throws. A
+# 64 MB string, an object of 100,000 keys and 800 KB of zeros outgrow
+# Emscripten's initial 16 MB, so its memory may grow.
 webcpp.run parse : parse_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 webcpp.run parse_sugar : parse_test.cpp : <exception-handling>on <define>WEBCPP_TEST_DOCUMENT_SUGAR
   <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
-webcpp.run streaming : streaming_test.cpp ;
+webcpp.run streaming : streaming_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 # Selectors: values delivered as they complete.
 webcpp.run selector : selector_test.cpp ;
 # JavaScript's array methods.
@@ -69,13 +73,20 @@ webcpp.run array : array_test.cpp ;
 webcpp.run sugar : sugar_test.cpp : <exception-handling>on ;
 webcpp.compile-diagnostic no_exceptions : no_exceptions_test.cpp : <exception-handling>off ;
 
-# Node as the oracle, from C++: every case of fixtures/cases applied through the document and
-# compared with what Node wrote in fixtures/expected. The fixtures' directory with forward
-# slashes, the whole define quoted, as xstate's test/Jamfile does; wasmtime is given the
-# directory (webcpp.data).
+# Node as the oracle, from C++: every case of fixtures/cases applied through the
+# document and compared with what Node wrote in fixtures/expected. The fixtures'
+# directory with forward slashes, the whole define quoted, as xstate's
+# test/Jamfile does; wasmtime is given the directory (webcpp.data).
 path-constant FIXTURES : fixtures ;
 local fixtures = [ regex.replace $(FIXTURES) "\\\\" "/" ] ;
 .case-files = [ glob fixtures/cases/*.json fixtures/expected/*.json ] ;
 webcpp.run oracle_cases : oracle_test.cpp
   : <define>"\"WEBCPP_TEST_DOCUMENT_FIXTURES=\\\"$(fixtures)\\\"\"" <dependency>$(.case-files)
     [ webcpp.data $(FIXTURES) ] ;
+
+# The benchmarks' smoke pass (bench/bench.cpp): one pass of every operation with
+# Boost.JSON and document over nativejson-benchmark's files, failing when the
+# two answer differently.
+webcpp.run bench : ../bench/bench.cpp
+  : <define>WEBCPP_BENCH_SMOKE <library>/webcpp/third_party//nativejson-benchmark
+    <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH=1 ;

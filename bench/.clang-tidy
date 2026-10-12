@@ -1,0 +1,15 @@
+# The benchmarks inherit the superproject's configuration and switch off one
+# option.
+#
+# bugprone-exception-escape.CheckMain treats the benchmarks' main as a
+# function that should not throw. Their main lets what a fault throws, a
+# std::length_error from a std::string construction or a
+# boost::system::system_error from a failed result, end the process
+# uncaught, which fails the smoke pass and the measurement as it should. The
+# check stays on for everything else: a noexcept function, a destructor, a
+# move or a swap.
+---
+InheritParentConfig: true
+CheckOptions:
+  - key: bugprone-exception-escape.CheckMain
+    value: 'false'
