@@ -1,0 +1,8 @@
+{
+    "text": "{}",
+    "indent": 5,
+    "js_only": false,
+    "operations": [
+        ["set",["z"],"true"]
+    ]
+}

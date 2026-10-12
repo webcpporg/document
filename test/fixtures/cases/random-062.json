@@ -1,0 +1,9 @@
+{
+    "text": "[null, -963, {\"0\": null, \"\": false}]",
+    "indent": 6,
+    "js_only": false,
+    "operations": [
+        ["splice",[],-3,-1,["false","null","{\"a\":null}"]],
+        ["set",[8],"9007199254740992"]
+    ]
+}

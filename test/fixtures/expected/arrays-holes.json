@@ -1,0 +1,14 @@
+{
+    "text": "[\"p\",true,0,null,null,null]",
+    "returns": [
+        null,
+        "5",
+        null,
+        "[1,\"s\",null]",
+        null,
+        null,
+        "6",
+        "7",
+        "null"
+    ]
+}

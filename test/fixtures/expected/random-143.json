@@ -1,0 +1,14 @@
+{
+    "text": "[\n null,\n null,\n null,\n 0,\n {\n  \"0\": 576.43,\n  \"c\": {\n   \"0\": [\n    0.1,\n    \"\\n\\\\ \",\n    false\n   ]\n  },\n  \"4294967295\": -3.2728942352701717e+24\n }\n]",
+    "returns": [
+        null,
+        "true",
+        null,
+        "3",
+        "true",
+        "true",
+        null,
+        null,
+        null
+    ]
+}

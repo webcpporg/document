@@ -1,0 +1,10 @@
+{
+    "text": "[]",
+    "indent": 5,
+    "js_only": false,
+    "operations": [
+        ["shift",[]],
+        ["splice",[],-2,-1,[]],
+        ["set_length",[],0]
+    ]
+}

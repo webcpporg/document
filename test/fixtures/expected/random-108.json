@@ -1,0 +1,15 @@
+{
+    "text": "{\n       \"c\": \"\\u001f \",\n       \"z\": [\n              {\n                     \"1\": 65434,\n                     \"01\": \"\\\\ \\u001f\\\\a \"\n              },\n              [\n                     null,\n                     true,\n                     true\n              ],\n              [\n                     \"b\\n/z\\\\\",\n                     \"\\\" \\n\\u001f\"\n              ]\n       ]\n}",
+    "returns": [
+        "false",
+        "false",
+        "false",
+        null,
+        "false",
+        null,
+        "3",
+        "\"\"",
+        null,
+        "true"
+    ]
+}

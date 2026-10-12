@@ -1,0 +1,8 @@
+{
+    "text": "[0,1,2,3,4]",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["pop",[]]
+    ]
+}

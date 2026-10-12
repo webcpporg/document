@@ -1,0 +1,12 @@
+{
+    "text": "{\n    \"é\": []\n}",
+    "returns": [
+        "4",
+        "[]",
+        null,
+        "true",
+        null,
+        "true",
+        null
+    ]
+}

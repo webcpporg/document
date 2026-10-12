@@ -1,0 +1,10 @@
+{
+    "text": "{}",
+    "indent": 10,
+    "js_only": false,
+    "operations": [
+        ["erase",[],"b"],
+        ["set",["1"],"{\"01\":false,\"a\":{}}"],
+        ["set",["1","a","c"],"[-636]"]
+    ]
+}

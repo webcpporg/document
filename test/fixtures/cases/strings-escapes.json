@@ -1,0 +1,6 @@
+{
+    "text": "[\"x\\\"\\\\\\b\\f\\n\\r\\t\\u0001\\u001F\\/é 😀\"]",
+    "indent": 0,
+    "js_only": false,
+    "operations": []
+}

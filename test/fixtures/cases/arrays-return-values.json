@@ -1,0 +1,11 @@
+{
+    "text": "[{\"a\":[1,{\"b\":\"x\"}]},\"s\",null,true,[]]",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["shift",[]],
+        ["pop",[]],
+        ["splice",[],0,2,[]],
+        ["pop",[]]
+    ]
+}

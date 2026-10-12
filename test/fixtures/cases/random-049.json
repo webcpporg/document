@@ -1,0 +1,11 @@
+{
+    "text": "[]",
+    "indent": 4,
+    "js_only": false,
+    "operations": [
+        ["set",[2],"\"\""],
+        ["reverse",[]],
+        ["push",[],[]],
+        ["reverse",[]]
+    ]
+}

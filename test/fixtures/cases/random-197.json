@@ -1,0 +1,11 @@
+{
+    "text": "[]",
+    "indent": 9,
+    "js_only": false,
+    "operations": [
+        ["reverse",[]],
+        ["pop",[]],
+        ["pop",[]],
+        ["unshift",[],["\"\\u001f b\"","9181"]]
+    ]
+}

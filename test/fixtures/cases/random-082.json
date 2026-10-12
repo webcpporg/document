@@ -1,0 +1,11 @@
+{
+    "text": "{\"z\":\"\\u001f\"}",
+    "indent": 6,
+    "js_only": false,
+    "operations": [
+        ["erase",[],"z"],
+        ["erase",[],"2"],
+        ["set",["1e2"],"[{}]"],
+        ["erase",[],"-0"]
+    ]
+}

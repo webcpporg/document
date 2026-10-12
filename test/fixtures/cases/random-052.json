@@ -1,0 +1,9 @@
+{
+    "text": "[[0.5],{},[\"😀 //\",[]]]",
+    "indent": 10,
+    "js_only": false,
+    "operations": [
+        ["erase",[1],"é"],
+        ["reverse",[2]]
+    ]
+}

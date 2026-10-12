@@ -1,0 +1,13 @@
+{
+    "text": "{\"4294967294\":null}",
+    "indent": 8,
+    "js_only": false,
+    "operations": [
+        ["erase",[],"4294967294"],
+        ["erase",[],"c"],
+        ["assign_from",[],"null"],
+        ["set",["c"],"true"],
+        ["set",["c"],"{}"],
+        ["assign_from",[],"{\"\":[],\"2\":[100000000000000000000,true],\"a\":[false,null,0.5],\"0\":\" \\\"\"}"]
+    ]
+}

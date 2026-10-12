@@ -1,0 +1,9 @@
+{
+    "text": "{\n      \"1e2\": [\n            {}\n      ]\n}",
+    "returns": [
+        "true",
+        "false",
+        null,
+        "false"
+    ]
+}

@@ -1,0 +1,10 @@
+{
+    "text": "[true]",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["push",[],[]],
+        ["push",[],[]],
+        ["splice",[],2,1,["\"/é\"","\"/\\\"\\ta\\n\""]]
+    ]
+}

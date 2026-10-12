@@ -1,0 +1,11 @@
+{
+    "text": "[\n      [\n            {\n                  \"4294967295\": true\n            },\n            [],\n            \"\\\"\\n\\u001f😀éa\"\n      ],\n      null,\n      null,\n      null,\n      null\n]",
+    "returns": [
+        null,
+        null,
+        null,
+        null,
+        "5",
+        "3"
+    ]
+}

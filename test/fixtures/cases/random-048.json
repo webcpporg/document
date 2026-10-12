@@ -1,0 +1,14 @@
+{
+    "text": "[false]",
+    "indent": 6,
+    "js_only": false,
+    "operations": [
+        ["push",[],["[8627]","\"b \""]],
+        ["reverse",[1]],
+        ["splice",[],-1,1,["{\"1\":[\"\\nz\\\\\\\\\",\" \\u0001 \",false]}"]],
+        ["erase",[2],"1"],
+        ["erase",[2],""],
+        ["shift",[1]],
+        ["erase",[2],"b"]
+    ]
+}

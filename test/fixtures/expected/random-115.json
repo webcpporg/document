@@ -1,0 +1,14 @@
+{
+    "text": "{\n    \"1\": \" a\\u001f\",\n    \"\": [\n        true,\n        \"  \",\n        null,\n        8000.2,\n        \"/0\\u0001\\\\z\"\n    ]\n}",
+    "returns": [
+        "true",
+        null,
+        null,
+        "[true]",
+        null,
+        null,
+        "true",
+        "null",
+        "\"z\\t\""
+    ]
+}

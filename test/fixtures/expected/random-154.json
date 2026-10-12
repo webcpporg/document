@@ -1,0 +1,12 @@
+{
+    "text": "{\n \"c\": [\n  852,\n  true,\n  [],\n  [\n   null,\n   [\n    {\n     \"0\": true\n    },\n    [\n     \"\\u0001😀\\té\\n\",\n     null,\n     \"\\u0001 /\",\n     2.66332861154598e-21,\n     null,\n     70,\n     [\n      1e-7,\n      null,\n      -293\n     ]\n    ],\n    -1.4897\n   ],\n   true\n  ],\n  {},\n  587,\n  {}\n ]\n}",
+    "returns": [
+        null,
+        "[{\"01\":\"\\\"0a  \"},{\"-0\":true,\"\":false,\"01\":null},null]",
+        "[]",
+        "7",
+        null,
+        null,
+        null
+    ]
+}

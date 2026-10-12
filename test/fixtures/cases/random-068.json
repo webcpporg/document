@@ -1,0 +1,11 @@
+{
+    "text": "[[4.535233711013253e-24]]",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["push",[],[]],
+        ["push",[],["null","null","null"]],
+        ["set_length",[0],2],
+        ["shift",[0]]
+    ]
+}

@@ -1,0 +1,17 @@
+{
+    "text": "[false, [{\"-0\": {\"2\": {\"é\": true}, \"1e2\": \"/b\", \"0\": true}, \"0\": null, \"1e2\": {}}]]",
+    "indent": 9,
+    "js_only": false,
+    "operations": [
+        ["reverse",[1]],
+        ["set_length",[1],2],
+        ["set_length",[1],2],
+        ["reverse",[]],
+        ["reverse",[0]],
+        ["pop",[]],
+        ["erase",[0,1],"0"],
+        ["set_length",[0],2],
+        ["push",[],[]],
+        ["splice",[0],2,2,[]]
+    ]
+}

@@ -1,0 +1,10 @@
+{
+    "text": "[null,[]]",
+    "indent": 4,
+    "js_only": false,
+    "operations": [
+        ["pop",[]],
+        ["set_length",[],1],
+        ["splice",[],-2,1,["\"a\\u0001\"","[\"bbb😀\"]"]]
+    ]
+}

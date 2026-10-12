@@ -1,0 +1,8 @@
+{
+    "text": "[true]",
+    "indent": 7,
+    "js_only": false,
+    "operations": [
+        ["set_length",[],3]
+    ]
+}

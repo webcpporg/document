@@ -1,0 +1,13 @@
+{
+    "text": "{\"1\":1,\"2\":0,\"a\":0}",
+    "returns": [
+        null,
+        "true",
+        null,
+        "true",
+        null,
+        "false",
+        "true",
+        "false"
+    ]
+}

@@ -1,0 +1,9 @@
+{
+    "text": "{}",
+    "indent": 7,
+    "js_only": false,
+    "operations": [
+        ["set",["1e2"],"null"],
+        ["erase",[],"1e2"]
+    ]
+}

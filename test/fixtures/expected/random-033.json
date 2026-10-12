@@ -1,0 +1,10 @@
+{
+    "text": "{\n   \"é\": {\n      \"1e2\": [\n         {},\n         -0.80186,\n         [\n            \"bb\",\n            true\n         ],\n         {\n            \"4294967294\": false,\n            \"z\": null,\n            \"\": 0.004822,\n            \"é\": null\n         }\n      ]\n   }\n}",
+    "returns": [
+        null,
+        null,
+        "true",
+        null,
+        null
+    ]
+}

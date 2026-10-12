@@ -1,0 +1,9 @@
+{
+    "text": "{\"0\":[\"a\\tb\\u001f \"]}",
+    "indent": 8,
+    "js_only": false,
+    "operations": [
+        ["set",["0",0],"{\"z\":\"\\u001f\",\"é\":true}"],
+        ["erase",[],"é"]
+    ]
+}

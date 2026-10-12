@@ -1,0 +1,11 @@
+{
+    "text": "{\n        \"0\": \" \\\"\",\n        \"2\": [\n                100000000000000000000,\n                true\n        ],\n        \"c\": {},\n        \"\": [],\n        \"a\": [\n                false,\n                null,\n                0.5\n        ]\n}",
+    "returns": [
+        "true",
+        "false",
+        null,
+        null,
+        null,
+        null
+    ]
+}

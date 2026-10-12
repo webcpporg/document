@@ -1,0 +1,13 @@
+{
+    "text": "[\n     \"\\\\é\",\n     false\n]",
+    "returns": [
+        "0",
+        null,
+        null,
+        "[null]",
+        null,
+        null,
+        "3",
+        "7726.6"
+    ]
+}

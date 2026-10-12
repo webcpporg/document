@@ -1,0 +1,8 @@
+{
+    "text": "[null,{\"a\":true,\"4294967295\":\"b\\u001fa z\\\\\",\"a\":-215,\"1e2\":[null,988.6]}]",
+    "indent": 1,
+    "js_only": false,
+    "operations": [
+        ["set_length",[1,"1e2"],4]
+    ]
+}

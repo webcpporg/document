@@ -1,0 +1,13 @@
+{
+    "text": "[\n       null,\n       null,\n       {}\n]",
+    "returns": [
+        null,
+        "false",
+        "true",
+        "false",
+        null,
+        "false",
+        "true",
+        "true"
+    ]
+}

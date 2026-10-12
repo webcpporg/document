@@ -1,0 +1,10 @@
+{
+    "text": "{\"b\":false}",
+    "indent": 3,
+    "js_only": false,
+    "operations": [
+        ["set",["c"],"{\"\":[false,0],\"4294967295\":null,\"2\":false}"],
+        ["splice",["c",""],0,0,["[[396]]","{\"-0\":\"0a\"}"]],
+        ["set_length",["c","",0],4]
+    ]
+}

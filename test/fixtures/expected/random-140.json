@@ -1,0 +1,7 @@
+{
+    "text": "{\n        \"0\": [\n                {\n                        \"z\": \"\\u001f\",\n                        \"é\": true\n                }\n        ]\n}",
+    "returns": [
+        null,
+        "false"
+    ]
+}

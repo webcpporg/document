@@ -1,0 +1,8 @@
+{
+    "text": "{\n        \"b\": [\n                null\n        ]\n}",
+    "returns": [
+        "false",
+        null,
+        "true"
+    ]
+}

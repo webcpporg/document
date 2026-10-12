@@ -1,0 +1,7 @@
+{
+  "name": "webcpp-document-oracle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Runs document's cases on JavaScript itself, the library's oracle: JSON.parse, the operations and JSON.stringify, with no package."
+}

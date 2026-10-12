@@ -1,0 +1,6 @@
+{
+    "text": "[\n null,\n {\n  \"a\": -215,\n  \"4294967295\": \"b\\u001fa z\\\\\",\n  \"1e2\": [\n   null,\n   988.6,\n   null,\n   null\n  ]\n }\n]",
+    "returns": [
+        null
+    ]
+}

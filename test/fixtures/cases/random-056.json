@@ -1,0 +1,11 @@
+{
+    "text": "{}",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["erase",[],"1e2"],
+        ["assign_from",[],"{\"2\":null,\"4294967294\":true,\"z\":\"z\\u001f/é  \"}"],
+        ["erase",[],"4294967294"],
+        ["assign_from",[],"null"]
+    ]
+}

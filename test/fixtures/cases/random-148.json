@@ -1,0 +1,8 @@
+{
+    "text": "{\"1e2\":false}",
+    "indent": 10,
+    "js_only": false,
+    "operations": [
+        ["assign_from",[],"null"]
+    ]
+}

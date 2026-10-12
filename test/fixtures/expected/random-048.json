@@ -1,0 +1,12 @@
+{
+    "text": "[\n      false,\n      [],\n      {}\n]",
+    "returns": [
+        "3",
+        null,
+        "[\"b \"]",
+        "true",
+        "false",
+        "8627",
+        "false"
+    ]
+}

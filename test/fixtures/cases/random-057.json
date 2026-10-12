@@ -1,0 +1,13 @@
+{
+    "text": "[]",
+    "indent": 6,
+    "js_only": false,
+    "operations": [
+        ["set_length",[],0],
+        ["set_length",[],1],
+        ["set_length",[],2],
+        ["set_length",[],4],
+        ["unshift",[],["[{\"4294967295\":true},[],\"\\\"\\n\\u001f😀éa\"]"]],
+        ["unshift",[0],[]]
+    ]
+}

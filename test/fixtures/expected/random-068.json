@@ -1,0 +1,9 @@
+{
+    "text": "[[null],null,null,null]",
+    "returns": [
+        "1",
+        "4",
+        null,
+        "4.535233711013253e-24"
+    ]
+}

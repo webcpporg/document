@@ -1,0 +1,9 @@
+{
+    "text": "{\"a\":1,\"__proto__\":{\"x\":1},\"b\":2}",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["set",["b"],"3"],
+        ["set",["c"],"4"]
+    ]
+}

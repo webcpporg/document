@@ -1,0 +1,9 @@
+{
+    "text": "[\n     true,\n     [\n          \"é\"\n     ],\n     [\n          32825,\n          -593,\n          null,\n          {\n               \"2\": true,\n               \"z\": -381,\n               \"1e2\": null,\n               \"-0\": {}\n          }\n     ]\n]",
+    "returns": [
+        "true",
+        "true",
+        null,
+        "[[{\"4294967295\":false}]]"
+    ]
+}

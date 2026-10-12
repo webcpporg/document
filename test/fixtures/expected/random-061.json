@@ -1,0 +1,8 @@
+{
+    "text": "[\n       null,\n       {\n              \"\": [\n                     false,\n                     979,\n                     259\n              ],\n              \"b\": \"0\\u0001/\"\n       },\n       true\n]",
+    "returns": [
+        null,
+        null,
+        "[]"
+    ]
+}

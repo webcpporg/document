@@ -1,0 +1,13 @@
+{
+    "text": "{\"0\": \"ézz\", \"2\": true}",
+    "indent": 7,
+    "js_only": false,
+    "operations": [
+        ["set",["c"],"{\"2\":true}"],
+        ["erase",[],"2"],
+        ["set",["4294967294"],"null"],
+        ["erase",[],"0"],
+        ["erase",["c"],"2"],
+        ["erase",["c"],"1e2"]
+    ]
+}

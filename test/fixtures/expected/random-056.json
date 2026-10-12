@@ -1,0 +1,9 @@
+{
+    "text": "{\"2\":null,\"z\":\"z\\u001f/é  \"}",
+    "returns": [
+        "false",
+        null,
+        "true",
+        null
+    ]
+}

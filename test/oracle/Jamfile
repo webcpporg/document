@@ -1,0 +1,15 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+# document's oracle: JavaScript itself, which parses every case's text with
+# JSON.parse, applies its operations and writes the result with
+# JSON.stringify. It needs no package: package.json names none.
+
+import webcpp ;
+
+webcpp.original node ;
+webcpp.cases document : oracle.mjs : ../fixtures/cases : ../fixtures/expected ;
+webcpp.lane oracle : cases-document ;

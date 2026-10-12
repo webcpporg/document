@@ -1,0 +1,15 @@
+{
+    "text": "[\n         [\n                  null,\n                  {\n                           \"-0\": {\n                                    \"0\": true,\n                                    \"2\": {\n                                             \"é\": true\n                                    },\n                                    \"1e2\": \"/b\"\n                           },\n                           \"1e2\": {}\n                  }\n         ]\n]",
+    "returns": [
+        null,
+        null,
+        null,
+        null,
+        null,
+        "false",
+        "true",
+        null,
+        "1",
+        "[]"
+    ]
+}

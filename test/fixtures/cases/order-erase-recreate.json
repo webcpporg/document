@@ -1,0 +1,15 @@
+{
+    "text": "{\"b\":0,\"2\":0,\"a\":0,\"1\":0}",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["set",["b"],"9"],
+        ["erase",[],"b"],
+        ["set",["b"],"1"],
+        ["erase",[],"1"],
+        ["set",["1"],"1"],
+        ["erase",[],"missing"],
+        ["erase",[],"b"],
+        ["erase",[],"b"]
+    ]
+}

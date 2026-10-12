@@ -1,0 +1,10 @@
+{
+    "text": "[\n        \"\\u0001 \",\n        null,\n        null\n]",
+    "returns": [
+        "4",
+        null,
+        "true",
+        "true",
+        "{\"é\":null,\"b\":{}}"
+    ]
+}

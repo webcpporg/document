@@ -1,0 +1,10 @@
+{
+    "text": "[\"\\\\\\t\"]",
+    "indent": 3,
+    "js_only": false,
+    "operations": [
+        ["push",[],["-270"]],
+        ["unshift",[],["true","[]","-0.080353"]],
+        ["shift",[1]]
+    ]
+}

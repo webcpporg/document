@@ -1,0 +1,7 @@
+{
+    "text": "[\n      false,\n      null,\n      {\n            \"a\": null\n      },\n      null,\n      -963,\n      {\n            \"0\": null,\n            \"\": false\n      },\n      null,\n      null,\n      9007199254740992\n]",
+    "returns": [
+        "[]",
+        null
+    ]
+}

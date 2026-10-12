@@ -1,0 +1,10 @@
+{
+    "text": "{}",
+    "returns": [
+        "true",
+        "false",
+        null,
+        "true",
+        "false"
+    ]
+}

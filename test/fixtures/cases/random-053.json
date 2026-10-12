@@ -1,0 +1,9 @@
+{
+    "text": "[null,true,null]",
+    "indent": 2,
+    "js_only": false,
+    "operations": [
+        ["reverse",[]],
+        ["pop",[]]
+    ]
+}

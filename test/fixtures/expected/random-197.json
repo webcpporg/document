@@ -1,0 +1,9 @@
+{
+    "text": "[\n         \"\\u001f b\",\n         9181\n]",
+    "returns": [
+        null,
+        null,
+        null,
+        "2"
+    ]
+}

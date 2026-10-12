@@ -1,0 +1,8 @@
+{
+    "text": "[\n      null,\n      null,\n      null\n]",
+    "returns": [
+        "\"\\u0001😀 \"",
+        null,
+        null
+    ]
+}

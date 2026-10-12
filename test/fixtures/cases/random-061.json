@@ -1,0 +1,10 @@
+{
+    "text": "[]",
+    "indent": 7,
+    "js_only": false,
+    "operations": [
+        ["reverse",[]],
+        ["set",[0],"null"],
+        ["splice",[],1,-1,["{\"\":[false,979,259],\"b\":\"0\\u0001/\"}","true"]]
+    ]
+}

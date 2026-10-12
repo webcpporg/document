@@ -1,0 +1,10 @@
+{
+    "text": "[\"\\u0001😀 \"]",
+    "indent": 6,
+    "js_only": false,
+    "operations": [
+        ["pop",[]],
+        ["shift",[]],
+        ["set_length",[],3]
+    ]
+}

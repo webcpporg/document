@@ -1,0 +1,14 @@
+{
+    "text": "[false]",
+    "indent": 8,
+    "js_only": false,
+    "operations": [
+        ["splice",[],-2,2,[]],
+        ["splice",[],1,1,["\"/\"","\"\\\\ \""]],
+        ["set",[1],"true"],
+        ["unshift",[],["\"😀b\\n\""]],
+        ["reverse",[]],
+        ["reverse",[]],
+        ["reverse",[]]
+    ]
+}

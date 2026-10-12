@@ -1,0 +1,6 @@
+{
+    "text": " \t\n\r[1 , 2,\n{\"a\" :\t[ ] } ] \r\n",
+    "indent": 0,
+    "js_only": false,
+    "operations": []
+}

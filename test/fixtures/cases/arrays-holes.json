@@ -1,0 +1,16 @@
+{
+    "text": "[0,1]",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["set_length",[],4],
+        ["push",[],["\"p\""]],
+        ["set",[2],"\"s\""],
+        ["splice",[],1,3,["true"]],
+        ["reverse",[]],
+        ["set",[6],"6"],
+        ["pop",[]],
+        ["unshift",[],["null"]],
+        ["shift",[]]
+    ]
+}

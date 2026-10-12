@@ -1,0 +1,9 @@
+{
+    "text": "[]",
+    "indent": 1,
+    "js_only": false,
+    "operations": [
+        ["reverse",[]],
+        ["push",[],["null","-59631","4.307014637502876e-28"]]
+    ]
+}

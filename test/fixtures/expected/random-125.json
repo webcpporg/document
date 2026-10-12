@@ -1,0 +1,11 @@
+{
+    "text": "{\n       \"4294967294\": null,\n       \"c\": {}\n}",
+    "returns": [
+        null,
+        "true",
+        null,
+        "true",
+        "true",
+        "false"
+    ]
+}

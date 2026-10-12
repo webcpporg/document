@@ -1,0 +1,8 @@
+{
+    "text": "{\n          \"1\": {\n                    \"01\": false,\n                    \"a\": {\n                              \"c\": [\n                                        -636\n                              ]\n                    }\n          }\n}",
+    "returns": [
+        "false",
+        null,
+        null
+    ]
+}

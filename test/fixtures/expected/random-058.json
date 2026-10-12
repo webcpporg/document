@@ -1,0 +1,8 @@
+{
+    "text": "[\n    null,\n    [\n        true,\n        \"a \\\\\",\n        -7.866,\n        false,\n        [\n            -855,\n            {\n                \"0\": [\n                    [\n                        false,\n                        \"\"\n                    ],\n                    1,\n                    \"\\\"\\t\"\n                ],\n                \"1\": {\n                    \"4294967294\": null,\n                    \"z\": false\n                }\n            }\n        ]\n    ],\n    null\n]",
+    "returns": [
+        null,
+        null,
+        "[null]"
+    ]
+}

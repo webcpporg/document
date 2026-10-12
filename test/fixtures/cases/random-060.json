@@ -1,0 +1,15 @@
+{
+    "text": "{\"é\":\"\\u001f\\u001fb\\u001f\",\"b\":\"z\"}",
+    "indent": 10,
+    "js_only": false,
+    "operations": [
+        ["erase",[],"1e2"],
+        ["set",["1e2"],"{}"],
+        ["erase",[],"é"],
+        ["erase",["1e2"],"1"],
+        ["erase",["1e2"],"é"],
+        ["assign_from",["1e2"],"[null]"],
+        ["set",["z"],"[[],\" \\n😀éa\\\"\"]"],
+        ["set_length",["z"],0]
+    ]
+}

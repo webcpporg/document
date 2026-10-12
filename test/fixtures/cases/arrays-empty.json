@@ -1,0 +1,14 @@
+{
+    "text": "[]",
+    "indent": 0,
+    "js_only": false,
+    "operations": [
+        ["pop",[]],
+        ["shift",[]],
+        ["splice",[],0,1,[]],
+        ["reverse",[]],
+        ["set_length",[],0],
+        ["push",[],[]],
+        ["unshift",[],[]]
+    ]
+}

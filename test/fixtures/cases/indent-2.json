@@ -1,0 +1,6 @@
+{
+    "text": "{\"b\":[1,{\"c\":[]},{}],\"a\":\"x\\\"\\\\\\b\\f\\n\\r\\t\\u0001\\u001f/é 😀\",\"e\":null,\"t\":true}",
+    "indent": 2,
+    "js_only": false,
+    "operations": []
+}

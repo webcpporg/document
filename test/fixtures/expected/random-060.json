@@ -1,0 +1,13 @@
+{
+    "text": "{\n          \"b\": \"z\",\n          \"1e2\": {\n                    \"0\": null\n          },\n          \"z\": []\n}",
+    "returns": [
+        "false",
+        null,
+        "true",
+        "false",
+        "false",
+        null,
+        null,
+        null
+    ]
+}

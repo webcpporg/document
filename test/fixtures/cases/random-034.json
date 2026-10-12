@@ -1,0 +1,10 @@
+{
+    "text": "{\"b\":[false],\"1e2\":1.7976931348623157e+308}",
+    "indent": 8,
+    "js_only": false,
+    "operations": [
+        ["shift",["b"]],
+        ["set_length",["b"],1],
+        ["erase",[],"1e2"]
+    ]
+}
