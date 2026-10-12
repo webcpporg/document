@@ -14,8 +14,10 @@ reproduces. The {cpp} runs natively, and compiled to WebAssembly with Emscripten
 and the same headless Chrome as the JavaScript, so that each row compares the three where a web
 application would run them.
 
-The operations and the data come from recognised benchmarks, never from document's own tests, and
-every implementation must give the same answer to each before it is timed. One {cpp} program,
+The operations of the survey and the data come from recognised benchmarks, never from document's own
+tests; the operations of binary transmission, which no suite times, come from the case document is
+built for, and are the first results below. Every implementation must give the same answer to each
+before it is timed. One {cpp} program,
 `bench/bench.cpp`, holds the Boost.JSON and document sides; one JavaScript module, `bench/bench.mjs`,
 holds JavaScript's and the same harness, which Node runs and Chrome runs in a page; and
 `bench/run.mjs` runs them all, checks their answers and writes the results below.
@@ -27,6 +29,8 @@ The fourteen operations of the survey of JSON and dictionary benchmarks that thi
 each with the suites it is taken from. No recognised JSON suite times changes to a document (insert,
 update, delete, splice) or deep copies: those come from the hash-map suites, V8's own `js-perf-test`
 and Dromaeo's DOM tests. Equality, the survey's fifteenth, is left out, since no suite times it.
+Three more, 15 to 17, are binary transmission: a document sent to another place and opened there.
+No suite times them, so the page takes them from the case the image is built for.
 
 [cols="1,3,4,3,3,3",options="header"]
 |===
@@ -73,10 +77,20 @@ and Dromaeo's DOM tests. Equality, the survey's fifteenth, is left out, since no
 
 | 14 | Deep copy | martinus's Copy, abseil's CopyCtor, Dromaeo's cloneNode
 | the copy constructor | `clone` | `structuredClone`, and `JSON.parse(JSON.stringify(v))` apart
+
+| 15 | Send and receive a document | none: binary transmission, which document is built for
+| `serialize`, then `parse` | the image copied into a buffer of the receiver's, then `open` in place | `JSON.stringify`, then `JSON.parse`
+
+| 16 | Send and receive a sealed document | none: the same, with the image's seal checked
+| - | `seal()`, the copy, then `open`, which checks the seal first | -
+
+| 17 | Pass a document to a Worker, which answers each pass | none: the Worker of a web application
+| - | the image copied into a transferable `ArrayBuffer`, transferred, copied into the Worker's memory and opened there in place | `postMessage` of the object, which clones it
 |===
 
 A `*` marks the closest form of an operation an implementation has no direct form of, as the
-survey names it; the results' tables carry the same mark. Every array method of document but
+survey names it; the results' tables carry the same mark. Rows 15 to 17 have no `*`: each
+implementation has its own form of sending a document, and a `-` marks one that has none. Every array method of document but
 `slice` is a loop by hand: document has the methods that change an array (`push`, `pop`, `splice`
 and the others) and `slice` and `concat`, not the callbacks of `map` or `filter`. A loop that builds
 an array copies each element it keeps into a new document, where JavaScript's `map`, `filter` and
@@ -103,6 +117,43 @@ JavaScript, which keeps such keys in ascending order, as document does and as th
 looks every key up: Boost.JSON's `stable_erase` moves every member after the one it erases, and
 deleting half of 100,000 members takes it 25 s a pass.
 
+[#document-benchmarks-wire]
+=== The sizes on the wire
+
+What a document weighs when it is sent is measured apart from its time, and not timed. Each file's
+value is sent three ways: as the JSON text `JSON.stringify` writes, as the text Boost.JSON's
+serializer writes, and as document's image after `shrink_to_fit`. Each is shown as it is, gzipped and
+brotli-compressed with Node's zlib at its default levels (gzip's level 6, brotli's quality 11). The
+sizes are in bytes:
+
+[cols="2,3,2,2,2",options="header"]
+|===
+| File | Form | Bytes | gzip | brotli
+
+| `canada.json` | JSON text, `JSON.stringify` | 2,090,234 | 551,870 | 427,666
+| `canada.json` | JSON text, Boost.JSON `serialize` | 2,285,629 | 555,391 | 439,584
+| `canada.json` | document's image | 32,099,376 | 2,432,828 | 1,345,771
+
+| `citm_catalog.json` | JSON text, `JSON.stringify` | 500,299 | 17,024 | 7,848
+| `citm_catalog.json` | JSON text, Boost.JSON `serialize` | 500,299 | 17,024 | 7,848
+| `citm_catalog.json` | document's image | 8,531,152 | 617,425 | 186,897
+
+| `twitter.json` | JSON text, `JSON.stringify` | 466,906 | 44,864 | 31,891
+| `twitter.json` | JSON text, Boost.JSON `serialize` | 466,907 | 44,866 | 31,902
+| `twitter.json` | document's image | 3,652,288 | 420,181 | 146,804
+|===
+
+The image is the larger on the wire in every row. It holds a node of a tree for each value, with its
+ids and offsets, where the text holds the value's characters alone, so it is 8 to 17 times the
+text's size uncompressed; compressed it is still 3 to 9 times larger for `canada.json` and
+`twitter.json`, and for `citm_catalog.json` the gzip and brotli of the image are 36 and 24 times the
+text's. The sizes come from `bench/wire.mjs`, which reads the files that `bench-native --wire <dir>`
+writes; the results target does not write them.
+
+A seal is a CRC-32C of the image's bytes, which catches accidental damage (a flipped bit, a torn
+write). It is not authentication: anyone can compute a valid seal for any bytes, so an image from an
+untrusted source must not be opened, sealed or not.
+
 [#document-benchmarks-methodology]
 === Methodology
 
@@ -114,7 +165,8 @@ made before a sample and outside its time.
 * The first pass of each operation is timed alone, before any warm-up: the first-iteration time, as
 JetStream reports it, which tells how the code runs before the JIT or the caches have seen it. Its
 answer is then checked against every other implementation's: the Stat counts of nativejson-benchmark
-for a parse, a stringify read back, a traversal or a copy; the queries' answers; the members found
+for a parse, a stringify read back, a traversal, a copy or a document sent and received (sealed or
+not, and in a Worker, the Worker's statistics of what it received); the queries' answers; the members found
 and the sums of their values; lengths and checksums for the arrays. A run whose implementations
 disagree writes no results.
 * The warm-up doubles the passes of a sample until it lasts at least 10 ms, then runs one more
@@ -153,6 +205,20 @@ the rest. document is not a fast JSON tree, and this first version does not try 
 on every operation, for what it guarantees, JavaScript's behaviour, exact numbers and one relocatable
 image. Where it is slower, and why:
 
+* *Binary transmission, which the image is built for.* A document sent as its image is copied and
+opened in place: the receiver parses no text, builds no tree and allocates nothing per value, so its
+CPU cost is the copy and, for a sealed image, one CRC pass over the bytes (about 600 MB/s). Boost.JSON
+and JavaScript pay the parse on the receiving side, which the image does not. That is where the image
+wins: on the receiver's CPU, in a Worker, where the image crosses as a transferred `ArrayBuffer`
+(row 17) and not as a structured clone of every node, and in shared memory, which is not measured
+here. The rows' timings are in the tables above. Over a constrained network the text wins: the image
+is 8 to 17 times larger, and still larger compressed, so on a link that carries the bytes the text
+is faster unless the receiver's parse costs more than the extra bytes take to cross. On a LAN it
+depends on the rate. For `canada.json` the image is 30 MB more than the text, which the link saves
+only when it carries more than about 143 MB/s (1.1 Gbit/s) against document's own parse of canada,
+209 ms; Boost.JSON's 2.19 ms parse is never worth it. The seal is a CRC against accidental damage, not
+authentication: anyone can compute a valid seal, so an image from an untrusted source must not be
+opened.
 * *Building and walking the tree.* document parses `canada.json` in 209 ms, where Boost.JSON takes
 2.19 ms and Node's `JSON.parse` 3.58 ms: 95 times Boost.JSON's time, 22 times on `citm_catalog.json`
 and 15 times on `twitter.json`. A full traversal is slower still, 37.0 ms against 186 us on

@@ -9,12 +9,14 @@
 //   node --expose-gc node.mjs js --data <dir> [--quick]
 //   node --expose-gc node.mjs wasm --module <bench-module.js> --impl <name> --data <dir> [--quick]
 //
-// js measures JavaScript's own objects (bench.mjs); wasm runs bench.cpp compiled by Emscripten,
-// whose implementation --impl names, over the same files. run.mjs runs each in a process of its own.
+// js measures JavaScript's own objects (bench.mjs), and the Worker benchmarks with a Worker of its own
+// (worker.mjs), which loads bench-module.js; wasm runs bench.cpp compiled by Emscripten, whose
+// implementation --impl names, over the same files. run.mjs runs each in a process of its own.
 
 import {readFileSync} from 'node:fs'
 import {join, resolve} from 'node:path'
 import {pathToFileURL} from 'node:url'
+import {Worker} from 'node:worker_threads'
 import {dataFiles, runJavaScript, runWasm} from './bench.mjs'
 
 const args = process.argv.slice(2)
@@ -27,15 +29,44 @@ if (!data || (mode !== 'js' && mode !== 'wasm')) {
 }
 const print = line => process.stdout.write(`${line}\n`)
 
+// A Worker of Node's, which the benchmarks ask one request at a time: the reply to the request is the
+// Worker's next message, or its error.
+const spawnWorker = () => {
+    const worker = new Worker(new URL('./worker.mjs', import.meta.url))
+    return {
+        ask: (message, transfer = []) => new Promise((resolve, reject) => {
+            const settle = (result, value) => {
+                worker.off('message', onMessage)
+                worker.off('error', onError)
+                result(value)
+            }
+            const onMessage = value => settle(resolve, value)
+            const onError = error => settle(reject, error)
+            worker.on('message', onMessage)
+            worker.on('error', onError)
+            worker.postMessage(message, transfer)
+        }),
+        close: () => {
+            worker.terminate()
+        },
+    }
+}
+
 if (mode === 'js') {
+    const module = option('--module')
+    if (!module) throw new Error('js needs --module <bench-module.js>, which the Worker benchmarks load')
+    const moduleUrl = pathToFileURL(resolve(module)).href
+    const factory = (await import(moduleUrl)).default
     const [canada, citm, twitter] = dataFiles.map(name => readFileSync(join(data, name), 'utf8'))
-    runJavaScript({
+    const files = Object.fromEntries(dataFiles.map(name => [name, readFileSync(join(data, name))]))
+    await runJavaScript({
         texts: {canada, citm, twitter},
         gc: globalThis.gc,
         now: () => performance.now(),
         print,
         meta: {engine: 'node', node: process.version, v8: process.versions.v8},
         quick,
+        workers: {spawn: spawnWorker, factory, files, moduleUrl},
     })
 } else {
     const module = option('--module')

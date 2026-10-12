@@ -34,6 +34,7 @@
 #include <emscripten/version.h>
 #endif
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <iostream>
@@ -58,6 +59,29 @@ constexpr std::array<std::string_view, 3> implementations = {
     "document.js_traits",
 };
 
+/**
+ A row the smoke requires: the implementation `impl` must answer it on every transmission file,
+ under the name `answered_as` in the answers of the row `op`.
+*/
+struct requirement {
+    std::string_view op;
+    std::string_view impl;
+    std::string_view answered_as;
+};
+
+/**
+ The transmission rows: Boost.JSON and document send and receive each file; document's sealed send
+ and receive answers the same row, as "document sealed", so that its answer is checked too.
+*/
+constexpr std::array<requirement, 3> transmission = {{
+    {"send_receive", "boost.json", "boost.json"},
+    {"send_receive", "document", "document"},
+    {"send_receive", "document", "document sealed"},
+}};
+
+/** The files the transmission rows name, as their benchmarks name them. */
+constexpr std::array<std::string_view, 3> transmission_files = {"canada", "citm", "twitter"};
+
 /** What the command line asks. */
 struct options {
     std::string data;
@@ -65,6 +89,9 @@ struct options {
     bool smoke = false;
     bool verbose = false;
     bool quick = false;
+
+    /** The directory --wire writes the files' sizes to; empty when the run measures or checks. */
+    std::string wire;
 };
 
 /** The options of the command line; nothing, after naming the fault, when it is malformed. */
@@ -84,17 +111,19 @@ std::optional<options> read_options(std::span<char*> args) {
             o.verbose = true;
         } else if (arg == "--quick") {
             o.quick = true;
-        } else if ((arg == "--data" || arg == "--impl") && i + 1 < args.size()) {
+        } else if ((arg == "--data" || arg == "--impl" || arg == "--wire") && i + 1 < args.size()) {
             const std::string_view value = args[++i];
             if (arg == "--data") {
                 o.data = value;
+            } else if (arg == "--wire") {
+                o.wire = value;
             } else {
                 o.implementations.emplace_back(value);
             }
         } else {
             std::cerr << "bench: unknown or incomplete argument " << arg
                       << "\nusage: bench [--data <dir>] [--impl <name>]... [--smoke] [--verbose] "
-                         "[--quick]\n";
+                         "[--quick] [--wire <dir>]\n";
             return std::nullopt;
         }
     }
@@ -213,7 +242,10 @@ int smoke(const options& o, const bench::texts& t, std::span<const bench::key_se
                 std::cout << name << " " << b.op << " " << b.dataset << " " << first * b.ops / 1e6
                           << " ms\n";
             }
-            answers[{b.op, b.dataset}].emplace_back(name, std::move(answer));
+            // A sealed send and receive answers the row of the plain one, as "document sealed".
+            const bool sealed = b.op == "send_receive_sealed";
+            answers[{sealed ? "send_receive" : b.op, b.dataset}].emplace_back(
+                sealed ? name + " sealed" : name, std::move(answer));
         }
     }
     std::size_t disagreements = 0;
@@ -227,9 +259,30 @@ int smoke(const options& o, const bench::texts& t, std::span<const bench::key_se
             }
         }
     }
+    // A row that is missing is a gap in the page, not a disagreement: the smoke names it too.
+    std::size_t missing = 0;
+    for (const requirement& r : transmission) {
+        if (std::ranges::find(o.implementations, r.impl) == o.implementations.end()) {
+            continue;
+        }
+        for (const std::string_view file : transmission_files) {
+            const auto row = answers.find({std::string(r.op), std::string(file)});
+            const bool answered =
+                row != answers.end() &&
+                std::ranges::any_of(row->second, [&](const auto& given) {
+                    return given.first == r.answered_as;
+                });
+            if (!answered) {
+                ++missing;
+                std::cout << "bench: " << r.op << " on " << file << ": " << r.answered_as
+                          << " did not answer\n";
+            }
+        }
+    }
     std::cout << "bench: " << answers.size() << " benchmarks of " << o.implementations.size()
-              << " implementations, " << disagreements << " disagreements\n";
-    return disagreements == 0 ? 0 : 1;
+              << " implementations, " << disagreements << " disagreements, " << missing
+              << " missing\n";
+    return disagreements == 0 && missing == 0 ? 0 : 1;
 }
 
 /** Measures every benchmark of every implementation, one JSON line each. */
@@ -264,7 +317,137 @@ int measure(const options& o, const bench::texts& t, std::span<const bench::key_
     return 0;
 }
 
+/** Writes `bytes` to the file `path`, whole; false when it cannot be written. */
+bool write_file(const std::string& path, std::string_view bytes) {
+    std::ofstream out(path, std::ios::binary);
+    out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+    return static_cast<bool>(out);
+}
+
+/**
+ Writes what each file weighs on the wire, for the page: `<dir>/<name>.boost.json`, the text
+ Boost.JSON serializes the file's value to, and `<dir>/<name>.image`, the image of its document
+ after shrink_to_fit. bench/wire.mjs sizes them, and compresses them and the JSON.stringify text
+ too. Not timed.
+*/
+int wire(const options& o, const bench::texts& t) {
+    const auto files = std::to_array<std::pair<const char*, const std::string*>>({
+        {"canada", &t.canada},
+        {"citm", &t.citm},
+        {"twitter", &t.twitter},
+    });
+    for (const auto& [name, text] : files) {
+        auto parsed = wd::parse<wd::default_traits>(*text);
+        if (!parsed.has_value()) {
+            std::cerr << "bench: " << name << " does not parse as a document\n";
+            return 1;
+        }
+        wd::basic_document<wd::default_traits, wd::owned> document = std::move(parsed).unsafe_value();
+        if (!document.shrink_to_fit().has_value()) {
+            std::cerr << "bench: " << name << " cannot be shrunk\n";
+            return 1;
+        }
+        const std::string json_text = json::serialize(bench::boost_json::parsed(*text));
+        const std::span<const std::byte> image = document.image();
+        const std::string_view image_bytes(reinterpret_cast<const char*>(image.data()),
+                                           image.size());
+        if (!write_file(o.wire + "/" + name + ".boost.json", json_text) ||
+            !write_file(o.wire + "/" + name + ".image", image_bytes)) {
+            std::cerr << "bench: cannot write the sizes of " << name << " to " << o.wire << "\n";
+            return 1;
+        }
+    }
+    return 0;
+}
+
 }  // namespace
+
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+
+namespace {
+
+namespace dbench = webcpp::bench::document_bench;
+
+/**
+ The state of the Worker benchmarks' transfers in this module: the document sent, and the image
+ received into the buffer and opened in place. The JavaScript side calls the exports below one at a
+ time, as it runs the passes.
+*/
+struct transmission_state {
+    std::optional<wd::basic_document<wd::default_traits, wd::owned>> sent;
+    dbench::image_buffer buffer;
+    std::optional<wd::basic_document<wd::default_traits, wd::external>> opened;
+    std::string statistics;
+};
+
+transmission_state& transmission_of() {
+    static transmission_state state;
+    return state;
+}
+
+}  // namespace
+
+extern "C" {
+
+/** Parses one of the three files (0 canada, 1 citm, 2 twitter) and keeps it to send; its image's size, or 0. */
+EMSCRIPTEN_KEEPALIVE std::size_t webcpp_bench_send(int file) {
+    constexpr std::array<const char*, 3> names = {"canada.json", "citm_catalog.json", "twitter.json"};
+    if (file < 0 || file >= static_cast<int>(names.size())) {
+        return 0;
+    }
+    const std::optional<std::string> text = bench::read_file(std::string("/data/") + names[file]);
+    if (!text) {
+        return 0;
+    }
+    auto parsed = wd::parse<wd::default_traits>(*text);
+    transmission_state& state = transmission_of();
+    state.sent.reset();
+    if (!parsed.has_value()) {
+        return 0;
+    }
+    state.sent = std::move(parsed).unsafe_value();
+    return state.sent->image().size();
+}
+
+/** The image of the document sent, valid until the next send. */
+EMSCRIPTEN_KEEPALIVE const std::byte* webcpp_bench_image() {
+    const transmission_state& state = transmission_of();
+    return state.sent ? state.sent->image().data() : nullptr;
+}
+
+/** A 16-aligned buffer of `size` bytes for a received image; the image opened before is released. */
+EMSCRIPTEN_KEEPALIVE std::byte* webcpp_bench_receive(std::size_t size) {
+    transmission_state& state = transmission_of();
+    state.opened.reset();
+    state.buffer = dbench::allocate_image(size);
+    return state.buffer.get();
+}
+
+/** Opens the image received, in place and with its seal checked: 1 when it opens, 0 when it is refused. */
+EMSCRIPTEN_KEEPALIVE int webcpp_bench_open(std::size_t size) {
+    transmission_state& state = transmission_of();
+    state.opened.reset();
+    if (!state.buffer) {
+        return 0;
+    }
+    auto opened = wd::open<wd::default_traits>(std::span<std::byte>(state.buffer.get(), size));
+    if (!opened.has_value()) {
+        return 0;
+    }
+    state.opened = std::move(opened).unsafe_value();
+    return 1;
+}
+
+/** The Statistics of the image opened, as JSON text, valid until the next call. */
+EMSCRIPTEN_KEEPALIVE const char* webcpp_bench_statistics() {
+    transmission_state& state = transmission_of();
+    state.statistics = json::serialize(dbench::statistics_of<wd::default_traits>(state.opened));
+    return state.statistics.c_str();
+}
+
+}  // extern "C"
+#endif
 
 int main(int argc, char** argv) {
     const std::optional<options> o = read_options(std::span(argv, static_cast<std::size_t>(argc)));
@@ -274,6 +457,9 @@ int main(int argc, char** argv) {
     const std::optional<bench::texts> t = read_texts(o->data);
     if (!t) {
         return 2;
+    }
+    if (!o->wire.empty()) {
+        return wire(*o, *t);
     }
     const std::vector<bench::key_set> keys = dictionaries(*t, o->smoke);
     return o->smoke ? smoke(*o, *t, keys) : measure(*o, *t, keys);

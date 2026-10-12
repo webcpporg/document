@@ -147,7 +147,7 @@ const count = (v, s) => {
     }
 }
 
-const statisticsOf = v => {
+export const statisticsOf = v => {
     const s = new Statistics()
     count(v, s)
     return s
@@ -226,6 +226,15 @@ const documents = (out, name, text, v) => {
         }
         return sum
     }, () => statisticsOf(roundTripped).json()))
+    let received
+    out.push(benchmark('send_receive', name, 'document', 1, k => {
+        let sum = 0
+        for (let i = 0; i < k; ++i) {
+            received = JSON.parse(JSON.stringify(v))
+            sum += typeof received === 'object' ? 1 : 0
+        }
+        return sum
+    }, () => statisticsOf(received).json()))
 }
 
 // simdjson's three key-path queries over twitter.json, parse excluded.
@@ -511,14 +520,18 @@ const benchmarks = texts => {
     return out
 }
 
-// Runs k passes of b, in parts of at most b.chunk passes, each prepared untimed; nanoseconds.
-const timed = (b, k, now) => {
+// Runs k passes of b, in parts of at most b.chunk passes, each prepared untimed; nanoseconds. A
+// benchmark whose run returns a promise, a Worker's, is awaited; a synchronous one is not, so that
+// its time has no await in it.
+const timed = async (b, k, now) => {
     let total = 0
     for (let done = 0; done < k;) {
         const part = Math.min(k - done, b.chunk)
         if (b.prepare) b.prepare(part)
         const start = now()
-        sink = (sink + b.run(part)) % 4294967296
+        const passes = b.run(part)
+        const checksum = passes instanceof Promise ? await passes : passes
+        sink = (sink + checksum) % 4294967296
         total += (now() - start) * 1e6
         done += part
     }
@@ -526,41 +539,111 @@ const timed = (b, k, now) => {
 }
 
 // Measures b as bench.hpp's measure does, with gc() before each sample.
-const measure = (b, method, now, gc) => {
+const measure = async (b, method, now, gc) => {
     gc()
-    if (b.prepare) b.prepare(1)
-    const start = now()
-    sink = (sink + b.run(1)) % 4294967296
-    const firstNs = (now() - start) * 1e6 / b.ops
-    const answer = b.answer()
+    const firstNs = (await timed(b, 1, now)) / b.ops
+    const answer = await b.answer()
     let k = 1
     // Ten times the passes while a sample is too short for the clock to read it well (Chrome's reads
     // 5 us, and may read 0), then as bench.hpp's measure.
-    for (let t = timed(b, k, now); t < method.minSampleNs; gc(), t = timed(b, k, now)) {
+    for (let t = await timed(b, k, now); t < method.minSampleNs; gc(), t = await timed(b, k, now)) {
         k = t < method.minSampleNs / 100 ? k * 10
             : Math.max(k * 2, Math.floor(method.minSampleNs * 1.2 / Math.max(t, 1) * k))
     }
     gc()
-    timed(b, k, now)
+    await timed(b, k, now)
     const samples = []
     for (let i = 0; i < method.samples; ++i) {
         gc()
-        samples.push(timed(b, k, now) / k / b.ops)
+        samples.push((await timed(b, k, now)) / k / b.ops)
     }
     samples.sort((x, y) => x - y)
     const median = (samples[(method.samples - 1) >> 1] + samples[method.samples >> 1]) / 2
     return {first_ns: firstNs, median_ns: median, batch: k, samples: method.samples, answer}
 }
 
+// A request to a Worker, which fails when the Worker reports an error: the reply's error, if any.
+const call = async (ask, message, transfer = []) => {
+    const reply = await ask(message, transfer)
+    if (reply.error) throw new Error(reply.error)
+    return reply
+}
+
+// The Worker benchmarks: a document passed to a Worker, either as the JavaScript object (which
+// postMessage clones) or as its image (a transferred ArrayBuffer, which the Worker's own module opens
+// in place). Each pass waits for the Worker's reply, so its time is the whole send: the clone or the
+// copy, the transfer, and the receive. Each row answers with the Statistics the Worker holds after
+// its last pass, which the run checks against the other implementations' answers. spawn() makes a
+// Worker (worker.mjs) that asks answers one request at a time; factory and files are bench-module.js
+// and the data, which the sending side's module reads.
+export const workerBenchmarks = async (texts, {spawn, factory, files, moduleUrl}) => {
+    const objects = {
+        canada: JSON.parse(texts.canada),
+        citm: JSON.parse(texts.citm),
+        twitter: JSON.parse(texts.twitter),
+    }
+    const sender = await factory({noInitialRun: true, print: () => {}, printErr: () => {}})
+    sender.FS.mkdir('/data')
+    for (const [name, bytes] of Object.entries(files)) sender.FS.writeFile(`/data/${name}`, bytes)
+    const worker = spawn()
+    await call(worker.ask, {op: 'init', moduleUrl})
+    // The document the sending module holds, and its image's size: sent when a row first needs it.
+    let sent = {file: -1, size: 0}
+    const send = file => {
+        if (sent.file === file) return
+        const size = sender._webcpp_bench_send(file)
+        if (size === 0) throw new Error(`the sending module cannot parse file ${file}`)
+        sent = {file, size}
+    }
+    const benchmarks = []
+    ;['canada', 'citm', 'twitter'].forEach((dataset, file) => {
+        const value = objects[dataset]
+        benchmarks.push({
+            ...benchmark('worker_clone', dataset, 'document', 1, async k => {
+                let sum = 0
+                for (let j = 0; j < k; ++j) {
+                    await call(worker.ask, {op: 'clone', value})
+                    sum += 1
+                }
+                return sum
+            }, async () => (await call(worker.ask, {op: 'answer', which: 'clone'})).answer),
+            impl: 'javascript',
+        })
+        benchmarks.push({
+            ...benchmark('worker_transfer', dataset, 'document', 1, async k => {
+                let sum = 0
+                for (let j = 0; j < k; ++j) {
+                    // The image is copied out of the module's memory into a buffer of its own, which
+                    // the transfer hands over; the Worker copies it into its memory and opens it.
+                    const at = sender._webcpp_bench_image()
+                    const copy = sender.HEAPU8.slice(at, at + sent.size)
+                    await call(worker.ask, {op: 'transfer', size: sent.size, bytes: copy.buffer}, [copy.buffer])
+                    sum += 1
+                }
+                return sum
+            }, async () => (await call(worker.ask, {op: 'answer', which: 'transfer'})).answer,
+            () => send(file)),
+            impl: 'document',
+        })
+    })
+    return {benchmarks, close: () => worker.close()}
+}
+
 // Measures every benchmark of JavaScript's objects, one JSON line each through print, after a line
-// of meta; gc is the engine's, which --expose-gc gives.
-export const runJavaScript = ({texts, gc, now, print, meta, quick = false}) => {
+// of meta; gc is the engine's, which --expose-gc gives. With workers (spawn, factory, files and
+// moduleUrl, as workerBenchmarks takes them), the Worker benchmarks follow.
+export const runJavaScript = async ({texts, gc, now, print, meta, quick = false, workers = null}) => {
     if (typeof gc !== 'function') throw new Error('gc() is missing: run with --expose-gc')
     const method = quick ? methods.quick : methods.full
     print(JSON.stringify({meta}))
-    for (const b of benchmarks(texts)) {
-        const m = measure(b, method, now, gc)
-        print(JSON.stringify({impl: 'javascript', op: b.op, dataset: b.dataset, unit: b.unit, ops: b.ops, ...m}))
+    const pool = workers ? await workerBenchmarks(texts, workers) : {benchmarks: [], close: () => {}}
+    try {
+        for (const b of [...benchmarks(texts), ...pool.benchmarks]) {
+            const m = await measure(b, method, now, gc)
+            print(JSON.stringify({impl: b.impl ?? 'javascript', op: b.op, dataset: b.dataset, unit: b.unit, ops: b.ops, ...m}))
+        }
+    } finally {
+        pool.close()
     }
     print(JSON.stringify({checksum: sink}))
 }

@@ -243,6 +243,26 @@ inline benchmark deep_copy(const std::string& name, const json::value& v) {
     };
 }
 
+/** `send_receive`: a value serialized to text, which the receiver parses. */
+inline benchmark send_receive(const std::string& name, const json::value& v) {
+    const auto last = std::make_shared<json::value>();
+    return {
+        .op = "send_receive",
+        .dataset = name,
+        .unit = "document",
+        .run =
+            [&v, last](std::size_t k) {
+                std::uint64_t sum = 0;
+                for (std::size_t i = 0; i < k; ++i) {
+                    *last = parsed(json::serialize(v));
+                    sum += last->is_object() ? last->get_object().size() : 0;
+                }
+                return sum;
+            },
+        .answer = [last] { return statistics_of(*last); },
+    };
+}
+
 /** simdjson's find_tweet: the text of the status of a given id. */
 inline benchmark find_tweet(const std::shared_ptr<state>& st) {
     const auto last = std::make_shared<std::string_view>();
@@ -792,6 +812,7 @@ inline std::vector<benchmark> benchmarks(const texts& t, std::span<const key_set
         out.push_back(stringify(name, *values.at(i), true));
         out.push_back(traverse(name, *values.at(i)));
         out.push_back(deep_copy(name, *values.at(i)));
+        out.push_back(send_receive(name, *values.at(i)));
     }
     out.push_back(find_tweet(st));
     out.push_back(top_tweet(st));

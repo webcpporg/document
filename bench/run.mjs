@@ -14,7 +14,7 @@
 //
 // | where   | what                                                                   |
 // | native  | bench-native --impl boost.json, document, document.js_traits           |
-// | Node    | node.mjs wasm --impl (the same three); node.mjs js                     |
+// | Node    | node.mjs wasm --impl (the same three); node.mjs js, with its Workers   |
 // | Chrome  | bench.html, through Playwright's headless Chromium: the same four       |
 //
 // Node and Chrome run with --expose-gc. Chrome loads the page from a server of this process on
@@ -100,7 +100,7 @@ const types = {'.html': 'text/html', '.mjs': 'text/javascript', '.js': 'text/jav
 // Serves the page, its modules, the Emscripten module and the data, cross-origin isolated.
 const serve = () => new Promise(listening => {
     const roots = [['/build/', dirname(resolve(module))], ['/data/', resolve(data)], ['/', here]]
-    const pageFiles = new Set(['/bench.html', '/page.mjs', '/bench.mjs'])
+    const pageFiles = new Set(['/bench.html', '/page.mjs', '/bench.mjs', '/worker.mjs'])
     const server = createServer((request, response) => {
         const path = decodeURIComponent(new URL(request.url, 'http://localhost').pathname)
         const [prefix, root] = roots.find(([p]) => path.startsWith(p))
@@ -218,7 +218,10 @@ const check = results => {
             }
         }
     }
-    const keysOf = (impl, where) => new Set(results.filter(r => r.impl === impl && r.where === where).map(key))
+    // The Worker rows exist only in Node and Chrome: they are compared between those two places alone.
+    const isWorker = r => r.op.startsWith('worker_')
+    const keysOf = (impl, where) => new Set(results.filter(r => r.impl === impl && r.where === where && !isWorker(r)).map(key))
+    const workerKeysOf = (impl, where) => new Set(results.filter(r => r.impl === impl && r.where === where && isWorker(r)).map(key))
     const same = (a, b) => a.size === b.size && [...a].every(k => b.has(k))
     for (const impl of implementations) {
         for (const where of ['node', 'chrome']) {
@@ -226,6 +229,9 @@ const check = results => {
         }
     }
     if (!same(keysOf('javascript', 'node'), keysOf('javascript', 'chrome'))) faults.push('javascript measured other rows in Node and Chrome')
+    for (const impl of ['javascript', 'document']) {
+        if (!same(workerKeysOf(impl, 'node'), workerKeysOf(impl, 'chrome'))) faults.push(`${impl} measured other Worker rows in Node and Chrome`)
+    }
     if (!same(keysOf('boost.json', 'native'), keysOf('document', 'native'))) faults.push('boost.json and document measured other rows')
     const js = keysOf('javascript', 'node')
     for (const k of keysOf('document', 'native')) if (!js.has(k)) faults.push(`javascript has no ${k}`)
@@ -280,6 +286,11 @@ const dictionaryRows = (ops, synthetic = true) => ['s10.k15', 's10.k50', 's1000.
     .filter(d => synthetic || d === 'citm.events')
     .flatMap(d => ops.map(op => ({op, dataset: d})))
 const sections = [
+    // Binary transmission comes first: the case the image is built for, where no suite gives a form.
+    {id: 'send-receive', title: 'Send and receive a document', sources: 'none of the surveyed suites: binary transmission, which document is built for',
+        per: 'per document', rows: [...documentRows('send_receive'), ...documentRows('send_receive_sealed')]},
+    {id: 'worker', title: 'Pass a document to a Worker', sources: 'none of the surveyed suites: the Worker of a web application',
+        per: 'per document, each pass answered by the Worker', rows: [...documentRows('worker_clone'), ...documentRows('worker_transfer')]},
     {id: 'parse', title: '1. Parse', sources: 'nativejson-benchmark, Boost.JSON bench, serde json-benchmark, nlohmann, JetStream 2.1',
         per: 'per document', rows: documentRows('parse', true)},
     {id: 'stringify', title: '2. Stringify, compact', sources: 'nativejson-benchmark, Boost.JSON bench, nlohmann, simdjson, JetStream 2.1',
@@ -326,6 +337,10 @@ const rowLabel = (row, sizes, ops) => {
     switch (row.op) {
         case 'deep_copy': return `${label}, \`structuredClone\` in JavaScript`
         case 'deep_copy_json': return `${label}, \`JSON.parse(JSON.stringify(v))\``
+        case 'send_receive': return `${label}, sent and received`
+        case 'send_receive_sealed': return `${label}, sent sealed and received`
+        case 'worker_clone': return `${label}, posted to a Worker`
+        case 'worker_transfer': return `${label}, image transferred to a Worker`
         case 'lookup_hit': return `${label}, hit`
         case 'lookup_miss': return `${label}, miss`
         case 'delete': return `${label}, ${thousands(ops)} deletions`
@@ -434,7 +449,7 @@ if (places.includes('node')) {
     }
     say('node javascript')
     runs.push(collect('node', await runProcess(process.execPath,
-        ['--expose-gc', join(here, 'node.mjs'), 'js', '--data', data, ...quickWords], 'node')))
+        ['--expose-gc', join(here, 'node.mjs'), 'js', '--module', module, '--data', data, ...quickWords], 'node')))
 }
 if (places.includes('chrome')) {
     say('chrome')

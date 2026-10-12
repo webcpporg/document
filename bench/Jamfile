@@ -49,10 +49,11 @@ exe bench-module : bench.cpp
   : <toolset>emscripten:<linkflags>-O3
     <toolset>emscripten:<linkflags>-sMODULARIZE=1
     <toolset>emscripten:<linkflags>-sEXPORT_ES6=1
-    <toolset>emscripten:<linkflags>-sENVIRONMENT=node,web
+    <toolset>emscripten:<linkflags>-sENVIRONMENT=node,web,worker
     <toolset>emscripten:<linkflags>-sINVOKE_RUN=0
     <toolset>emscripten:<linkflags>-sFORCE_FILESYSTEM=1
-    <toolset>emscripten:<linkflags>-sEXPORTED_RUNTIME_METHODS=FS,callMain
+    # HEAPU8 and UTF8ToString are the Worker benchmarks' (bench.mjs): the image's bytes and the statistics' text.
+    <toolset>emscripten:<linkflags>-sEXPORTED_RUNTIME_METHODS=FS,callMain,HEAPU8,UTF8ToString
   ;
 explicit bench-native bench-module ;
 

@@ -25,6 +25,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -57,8 +58,8 @@ constexpr std::string_view unit() noexcept {
 }
 
 /** The length of a string, in the code units of the traits' encoding. */
-template <class Traits>
-std::uint64_t string_length(const const_value<Traits>& v) {
+template <class Traits, class Storage>
+std::uint64_t string_length(const wd::basic_const_value<Traits, Storage>& v) {
     if constexpr (utf16<Traits>) {
         return v.template value_or<std::u16string_view>({}).size();
     } else {
@@ -69,8 +70,8 @@ std::uint64_t string_length(const const_value<Traits>& v) {
 // NOLINTBEGIN(misc-no-recursion): a value is counted by counting its children, as nativejson's
 // GenStat does.
 /** Adds what `v` holds to `s`, as nativejson-benchmark's GenStat counts it. */
-template <class Traits>
-void count(const const_value<Traits>& v, statistics& s) {
+template <class Traits, class Storage>
+void count(const wd::basic_const_value<Traits, Storage>& v, statistics& s) {
     switch (v.kind()) {
         case wd::kind::undefined:
         case wd::kind::date:
@@ -83,7 +84,7 @@ void count(const const_value<Traits>& v, statistics& s) {
             s.length += string_length(v);
             break;
         case wd::kind::array:
-            for (const const_value<Traits> e : v) {
+            for (const wd::basic_const_value<Traits, Storage> e : v) {
                 count(e, s);
             }
             ++s.arrays;
@@ -103,9 +104,9 @@ void count(const const_value<Traits>& v, statistics& s) {
 
 // NOLINTEND(misc-no-recursion)
 
-/** The Statistics of a document, as an answer; an error for no document. */
-template <class Traits>
-json::value statistics_of(const std::optional<document<Traits>>& d) {
+/** The Statistics of a document, owned or opened in a buffer, as an answer; an error for no document. */
+template <class Traits, class Storage>
+json::value statistics_of(const std::optional<wd::basic_document<Traits, Storage>>& d) {
     if (!d) {
         return "no document";
     }
@@ -273,6 +274,102 @@ benchmark deep_copy(const std::string& name, const document<Traits>& d) {
                 return sum;
             },
         .answer = [last] { return statistics_of(*last); },
+    };
+}
+
+/** Frees a buffer that an image was copied into, 16-aligned as an image must be. */
+struct aligned_delete {
+    void operator()(std::byte* p) const noexcept {
+        ::operator delete(p, std::align_val_t{16});
+    }
+};
+
+/** The buffer of a received image. */
+using image_buffer = std::unique_ptr<std::byte[], aligned_delete>;
+
+/** A buffer of `size` bytes, 16-aligned. */
+inline image_buffer allocate_image(std::size_t size) {
+    return image_buffer(static_cast<std::byte*>(::operator new(size, std::align_val_t{16})));
+}
+
+/** An image received: the buffer it was copied into, and the document opened in that buffer. */
+template <class Traits>
+struct received {
+    image_buffer buffer;
+    std::optional<wd::basic_document<Traits, wd::external>> document;
+};
+
+/**
+ Receives an image: copies it into a buffer of its own, and opens it there in place, checking its
+ seal as `check` says; the document is nothing when the image is refused.
+*/
+template <class Traits>
+received<Traits> receive(std::span<const std::byte> image, wd::verify check) {
+    received<Traits> r{allocate_image(image.size()), std::nullopt};
+    std::copy(image.begin(), image.end(), r.buffer.get());
+    auto opened = wd::open<Traits>(std::span<std::byte>(r.buffer.get(), image.size()), check);
+    if (opened.has_value()) {
+        r.document = std::move(opened).unsafe_value();
+    }
+    return r;
+}
+
+/** A copy of `d`, sealed, which the receiver checks against its seal; nothing when it cannot be made. */
+template <class Traits>
+std::shared_ptr<document<Traits>> sealed_copy(const document<Traits>& d) {
+    auto copy = d.clone();
+    if (!copy.has_value()) {
+        return nullptr;
+    }
+    auto sealed = std::make_shared<document<Traits>>(std::move(copy).unsafe_value());
+    if (!sealed->seal().has_value()) {
+        return nullptr;
+    }
+    return sealed;
+}
+
+/** `send_receive`: the image copied into the receiver's buffer, and opened there in place. */
+template <class Traits>
+benchmark send_receive(const std::string& name, const document<Traits>& d) {
+    const auto last = std::make_shared<received<Traits>>();
+    return {
+        .op = "send_receive",
+        .dataset = name,
+        .unit = "document",
+        .run =
+            [&d, last](std::size_t k) {
+                std::uint64_t sum = 0;
+                for (std::size_t i = 0; i < k; ++i) {
+                    last->document.reset();
+                    *last = receive<Traits>(d.image(), wd::verify::seal);
+                    sum += last->document ? last->document->root().size() : 0;
+                }
+                return sum;
+            },
+        .answer = [last] { return statistics_of(last->document); },
+    };
+}
+
+/** `send_receive_sealed`: a sealed image copied into the receiver's buffer, and opened there, its seal checked. */
+template <class Traits>
+benchmark send_receive_sealed(const std::string& name,
+                              const std::shared_ptr<document<Traits>>& sealed) {
+    const auto last = std::make_shared<received<Traits>>();
+    return {
+        .op = "send_receive_sealed",
+        .dataset = name,
+        .unit = "document",
+        .run =
+            [sealed, last](std::size_t k) {
+                std::uint64_t sum = 0;
+                for (std::size_t i = 0; i < k; ++i) {
+                    last->document.reset();
+                    *last = receive<Traits>(sealed->image(), wd::verify::seal);
+                    sum += last->document ? last->document->root().size() : 0;
+                }
+                return sum;
+            },
+        .answer = [last] { return statistics_of(last->document); },
     };
 }
 
@@ -925,6 +1022,10 @@ void add_documents(std::vector<benchmark>& out, const texts& t, const state<Trai
             out.push_back(stringify<Traits>(name, d, true));
             out.push_back(traverse<Traits>(name, d));
             out.push_back(deep_copy<Traits>(name, d));
+            out.push_back(send_receive<Traits>(name, d));
+            if (std::shared_ptr<document<Traits>> sealed = sealed_copy<Traits>(d)) {
+                out.push_back(send_receive_sealed<Traits>(name, sealed));
+            }
         }
     }
 }

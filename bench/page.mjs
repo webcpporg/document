@@ -11,6 +11,22 @@
 
 import {dataFiles, runJavaScript, runWasm} from './bench.mjs'
 
+// A Worker of the page's, which the benchmarks ask one request at a time: the reply is the Worker's
+// next message, or its error (worker.mjs).
+const spawnWorker = () => {
+    const worker = new Worker('/worker.mjs', {type: 'module'})
+    return {
+        ask: (message, transfer = []) => new Promise((resolve, reject) => {
+            worker.onmessage = event => resolve(event.data)
+            worker.onerror = event => reject(new Error(event.message))
+            worker.postMessage(message, transfer)
+        }),
+        close: () => {
+            worker.terminate()
+        },
+    }
+}
+
 // Resolves to every line the implementation printed: `js`, JavaScript's objects, or `wasm`,
 // bench.cpp compiled by Emscripten, its implementation `impl`.
 window.runBench = async ({what, impl, quick}) => {
@@ -28,13 +44,16 @@ window.runBench = async ({what, impl, quick}) => {
     if (what === 'js') {
         const decoder = new TextDecoder()
         const [canada, citm, twitter] = bytes.map(b => decoder.decode(b))
-        runJavaScript({
+        const factory = (await import('/build/bench-module.js')).default
+        const files = Object.fromEntries(dataFiles.map((name, i) => [name, bytes[i]]))
+        await runJavaScript({
             texts: {canada, citm, twitter},
             gc: globalThis.gc,
             now: () => performance.now(),
             print,
             meta: {engine: 'chrome', userAgent: navigator.userAgent, crossOriginIsolated},
             quick,
+            workers: {spawn: spawnWorker, factory, files, moduleUrl: '/build/bench-module.js'},
         })
     } else {
         const factory = (await import('/build/bench-module.js')).default
