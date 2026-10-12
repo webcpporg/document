@@ -22,12 +22,15 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 
 namespace webcpp::document {
 
 /** The size of the pieces `stringify_to` hands its sink, unless told otherwise. */
 inline constexpr std::uint64_t default_chunk = 4096;
 
+// A handle is taken by value, as every handle is passed.
+// NOLINTBEGIN(performance-unnecessary-value-param)
 /**
  `JSON.stringify(v, null, indent)`: writes a value as JSON text.
 
@@ -43,7 +46,19 @@ inline constexpr std::uint64_t default_chunk = 4096;
  no text. The standard library's `std::bad_alloc` is its only failure.
 */
 template <class Traits, class Storage>
-std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent = 0);
+std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent = 0) {
+    std::string text;
+    const detail::tree<Traits>* t = detail::access::tree_of(v);
+    if (t == nullptr) {
+        return text;
+    }
+    detail::string_output out(text);
+    // A string output fails only by throwing std::bad_alloc: its result is always a success.
+    (void)detail::write_json(*t, detail::access::node_of(v), indent, out);
+    return text;
+}
+
+// NOLINTEND(performance-unnecessary-value-param)
 
 /**
  `JSON.stringify(doc, null, indent)`: writes a document's value as JSON text.
@@ -55,8 +70,12 @@ std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent
  @return The text, as @ref stringify of its root writes it.
 */
 template <class Traits, class Storage>
-std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t indent = 0);
+std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t indent = 0) {
+    return webcpp::document::stringify(d.root(), indent);
+}
 
+// A handle is taken by value, as every handle is passed.
+// NOLINTBEGIN(performance-unnecessary-value-param)
 /**
  Writes a value as @ref stringify does, in pieces of at most `chunk` bytes, to a sink.
 
@@ -73,7 +92,22 @@ std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t in
 template <class Traits, class Storage, class Sink>
     requires detail::sink<std::remove_reference_t<Sink>>
 result<void> stringify_to(basic_const_value<Traits, Storage> v, Sink&& sink,
-                          std::uint32_t indent = 0, std::uint64_t chunk = default_chunk);
+                          std::uint32_t indent = 0, std::uint64_t chunk = default_chunk) {
+    const detail::tree<Traits>* t = detail::access::tree_of(v);
+    if (t == nullptr) {
+        return {};
+    }
+    // The sink is called through a reference: it is used in place, never forwarded or copied.
+    detail::chunked_output<std::remove_reference_t<Sink>> out(sink, chunk);
+    if (const result<void> written =
+            detail::write_json(*t, detail::access::node_of(v), indent, out);
+        !written) {
+        return written;
+    }
+    return out.flush();
+}
+
+// NOLINTEND(performance-unnecessary-value-param)
 
 /**
  Writes a document's value as @ref stringify does, in pieces of at most `chunk` bytes, to a sink.
@@ -90,7 +124,21 @@ result<void> stringify_to(basic_const_value<Traits, Storage> v, Sink&& sink,
 template <class Traits, class Storage, class Sink>
     requires detail::sink<std::remove_reference_t<Sink>>
 result<void> stringify_to(const basic_document<Traits, Storage>& d, Sink&& sink,
-                          std::uint32_t indent = 0, std::uint64_t chunk = default_chunk);
+                          std::uint32_t indent = 0, std::uint64_t chunk = default_chunk) {
+    return webcpp::document::stringify_to(d.root(), std::forward<Sink>(sink), indent, chunk);
+}
+
+// The members, declared with the handles and the document, which are complete here.
+
+template <class Traits, class Storage>
+std::string basic_const_value<Traits, Storage>::stringify(std::uint32_t indent) const {
+    return webcpp::document::stringify(*this, indent);
+}
+
+template <class Traits, class Storage>
+std::string basic_document<Traits, Storage>::stringify(std::uint32_t indent) const {
+    return webcpp::document::stringify(*this, indent);
+}
 
 }  // namespace webcpp::document
 

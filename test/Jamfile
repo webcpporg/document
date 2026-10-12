@@ -50,6 +50,10 @@ webcpp.run value : value_test.cpp ;
 webcpp.run order : order_test.cpp ;
 # Images: moved, formatted, opened, refused, the same for the same operations.
 webcpp.run image : image_test.cpp ;
+# stringify and stringify_to, as JSON.stringify writes. A document nested 100,000
+# levels deep outgrows Emscripten's initial 16 MB, so its memory may grow there.
+webcpp.run stringify : stringify_test.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 # JavaScript's array methods.
 webcpp.run array : array_test.cpp ;
 # The sugar that throws, and its refusal in a build without exceptions.

@@ -23,4 +23,5 @@ of every version are on webcpp's index page.
 * Added handles that read and write a document as JavaScript does.
 * Added JavaScript-style sugar that throws, compiled only with exceptions.
 * Added JavaScript's array methods, splice included, with its index rules.
+* Added stringify and stringify_to, writing JSON.stringify's exact bytes.
 // end::unreleased[]
