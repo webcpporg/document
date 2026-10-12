@@ -158,8 +158,10 @@ void empty_containers() {
         BOOST_TEST_EQ(wd::stringify(document_of(wd::array()), indent), "[]");
         BOOST_TEST_EQ(wd::stringify(document_of(wd::object()), indent), "{}");
     }
-    BOOST_TEST_EQ(wd::stringify(document_of(wd::array{wd::array()}), 2), "[\n  []\n]");
-    BOOST_TEST_EQ(wd::stringify(document_of(wd::array{wd::array()})), "[[]]");
+    // The inner array is a literal: a lone element of the array's own type is read as a copy
+    // where the compiler applies CWG 1467 to every class (MSVC, Clang before 20).
+    BOOST_TEST_EQ(wd::stringify(document_of(wd::array{wd::literal(wd::array())}), 2), "[\n  []\n]");
+    BOOST_TEST_EQ(wd::stringify(document_of(wd::array{wd::literal(wd::array())})), "[[]]");
     BOOST_TEST_EQ(wd::stringify(document_of(wd::object{{"a", wd::object()}})), R"({"a":{}})");
 }
 
@@ -171,8 +173,8 @@ void nesting() {
                   "{\n    \"a\": {\n        \"b\": [\n            1,\n            [\n"
                   "                2,\n                {}\n            ]\n        ]\n    }\n}");
     // Keys in JavaScript's order: indices first, ascending, then the others as inserted.
-    const wd::document keys = document_of(
-        wd::object{{"1", 1}, {"0", 0}, {"a", wd::array{wd::array()}}, {"b", wd::object()}});
+    const wd::document keys = document_of(wd::object{
+        {"1", 1}, {"0", 0}, {"a", wd::array{wd::literal(wd::array())}}, {"b", wd::object()}});
     BOOST_TEST_EQ(wd::stringify(keys, 3),
                   "{\n   \"0\": 0,\n   \"1\": 1,\n   \"a\": [\n      []\n   ],\n   \"b\": {}\n}");
 }
@@ -192,10 +194,13 @@ void escapes() {
     BOOST_TEST_EQ(wd::stringify(document_of(std::string_view(controls))), expected);
     BOOST_TEST_EQ(wd::stringify(document_of<js_document>(std::string_view(controls))), expected);
     // A key is quoted as a string is.
+    // A raw string that holds a quote and a backslash stays out of the macros' arguments: MSVC 14.3
+    // splits them without reading it as one, and its escapes then stand outside any literal.
+    constexpr std::string_view keyed_text = R"({"a\"\n\u0001":1})";
     const wd::document keyed = document_of(wd::object{{"a\"\n\x01", 1}});
-    BOOST_TEST_EQ(wd::stringify(keyed), R"({"a\"\n\u0001":1})");
+    BOOST_TEST_EQ(wd::stringify(keyed), keyed_text);
     BOOST_TEST_EQ(wd::stringify(document_of<js_document>(wd::object{{"a\"\n\x01", 1}})),
-                  R"({"a\"\n\u0001":1})");
+                  keyed_text);
     BOOST_TEST_EQ(wd::stringify(document_of("")), R"("")");
     // A long string, past any buffer the writer keeps.
     const std::string long_text(10000, 'z');
@@ -290,10 +295,11 @@ void a_lone_surrogate_under_js_traits() {
     const auto written = [](const std::u16string& text) {
         return wd::stringify(document_of<js_document>(std::u16string_view(text)));
     };
-    BOOST_TEST_EQ(written(units({0xD800})), R"("\ud800")");
-    BOOST_TEST_EQ(written(units({0xDC00})), R"("\udc00")");
-    BOOST_TEST_EQ(written(units({0xDC00, 0xD800})), R"("\udc00\ud800")");
-    BOOST_TEST_EQ(written(units({u'a', 0xDBFF, u'b'})), R"("a\udbffb")");
+    // Plain literals: MSVC 14.3 does not read a raw string in these macros' arguments as one.
+    BOOST_TEST_EQ(written(units({0xD800})), "\"\\ud800\"");
+    BOOST_TEST_EQ(written(units({0xDC00})), "\"\\udc00\"");
+    BOOST_TEST_EQ(written(units({0xDC00, 0xD800})), "\"\\udc00\\ud800\"");
+    BOOST_TEST_EQ(written(units({u'a', 0xDBFF, u'b'})), "\"a\\udbffb\"");
     BOOST_TEST_EQ(written(units({0xD83D, 0xDE00})), "\"\xf0\x9f\x98\x80\"");
     BOOST_TEST_EQ(written(units({0xD83D, 0xDE00, 0xD83D})), "\"\xf0\x9f\x98\x80\\ud83d\"");
     BOOST_TEST_EQ(written(units({0x7F, 0xE9, 0x20AC, 0xFFFF})),

@@ -123,7 +123,7 @@ void raise_throws_the_type_of_its_code() {
         } catch (const wd::image_error& x) {
             return "image " + x.code().message();
         }
-        return "none";
+        // raise does not return: a statement here would be unreachable code, which MSVC refuses.
     };
     BOOST_TEST_EQ(thrown(wd::errc::syntax), "syntax 17 malformed JSON text");
     BOOST_TEST_EQ(thrown(wd::errc::type), "type a value of another kind");

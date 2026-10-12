@@ -350,6 +350,11 @@ private:
 /**
  An array, as JavaScript writes `[...]`: `wd::array{1, "x", nullptr}`.
 
+ An array whose one element is an array writes that element as a literal,
+ `wd::array{wd::literal(wd::array{1})}` for `[[1]]`: braces around one value of the class's own
+ type are a copy of that value where the compiler applies CWG 1467 to every class (MSVC, Clang
+ before 20), so `wd::array{wd::array{1}}` is `[1]` there and `[[1]]` elsewhere.
+
  @see "Handles", in the guide.
 */
 class array {  // NOLINT(misc-no-recursion)

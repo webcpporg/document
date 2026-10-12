@@ -251,7 +251,7 @@ void slice_copies() {
     BOOST_TEST_EQ(text(d), "[0,1,2,3,4]");
 
     // The copy is its own: changing it leaves the array as it was.
-    wd::document nested = document_of(wd::array{wd::array{1}});
+    wd::document nested = document_of(wd::array{wd::literal(wd::array{1})});
     auto copy = nested.root().slice();
     if (!BOOST_TEST(copy.has_value())) {
         return;
@@ -491,7 +491,9 @@ void push_keeps_handles_across_growth() {
     BOOST_TEST_EQ(name.get<std::string_view>().value(), "x");
     BOOST_TEST_EQ(list.at(-1).get<std::string>().value(), "item-19999" + std::string(24, 'x'));
     BOOST_TEST_EQ(list[0].get<std::string>().value(), "item-0" + std::string(24, 'x'));
-    BOOST_TEST_EQ(text(list.pop()), R"("item-19999)" + std::string(24, 'x') + "\"");
+    // Plain literals in the macros' arguments: MSVC 14.3 splits those arguments without reading a
+    // raw string as one, and an escape after it then stands outside any literal.
+    BOOST_TEST_EQ(text(list.pop()), "\"item-19999" + std::string(24, 'x') + "\"");
     const auto removed = list.splice(1, 100);
     if (BOOST_TEST(removed.has_value())) {
         BOOST_TEST_EQ(removed->root().size(), 100U);
@@ -500,7 +502,7 @@ void push_keeps_handles_across_growth() {
     }
     BOOST_TEST_EQ(list.size(), count - 101);
     BOOST_TEST(list.set_length(2).has_value());
-    BOOST_TEST_EQ(text(list), R"(["item-0)" + std::string(24, 'x') + R"(","item-101)" +
+    BOOST_TEST_EQ(text(list), "[\"item-0" + std::string(24, 'x') + "\",\"item-101" +
                                   std::string(24, 'x') + "\"]");
     BOOST_TEST(name.set("y").has_value());
     BOOST_TEST_EQ(text(d["name"]), R"("y")");

@@ -795,7 +795,7 @@ void literals() {
         f.put(wd::array{1, wd::array{}, wd::object{}, decimal128_t{15, -1}, "\xc3\xa9", u"ü",
                         wd::date_ms(std::chrono::milliseconds(5)), std::span<const std::byte>(foo),
                         wd::null, false, std::numeric_limits<std::uint64_t>::max(),
-                        wd::array{wd::array{wd::object{{"k", "v"}, {"k", "w"}}}}})
+                        wd::array{wd::literal(wd::array{wd::object{{"k", "v"}, {"k", "w"}}})}})
             .has_value());
     if constexpr (std::same_as<Traits, js>) {
         BOOST_TEST_EQ(dump(f),

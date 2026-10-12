@@ -294,8 +294,10 @@ struct converter {
      itself; a NaN or an infinity only when the codec stores them.
     */
     static result<void> hold_number(item_t& out, const number_type& v) noexcept {
-        if (!codec::stores_non_finite && !codec::finite(v)) {
-            return errc::range;
+        if constexpr (!codec::stores_non_finite) {
+            if (!codec::finite(v)) {
+                return errc::range;
+            }
         }
         if (const std::optional<std::int64_t> integer = codec::integral(v)) {
             hold_integer(out, *integer);

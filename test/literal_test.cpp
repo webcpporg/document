@@ -320,9 +320,11 @@ void empty_containers() {
 void nesting() {
     BOOST_TEST_EQ(describe(wd::array{1, wd::array{6}, wd::object{{"a", wd::array{}}}}),
                   "[i:1,[i:6],{a:[]}]");
-    // An array of one empty array is `[[]]`, never a copy of the inner array.
-    BOOST_TEST_EQ(describe(wd::array{wd::array{}}), "[[]]");
-    BOOST_TEST_EQ(describe(wd::array{wd::array{wd::array{}}}), "[[[]]]");
+    // An array whose one element is an array names that element a literal: `wd::array{wd::array{}}`
+    // is a copy of the inner array where the compiler applies CWG 1467 to every class (MSVC, Clang
+    // before 20), and `[[]]` where it applies it to aggregates only, as CWG 2137 says.
+    BOOST_TEST_EQ(describe(wd::array{wd::literal(wd::array{})}), "[[]]");
+    BOOST_TEST_EQ(describe(wd::array{wd::literal(wd::array{wd::literal(wd::array{})})}), "[[[]]]");
     BOOST_TEST_EQ(describe(wd::object{{"o", wd::object()}}), "{o:{}}");
     // Five levels: an object in an array in an array in an object in an object.
     const wd::array tags{"a", wd::array{true, nullptr, wd::object{{"k", 2.0}}}};

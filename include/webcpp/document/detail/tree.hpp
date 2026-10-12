@@ -32,7 +32,6 @@
 #include <webcpp/document/traits.hpp>
 
 #include <boost/assert.hpp>
-#include <boost/multi_index/composite_key.hpp>
 #include <boost/multi_index/member.hpp>
 #include <boost/multi_index/ordered_index.hpp>
 #include <boost/multi_index/tag.hpp>
@@ -169,15 +168,17 @@ struct by_order {};
 struct by_key {};
 
 /**
- The key extractor of the index @ref by_key, which gives a node's key bytes as a `std::string_view`.
-*/
-template <class Traits>
-struct key_bytes {
-    /** What it extracts. */
-    using result_type = std::string_view;
+ `F`, an empty function object, with a byte of value, zero, for the container to keep in the image.
 
-    /** The key's bytes of `n`. */
-    std::string_view operator()(const node<Traits>& n) const noexcept { return n.key.chars(); }
+ Tip: an empty class's byte holds no value, and MSVC copies a temporary's without writing it first:
+ each index keeps its key extractor and its comparator in the image, so an empty one put the
+ stack's garbage there, at a place of its own on each run. `F` stays an empty base, so the size is
+ the same.
+*/
+template <class F>
+struct with_zero_byte : F {
+    /** Zero. */
+    std::uint8_t zero = 0;
 };
 
 /**
@@ -237,30 +238,87 @@ struct key_less {
 };
 
 /**
+ Orders tuples by their first fields, as many as both have, each by `Less`: a lookup by a tuple of
+ a key's first fields finds the range of keys that begin with them, as a composite key does.
+*/
+template <class... Less>
+struct prefix_less {
+    /** Whether `a` comes before `b`. */
+    template <class... A, class... B>
+    bool operator()(const std::tuple<A...>& a, const std::tuple<B...>& b) const noexcept {
+        return before<0>(a, b);
+    }
+
+    /** Zero: see @ref with_zero_byte. */
+    std::uint8_t zero = 0;
+
+private:
+    template <std::size_t I, class TA, class TB>
+    static bool before(const TA& a, const TB& b) noexcept {
+        if constexpr (I == std::min(std::tuple_size_v<TA>, std::tuple_size_v<TB>)) {
+            return false;
+        } else {
+            const std::tuple_element_t<I, std::tuple<Less...>> less{};
+            if (less(std::get<I>(a), std::get<I>(b))) {
+                return true;
+            }
+            if (less(std::get<I>(b), std::get<I>(a))) {
+                return false;
+            }
+            return before<I + 1>(a, b);
+        }
+    }
+};
+
+/** The key of the index @ref by_order: parent, group and ordinal. */
+template <class Traits>
+struct order_key {
+    /** What it extracts. */
+    using result_type = std::tuple<std::uint64_t, std::uint8_t, std::uint64_t>;
+
+    /** The key of `n`. */
+    result_type operator()(const node<Traits>& n) const noexcept {
+        return {n.parent, n.group, n.ordinal};
+    }
+
+    /** Zero: see @ref with_zero_byte. */
+    std::uint8_t zero = 0;
+};
+
+/** The key of the index @ref by_key: parent, and the key's bytes as a `std::string_view`. */
+template <class Traits>
+struct member_key {
+    /** What it extracts. */
+    using result_type = std::tuple<std::uint64_t, std::string_view>;
+
+    /** The key of `n`. */
+    result_type operator()(const node<Traits>& n) const noexcept {
+        return {n.parent, n.key.chars()};
+    }
+
+    /** Zero: see @ref with_zero_byte. */
+    std::uint8_t zero = 0;
+};
+
+/**
  The container of a tree's nodes: three ordered indices, never hashed, since keys come from
  untrusted text.
+
+ Tip: no key extractor and no comparator of an index is empty, nor holds an empty one: see
+ @ref with_zero_byte.
 */
 template <class Traits>
 using container = boost::multi_index_container<
     node<Traits>,
     boost::multi_index::indexed_by<
-        boost::multi_index::ordered_unique<
-            boost::multi_index::tag<by_id>,
-            boost::multi_index::member<node<Traits>, std::uint64_t, &node<Traits>::id>>,
-        boost::multi_index::ordered_unique<
-            boost::multi_index::tag<by_order>,
-            boost::multi_index::composite_key<
-                node<Traits>,
-                boost::multi_index::member<node<Traits>, std::uint64_t, &node<Traits>::parent>,
-                boost::multi_index::member<node<Traits>, std::uint8_t, &node<Traits>::group>,
-                boost::multi_index::member<node<Traits>, std::uint64_t, &node<Traits>::ordinal>>>,
-        boost::multi_index::ordered_non_unique<
-            boost::multi_index::tag<by_key>,
-            boost::multi_index::composite_key<
-                node<Traits>,
-                boost::multi_index::member<node<Traits>, std::uint64_t, &node<Traits>::parent>,
-                key_bytes<Traits>>,
-            boost::multi_index::composite_key_compare<std::less<std::uint64_t>, key_less<Traits>>>>,
+        boost::multi_index::ordered_unique<boost::multi_index::tag<by_id>,
+                                           with_zero_byte<boost::multi_index::member<
+                                               node<Traits>, std::uint64_t, &node<Traits>::id>>,
+                                           with_zero_byte<std::less<>>>,
+        boost::multi_index::ordered_unique<boost::multi_index::tag<by_order>, order_key<Traits>,
+                                           prefix_less<std::less<>, std::less<>, std::less<>>>,
+        boost::multi_index::ordered_non_unique<boost::multi_index::tag<by_key>, member_key<Traits>,
+                                               prefix_less<std::less<>, key_less<Traits>>>>,
     allocator<node<Traits>>>;
 
 /**
@@ -852,8 +910,8 @@ public:
      @ref errc::capacity when `to` is not of `bytes` bytes.
     */
     static result<tree> compact_to(region& to, const tree& from, std::uint64_t bytes) noexcept {
-        const nodes_type* source = from.nodes_of();
-        const node_type* root = source == nullptr ? nullptr : find_in(*source, root_id);
+        const nodes_type* from_nodes = from.nodes_of();
+        const node_type* root = from_nodes == nullptr ? nullptr : find_in(*from_nodes, root_id);
         if (root == nullptr) {
             return errc::type;
         }
@@ -1516,15 +1574,17 @@ private:
     result<void> read_copy(change& c, std::size_t slot, const tree* from, std::uint64_t id,
                            bool may_be_undefined) const {
         const nodes_type* source_nodes = from == nullptr ? nullptr : from->nodes_of();
-        const node_type* source = source_nodes == nullptr ? nullptr : find_in(*source_nodes, id);
-        if (source == nullptr || (source->kind == kind_t::undefined && !may_be_undefined)) {
+        const node_type* source_node =
+            source_nodes == nullptr ? nullptr : find_in(*source_nodes, id);
+        if (source_node == nullptr ||
+            (source_node->kind == kind_t::undefined && !may_be_undefined)) {
             return errc::type;
         }
         staged& n = c.nodes[slot];
-        n.kind = source->kind;
-        n.number = source->number;
-        n.scalar = source->scalar;
-        n.text = source->text.view();
+        n.kind = source_node->kind;
+        n.number = source_node->number;
+        n.scalar = source_node->scalar;
+        n.text = source_node->text.view();
         const std::uint64_t parent = n.id;
         // The children keep their places: the same traits order them the same way.
         const auto& order = source_nodes->template get<by_order>();
