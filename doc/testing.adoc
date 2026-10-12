@@ -1,0 +1,72 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-testing]
+== Testing
+
+document's tests are lightweight_test programs, one per subject, under `test/`, each declared in
+`test/Jamfile` with webcpp's `webcpp.run`:
+
+[cols="1,3",options="header"]
+|===
+| Test | What it checks
+
+| `errors`
+| The values of `errc` and `kind`, which are fixed, the category's name and messages, and the
+  conversion and the comparison with an `error_code`; built again with exceptions as
+  `errors_raise`, the exception each `errc` raises.
+|===
+
+Beside them, `test/Jamfile` compiles each public header alone, as the only include of its
+translation unit, so that a header that leans on an include it does not make fails, naming it.
+
+[#document-testing-exceptions]
+=== Without exceptions
+
+That document works without exceptions is checked by the lint, which compiles every public header,
+and every test, which instantiate its templates, with `exception-handling=off`.
+`<webcpp/document/config.hpp>`, which every public header of document includes first, defines
+`WEBCPP_DOCUMENT_NO_EXCEPTIONS` when webcpp has no exceptions (`WEBCPP_HAS_EXCEPTIONS` is not
+defined: the compiler has none, or the program defined `WEBCPP_NO_EXCEPTIONS`), and a program may
+define it for document alone, as Boost.Asio's `BOOST_ASIO_NO_EXCEPTIONS` does. The core never
+throws, so the macro removes only the sugar that throws and the exception types. The tests `config`,
+`config_developer_defined` and `config_all_off` check the three ways it is defined, and the lint
+refuses a `throw` in a public header: an exception goes through `boost::throw_exception`.
+
+[#document-testing-targets]
+=== Targets
+
+`test/Jamfile` declares the targets it is built for, `webcpp.targets native emscripten wasip2
+wasip3`, and b2 builds each program for those alone. From the root of a webcpp checkout, each of
+these builds and runs:
+
+`b2 libs/document/test`::
+The {n-tests-native} tests natively: the lightweight_test programs, and each of the {n-headers}
+public headers compiled alone.
+
+`b2 libs/document/test toolset=emscripten`::
+The same on emscripten: {n-tests-emscripten} tests, each run by node, b2's toolset itself.
+
+`b2 libs/document/test toolset=clang-wasip2 testing.launcher=wasmtime`::
+The same for wasm32-wasip2: {n-tests-wasip2} tests, each run by wasmtime. `toolset=clang-wasip3`
+does the same for wasm32-wasip3: {n-tests-wasip3} tests.
+
+b2 compares timestamps, so a result that counts is built from scratch, with `b2 -a`.
+`b2 libs/document/test//errors` builds and runs one test alone, while working on it.
+
+[#document-testing-report]
+=== The test matrix
+
+The continuous integration runs document's tests in lanes, one toolset each: the native compilers,
+emscripten, wasip2 and wasip3. Each lane builds from scratch and records what b2 built and ran:
+
+[source,bash]
+----
+b2 -a --dump-tests --out-xml=<lane>.xml toolset=<toolset> libs/document/test libs/document/example
+----
+
+webcpp's `tools/report/report.py` merges the files of every lane into a matrix, published with the
+documentation at https://webcpporg.github.io/report/.

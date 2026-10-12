@@ -1,0 +1,10 @@
+{
+    "key": "document",
+    "name": "document",
+    "authors": ["R"],
+    "description": "A JSON document for C++20 that behaves as JavaScript does, in one relocatable image.",
+    "category": ["Data structures", "Parsing"],
+    "maintainers": ["R <github.overboard312@passmail.net>"],
+    "cxxstd": "20",
+    "port-of": null
+}

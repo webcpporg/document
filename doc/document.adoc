@@ -1,0 +1,38 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+= document: a JSON document that behaves as JavaScript does, for {cpp}
+:toc: left
+:toclevels: 1
+:idprefix:
+:sectanchors:
+:example-caption!:
+:attribute-missing: warn
+
+document is a header-only JSON document for {cpp}20, one of the libraries of
+https://github.com/webcpporg/webcpp[webcpp], whose behaviour is JavaScript's: what `JSON.parse`,
+property access, assignment, `delete`, the array methods and `JSON.stringify` do in JavaScript,
+document does in {cpp}, with the same key order and the same text out, so that a JavaScript peer
+and a {cpp} program agree byte for byte.
+
+Its tree lives in one relocatable image, built through an allocator, so that a document can live in
+a memory segment, be made durable, and travel as binary. Its core never throws: every operation that
+can fail returns its error as a value. The <<reference,reference>> that closes this page lists every
+name the headers declare.
+
+include::testing.adoc[]
+
+[#reference]
+== Reference
+
+Every name document declares, in the namespace `webcpp::document`, from the Doc Comments of its
+headers: each class, function, type and enumerator with its declaration, what it does, what it asks
+of its caller and how it fails. The other sections teach the library; this one is where a name is
+looked up.
+
+include::{reference}[leveloffset=+1]
+
+include::changelog.adoc[]

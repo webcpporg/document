@@ -1,0 +1,15 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# document, a JSON document that behaves as JavaScript does, in one
+# relocatable image. A program uses it through /webcpp/document//document,
+# which adds its headers, Boost's, webcpp's configuration and Boost.JSON's
+# definitions, whose parser it uses.
+
+project /webcpp/document ;
+
+alias document : : : : <include>include <library>/boost//headers
+  <library>/webcpp/config//config <library>/webcpp//boost_json ;
