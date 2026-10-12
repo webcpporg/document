@@ -17,6 +17,9 @@
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/number.hpp>
 
+#include <boost/charconv/chars_format.hpp>
+#include <boost/charconv/from_chars.hpp>
+#include <boost/charconv/to_chars.hpp>
 #include <boost/decimal/decimal128_t.hpp>
 
 #include <algorithm>
@@ -506,10 +509,12 @@ struct number_codec<double> {
             return d;
         }
         // Without a precision, to_chars writes the shortest digits that read back, as
-        // `d.ddde+xx`: the value is 0.dddd times ten to the exponent plus one.
+        // `d.ddde+xx`: the value is 0.dddd times ten to the exponent plus one. It is Boost.Charconv's
+        // because some libc++ lacks the standard library's floating-point overloads.
         std::array<char, 32> buffer{};
-        const auto written = std::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
-                                           std::chars_format::scientific);
+        const auto written =
+            boost::charconv::to_chars(buffer.data(), buffer.data() + buffer.size(), v,
+                                      boost::charconv::chars_format::scientific);
         const std::string_view text(buffer.data(),
                                     static_cast<std::size_t>(written.ptr - buffer.data()));
         const std::size_t e = text.find('e');
@@ -656,12 +661,13 @@ private:
     }
 
     /**
-     Reads text that from_chars accepts whole, rounded to the nearest double as JavaScript rounds
-     it; `large` says which way a value out of range lies.
+     Reads text that Boost.Charconv's from_chars accepts whole, rounded to the nearest double as
+     JavaScript rounds it; `large` says which way a value out of range lies.
     */
     static result<double> read(std::string_view text, bool large) noexcept {
         double value = 0;
-        const auto [end, code] = std::from_chars(text.data(), text.data() + text.size(), value);
+        const auto [end, code] =
+            boost::charconv::from_chars(text.data(), text.data() + text.size(), value);
         if (end != text.data() + text.size()) {
             return make_error_code(errc::syntax);
         }

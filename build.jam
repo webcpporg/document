@@ -7,9 +7,11 @@
 # document, a JSON document that behaves as JavaScript does, in one
 # relocatable image. A program uses it through /webcpp/document//document,
 # which adds its headers, Boost's, webcpp's configuration and Boost.JSON's
-# definitions, whose parser it uses.
+# definitions, whose parser it uses, and Boost.Charconv's, which reads and
+# writes its floating-point numbers.
 
 project /webcpp/document ;
 
 alias document : : : : <include>include <library>/boost//headers
-  <library>/webcpp/config//config <library>/webcpp//boost_json ;
+  <library>/webcpp/config//config <library>/webcpp//boost_json
+  <library>/webcpp//boost_charconv ;
