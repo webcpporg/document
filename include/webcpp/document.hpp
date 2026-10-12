@@ -15,7 +15,16 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/document.hpp>
 #include <webcpp/document/errors.hpp>
+#include <webcpp/document/image.hpp>
 #include <webcpp/document/kind.hpp>
+#include <webcpp/document/literal.hpp>
+#include <webcpp/document/number.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/parser.hpp>
+#include <webcpp/document/stringify.hpp>
+#include <webcpp/document/traits.hpp>
+#include <webcpp/document/value.hpp>
 
 #endif  // WEBCPP_DOCUMENT_HPP

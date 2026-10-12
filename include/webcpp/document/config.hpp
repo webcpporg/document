@@ -39,6 +39,22 @@
 #define WEBCPP_DOCUMENT_NO_EXCEPTIONS
 #endif
 
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ >= 14
+/**
+ Marks a class that names a place in a document and owns what it needs to find it again, a
+ handle or a range of a container's children, so that GCC's `-Wdangling-reference` does not take
+ one made from a temporary handle, `for (auto key : doc["a"].keys())`, for a dangling reference.
+*/
+#define WEBCPP_DOCUMENT_NO_DANGLING [[gnu::no_dangling]]
+#else
+/**
+ Marks a class that names a place in a document and owns what it needs to find it again, a
+ handle or a range of a container's children; empty outside GCC 14 and later, whose
+ `-Wdangling-reference` it quiets.
+*/
+#define WEBCPP_DOCUMENT_NO_DANGLING
+#endif
+
 namespace webcpp::document::detail {
 
 #ifdef WEBCPP_DOCUMENT_NO_EXCEPTIONS
