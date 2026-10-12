@@ -1,0 +1,106 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-strings]
+== Strings, dates and bytes
+
+JSON has strings; JavaScript programs also send dates and bytes through it, as text. A document
+stores strings in the encoding its traits choose, and holds dates and bytes as values of their own,
+which it writes as `JSON.stringify` writes a `Date` and, by its traits, a `Uint8Array`.
+
+[#document-strings-encodings]
+=== Strings
+
+The traits' `string` is the stored encoding of strings and keys: `wd::utf8`, the default, or
+`wd::utf16`, the code units JavaScript holds, which `js_traits` choose. Either way, `length()`
+counts UTF-16 code units, as JavaScript does: UTF-8 is decoded to count them. Text is validated
+where it enters: the parser refuses invalid UTF-8, and `set` refuses text invalid in its encoding
+with `errc::type`.
+
+A view reads a string as it is stored, and cannot transcode: `get<std::string_view>()` reads
+UTF-8 strings only, and `get<std::u16string_view>()` UTF-16 ones; `get<std::string>()` and
+`get<std::u16string>()` transcode from either. Keys come out as the encoding's view. The sugar's
+`as_string()` reads UTF-8 strings only: under `js_traits`, a program uses `as<std::u16string_view>()`
+or `as<std::string>()` (<<document-exceptions>>).
+
+[source]
+----
+include::{examples}/document_traits.cpp[tag=strings,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_traits.expected[lines=5..14]
+----
+
+Both encodings write the same text, escaped as `JSON.stringify` escapes it: a quotation mark and a backslash
+with a backslash; `\b`, `\f`, `\n`, `\r` and `\t`; any other character below U+0020 as `\u` and four
+lowercase hexadecimal digits; nothing else, so `/`, text beyond ASCII and U+2028 and U+2029 are
+written as they are.
+
+A lone surrogate is a UTF-16 code unit of a pair whose other half is missing, which JavaScript's
+strings may hold. UTF-8 cannot encode one, so `set` refuses it with `wd::utf8`; `wd::utf16` keeps
+it, and writes it as `\u` and its four digits, as `JSON.stringify` has since ES2019. The parser
+refuses one with either encoding (<<document-parsing-surrogates>>).
+
+[#document-strings-dates]
+=== Dates
+
+A date is a `wd::date_ms`, milliseconds since the epoch, 1970-01-01T00:00:00Z, as a JavaScript
+`Date` holds it, and its range is JavaScript's, 8.64e15 ms on either side: `set` past it is
+`errc::range`. It is written as `Date.prototype.toJSON` writes it, `"2026-10-12T03:04:05.678Z"`,
+with a year outside 0 to 9999 written as six digits and a sign, `"+275760-09-13T00:00:00.000Z"`.
+
+JSON has no dates, so a parse keeps every string a string, as `JSON.parse` does, unless
+`parse_options::revive_dates`, which turns a string in exactly that format into a date.
+`get<wd::date_ms>()` reads such a string as a date too, revived or not:
+
+[source]
+----
+include::{examples}/document_traits.cpp[tag=dates,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_traits.expected[lines=15..19]
+----
+
+[#document-strings-bytes]
+=== Bytes
+
+Bytes are a `std::span<const std::byte>` that `set` stores raw in the image, and that an image
+carries as they are. `stringify` writes them as the traits' `bytes` policy says:
+
+[cols="1,3",options="header"]
+|===
+| Policy | Written as
+
+| `wd::base64`, the default
+| base64 of RFC 4648, with padding
+
+| `wd::base64url`
+| base64url of RFC 4648, section 5, without padding
+
+| `wd::javascript_bytes`, in `js_traits`
+| what `JSON.stringify` writes for a Uint8Array: an object of the indices and the bytes
+|===
+
+`parse_options::revive_bytes` turns a string valid in the policy's text back into bytes, and,
+with `javascript_bytes`, an object whose keys are exactly `"0"` to `"n-1"` holding integers from 0
+to 255. `get<std::vector<std::byte>>()` reads such a value as bytes too, and
+`get<std::span<const std::byte>>()` reads bytes in place:
+
+[source]
+----
+include::{examples}/document_traits.cpp[tag=bytes,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_traits.expected[lines=20..23]
+----
+
+The program's `canonical_traits` choose `base64url` (<<document-traits>>).

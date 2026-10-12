@@ -44,6 +44,7 @@ inline constexpr std::uint64_t default_chunk = 4096;
  @param indent The spaces of each level, clamped to 10; 0 writes compactly.
  @return The text; empty when the value is `undefined`, since `JSON.stringify(undefined)` returns
  no text. The standard library's `std::bad_alloc` is its only failure.
+ @see "Writing JSON", in the guide.
 */
 template <class Traits, class Storage>
 std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent = 0) {
@@ -88,6 +89,7 @@ std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t in
  @param chunk The largest piece, at least 1.
  @return Success, or the first failure the sink returned, which stops the writing; an exception
  the sink throws propagates. The document is unchanged either way.
+ @see "Writing JSON", in the guide.
 */
 template <class Traits, class Storage, class Sink>
     requires detail::sink<std::remove_reference_t<Sink>>

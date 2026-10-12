@@ -1,0 +1,61 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-order]
+== Key order
+
+The order of an object's keys is what makes two `JSON.stringify` texts equal or not, and
+JavaScript's is not the order of insertion. Its OrdinaryOwnPropertyKeys gives the keys that are
+array indices first, ascending, then every other key in the order it was created. Measured in Node
+26, `JSON.parse('{"b":1,"2":2,"a":3,"1":4}')` holds `{"1":4,"2":2,"b":1,"a":3}`, and a document
+writes the same.
+
+[#document-order-indices]
+=== Array indices
+
+An array index is a key that is the canonical decimal spelling of an integer from 0 to
+4,294,967,294: `"0"`, `"7"` and `"10"` are, and `"01"`, `"-1"`, `"1.0"`, `" 1"` and
+`"4294967295"` are not, so they keep their place among the other keys. Assigning an existing key
+keeps its place. Erasing a key and creating it again puts it where a new key goes: last among the
+other keys, or back among the indices, ascending, for an index.
+
+[#document-order-policies]
+=== The policies
+
+The traits' `object` chooses the order:
+
+[cols="1,3",options="header"]
+|===
+| Policy | The order of an object's keys
+
+| `wd::javascript_order`, the default
+| JavaScript's: array indices ascending, then the other keys in the order they were created
+
+| `wd::insertion_order`
+| the order each key was created, the text's order for a parsed object, whatever the key
+
+| `wd::sorted`
+| by the keys' code units, bytes for UTF-8 and UTF-16 code units for UTF-16: for canonical JSON,
+  signatures and hashes
+|===
+
+A repeated key in parsed text is accepted as `JSON.parse` accepts it: the last value, in the first
+one's place. The program parses one text under each policy, the last two through traits of its
+own (<<document-traits>>), then erases and creates again a key and an index:
+
+[source]
+----
+include::{examples}/document_traits.cpp[tag=order,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_traits.expected[lines=1..4]
+----
+
+Every operation keeps the order: `set`, `erase`, `assign_from`, a copy and the parser. An object's
+members are kept in ordered indices, never in a hashed one, since keys come from untrusted text:
+no input makes a lookup slower than its logarithm.

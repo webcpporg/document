@@ -50,6 +50,8 @@ namespace webcpp::document {
  index in the text, which `on` does not renumber.
 
  It is valid during the callback that receives it.
+
+ @see "Selectors", in the guide.
 */
 class path_view {
 public:
@@ -166,6 +168,7 @@ struct subscription {
 
  @tparam Traits The traits of the document.
  @tparam Storage @ref owned, or @ref external to build it in a buffer of its user's.
+ @see "Parsing", in the guide.
 */
 template <class Traits, class Storage>
 class basic_parser {
@@ -300,6 +303,7 @@ public:
      @param selector The selector.
      @param f The callback.
      @return Success; @ref errc::type for a malformed selector.
+     @see "Selectors", in the guide.
     */
     template <class F>
     result<void> on(std::string_view selector, F&& f)
@@ -316,6 +320,7 @@ public:
      @param selector The selector, as @ref on takes it.
      @param f The callback.
      @return Success; @ref errc::type for a malformed selector.
+     @see "Selectors", in the guide.
     */
     template <class F>
     result<void> observe(std::string_view selector, F&& f)

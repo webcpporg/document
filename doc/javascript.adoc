@@ -1,0 +1,171 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-javascript]
+== From JavaScript
+
+document's interface is JavaScript's ways with JSON, written in {cpp}: a name of JavaScript
+becomes a member function of the same meaning, and an operation that JavaScript makes throw
+returns its error instead. A program that knows how JavaScript reads and writes a parsed object
+knows how document does.
+
+[#document-javascript-table]
+=== JavaScript, then {cpp}
+
+Each row is a JavaScript expression and what a program of document writes for it, `v` being a
+handle (<<document-handles>>) and `doc` a document:
+
+[cols="2,3",options="header"]
+|===
+| JavaScript | document
+
+| `JSON.parse(text)`
+| `wd::parse(text)`, which returns a `result`; `wd::parse_or_throw(text)` throws, with exceptions
+  only (<<document-parsing>>)
+
+| `JSON.stringify(v, null, 2)`
+| `v.stringify(2)`, `wd::stringify(doc, 2)`, and `wd::stringify_to(doc, sink, 2)` in pieces
+  (<<document-stringify>>)
+
+| `v.key`, `v["key"]`, `v[3]`
+| `v["key"]`, `v[3]`: a handle, which never fails
+
+| `v.at(-1)`
+| `v.at(-1)`
+
+| `typeof v`, `Array.isArray(v)`, `v === null`
+| `v.kind()`, `v.is_array()`, `v.is_null()`, and an `is_` function for every kind
+
+| `v === undefined`
+| `v.is_undefined()`
+
+| `v ?? fallback`
+| `v.value_or(fallback)`
+
+| `"key" in v`
+| `v.contains("key")`
+
+| `v.length`, of an array or a string
+| `v.length()`, in UTF-16 code units for a string
+
+| `Object.keys(v).length`
+| `v.size()`
+
+| `Number.isInteger(v)`
+| `v.is_integer()`
+
+| `v.key = x`
+| `v["key"].set(x)`; `v["key"] = x` throws, with exceptions only (<<document-exceptions>>)
+
+| `delete v.key`
+| `v.erase("key")`, or `v["key"].set(wd::undefined)`
+
+| `Object.assign(v, source)`
+| `v.assign_from(source)`
+
+| `Object.entries(v)`, `Object.keys(v)`, `Object.values(v)`
+| `v.entries()`, `v.keys()`, `v.values()`
+
+| `for (const x of a)`
+| `for (wd::const_value x : a)`
+
+| `structuredClone(doc)`
+| `doc.clone()`
+
+| `a.push(x)`, `a.splice(1, 2)` and the other array methods
+| the same names (<<document-arrays>>)
+
+| `{key: 1}`, `[1, 2]`
+| `wd::object{{"key", 1}}`, `wd::array{1, 2}`
+|===
+
+The program below prints each JavaScript expression beside what document gives for it, with this
+helper, which writes `undefined` where nothing is there, as JavaScript prints it:
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=show,indent=0]
+----
+
+<<document-handles>> walks through the program; every line it prints is what Node prints for the
+same JavaScript.
+
+[#document-javascript-differences]
+=== Where document differs, on purpose
+
+A few things JavaScript does would make a document either unsafe or unlike JSON. document does
+otherwise there, and each difference keeps the text `JSON.stringify` writes, but where the table
+says it does not:
+
+[cols="2,2,3",options="header"]
+|===
+| JavaScript | document | Why
+
+| `a.x = b.y` makes both name one object
+| `a["x"].set(b["y"])` copies the subtree, and so does `h = other` with exceptions
+| A document is a tree, as JSON is: no value is shared, and no cycle exists.
+
+| `a.splice(0, 1, a)` inserts the array into itself, a cycle
+| it inserts a copy of the array as it was
+| The same: a tree has no cycle.
+
+| `o.x = undefined` keeps the key `x`, which `JSON.stringify` omits
+| erases `x`
+| Nothing stores `undefined`. The text is the same; `Object.keys` would differ.
+
+| `[undefined]` holds `undefined`, written `[null]`
+| stores `null`
+| The same text.
+
+| arrays may have holes
+| `null` fills them, and `pop` or `shift` of what was a hole returns `null`, where JavaScript
+  returns `undefined`
+| Arrays are dense (<<document-arrays>>); the text is the same.
+
+| `arr["0"]` is element 0, and `obj[3]` the member `"3"`
+| `arr["0"]` names nothing, nor does `obj[3]`: a key reaches a member, an index an element
+| A handle names a member or an element, never both.
+
+| numbers are doubles
+| exact with the default traits; JavaScript's doubles with `js_traits`
+| What is stored is what was sent (<<document-numbers>>).
+
+| `JSON.parse` of 40 digits rounds, and of `1e999` gives `Infinity`
+| refused with `errc::range` by the default traits; `js_traits` rounds 40 digits and refuses
+  `1e999`
+| A document holds no number it cannot write back.
+
+| `-0`
+| `0`
+| `JSON.stringify(-0)` writes `0` too.
+
+| `+JSON.parse('"\ud800"')+` keeps the lone surrogate
+| refused with `errc::syntax`, with either encoding; `set` keeps one with `utf16`
+| Boost.JSON's parser, which document uses, cannot deliver one (<<document-parsing-surrogates>>).
+
+| a Uint8Array is written `{"0":1,"1":2}`
+| bytes are written as base64 by default
+| The traits' bytes policy; `javascript_bytes` restores JavaScript's text (<<document-strings>>).
+
+| prototypes, getters, symbols, `toJSON`, a replacer, a reviver, Map, Set, BigInt
+| none
+| Out of scope: a document holds JSON's values, and dates and bytes.
+|===
+
+The program shows four of them: an index written as a key, a key written as an index, `-0`, and
+the lone surrogate the parser refuses:
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=differences,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=30..33]
+----
+
+`JSON.parse` gives 10, `"three"` and `0` for the first three, and keeps the lone surrogate.

@@ -1,0 +1,24 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+project : requirements <library>/webcpp/document//document ;
+
+import webcpp ;
+
+webcpp.targets native emscripten wasip2 wasip3 ;
+
+# The guide's programs, each shown on the page with the output it prints.
+webcpp.example document_quick_start.cpp ;
+# The sugar that throws stands beside the core here, so this program needs exceptions.
+webcpp.example document_javascript.cpp : <exception-handling>on ;
+webcpp.example document_numbers.cpp ;
+webcpp.example document_arrays.cpp ;
+webcpp.example document_streaming.cpp ;
+webcpp.example document_selectors.cpp ;
+webcpp.example document_traits.cpp ;
+webcpp.example document_image.cpp ;
+# The core in a build without exceptions, whatever the build asks.
+webcpp.example document_no_exceptions.cpp : <exception-handling>off ;

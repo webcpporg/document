@@ -1,0 +1,132 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-introduction]
+== Introduction
+
+A web application speaks JSON with JavaScript, and JavaScript decides what that JSON means: the
+order in which an object's keys come out, what `JSON.stringify` writes for a number, what
+`splice` removes. A {cpp} program that is to agree with a JavaScript peer byte for byte needs a
+JSON document that makes the same decisions. document is that document: what `JSON.parse`,
+property access, assignment, `delete`, the array methods and `JSON.stringify` do in JavaScript, it
+does in {cpp}, with the same key order and the same text out.
+
+[#document-introduction-why]
+=== Why not Boost.JSON
+
+Boost.JSON is the JSON library of Boost, and document reads JSON with its parser. Its document,
+`boost::json::value`, is another matter, for the closer compatibility with JavaScript that
+document was written for. Measured on Boost 1.92:
+
+* *Key order.* `boost::json::object` keeps keys in the order they were inserted. JavaScript puts
+  the keys that are array indices first, ascending, then the others in the order they were
+  created: `JSON.parse('{"b":1,"2":2,"a":3,"1":4}')` holds `{"1":4,"2":2,"b":1,"a":3}`
+  (<<document-order>>).
+* *Erasing reorders.* `object::erase` moves the last member into the erased one's place: erasing
+  `a` from `{"a":1,"b":2,"c":3,"d":4}` leaves `{"d":4,"b":2,"c":3}`, where JavaScript's `delete`
+  leaves `{"b":2,"c":3,"d":4}`.
+* *Numbers are doubles.* `0.1000000000000000000000000000000001` is read into a double and
+  written back as `1E-1`. JavaScript rounds it too, to `0.1`; document keeps it exact by default,
+  and writes every number as JavaScript writes it (<<document-numbers>>).
+* *Hash flooding.* An object's index hashes its keys, so a crafted input of 4 MB, keys that
+  collide, took 9.23 s to parse. Keys come from the network; document indexes them in ordered
+  trees, which no input degrades.
+* *Pointers.* A `boost::json::value` holds pointers, so it can neither live in a memory segment
+  shared between processes nor travel as binary. document's tree lives in one relocatable image,
+  every pointer in it an offset (<<document-images>>).
+
+document uses Boost.JSON's SAX parser, `boost::json::basic_parser`, and nothing else of it.
+
+[#document-introduction-first]
+=== A first document
+
+This program parses a JSON text, reads two members, writes one, pushes an element onto an array,
+and writes the document back with an indent of 2. It begins with the library's header and an
+alias for its namespace:
+
+[source]
+----
+include::{examples}/document_quick_start.cpp[tag=includes,indent=0]
+----
+
+`wd::parse` is `JSON.parse`. Its result holds the document, or the error that made none: the core
+of document never throws, and every operation that can fail returns `wd::result`, Boost.System's
+`result`:
+
+[source]
+----
+include::{examples}/document_quick_start.cpp[tag=parse,indent=0]
+----
+
+`doc["name"]` is a handle, the place `doc.name` names. `value_or` is JavaScript's `??`: the value
+as the type of the fallback, or the fallback when nothing is there, or when what is there is not
+of that type:
+
+[source]
+----
+include::{examples}/document_quick_start.cpp[tag=read,indent=0]
+----
+
+`set` is assignment, and `push` is `Array.prototype.push`. Each returns its result, which converts
+to `true` on success; a write that fails changes nothing:
+
+[source]
+----
+include::{examples}/document_quick_start.cpp[tag=write,indent=0]
+----
+
+`stringify(2)` is `JSON.stringify(doc, null, 2)`:
+
+[source]
+----
+include::{examples}/document_quick_start.cpp[tag=stringify,indent=0]
+----
+
+It prints:
+
+[listing]
+----
+include::{examples}/document_quick_start.expected[]
+----
+
+The new member `known` comes last, as JavaScript adds it, and the text is byte for byte what Node
+writes for the same operations.
+
+[#document-requirements]
+=== Requirements
+
+* *A {cpp}20 compiler.* document's tests and examples are built and run natively with Clang and
+  GCC, on emscripten under node, and for wasm32-wasip2 and wasm32-wasip3 with the Clang of
+  wasi-sdk, under wasmtime (<<document-testing>>).
+* *Boost 1.92 or newer:* Interprocess for the image's heap and its offsets, MultiIndex for the
+  tree's indices, Decimal for exact numbers, System for `result` and the error codes, and JSON for
+  its parser. document is header-only; of Boost, only JSON's parser is compiled, once, by webcpp's
+  build. A b2 project uses document through `/webcpp/document//document`, which brings all of
+  them.
+* *webcpp's configuration,*
+  link:{webcpp-libs}/config/{webcpp-page}#config-exceptions[config], whose
+  `<webcpp/config.hpp>` every header of document includes first.
+* *Exceptions are the program's choice.* The core never throws, in a build with exceptions or
+  without; the sugar that throws as JavaScript does exists only with them
+  (<<document-exceptions>>).
+* *Nothing else:* no threads, no clock, no file, no global or static mutable state.
+
+[#document-reading]
+=== Reading this page
+
+`<webcpp/document.hpp>` includes every public header, whose names are in the namespace
+`webcpp::document`. The code of this page writes them `wd::parse` and `wd::document`, as after
+`namespace wd = webcpp::document;`.
+
+<<document-javascript>> sets JavaScript's ways with JSON beside document's, and lists where the
+two differ on purpose. <<document-handles>> teaches the handles that read and write a document;
+<<document-numbers>>, <<document-strings>> and <<document-order>> the values they hold and the
+order of an object's keys; <<document-arrays>> the array methods. <<document-stringify>>,
+<<document-parsing>> and <<document-selectors>> write and read JSON text, whole or in pieces.
+<<document-traits>> chooses what a document stores, <<document-images>> shows the binary image,
+<<document-exceptions>> the sugar that throws, and <<document-errors>> every error.
+<<document-testing>> shows how document is tested, and the <<reference,reference>> closes the
+page.

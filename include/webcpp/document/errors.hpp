@@ -44,6 +44,7 @@ namespace webcpp::document {
 
  @note The values are fixed: they are never reused for a different meaning, so a stored value
  keeps its meaning across versions.
+ @see "Errors", in the guide.
 */
 enum class errc : int {
     /** Malformed JSON text, JavaScript's `SyntaxError`. */
@@ -163,7 +164,11 @@ using result = boost::system::result<T>;
 
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
 
-/** What every exception of document derives from: a `std::runtime_error` holding its code. */
+/**
+ What every exception of document derives from: a `std::runtime_error` holding its code.
+
+ @see "The sugar that throws", in the guide.
+*/
 class error : public std::runtime_error {
 public:
     /**

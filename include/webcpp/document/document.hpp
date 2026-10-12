@@ -36,12 +36,16 @@ namespace webcpp::document {
 /**
  The storage of a document that owns its image: a buffer of its own, 16-aligned, which grows,
  twice the size each time, up to its `max_bytes`.
+
+ @see "Images", in the guide.
 */
 struct owned {};
 
 /**
  The storage of a document whose image is a buffer its user owns, such as a browser's memory: when
  it is full, an operation returns @ref errc::capacity and changes nothing.
+
+ @see "Images", in the guide.
 */
 struct external {};
 
@@ -55,6 +59,7 @@ inline constexpr std::uint64_t default_max_bytes = std::uint64_t{1} << 30U;
  @param buffer The buffer, 16-aligned, which the document uses in place and its user keeps alive.
  @return The document; @ref errc::capacity when the buffer is too small for an empty document or
  is not 16-aligned.
+ @see "Images", in the guide.
 */
 template <class Traits = default_traits>
 result<basic_document<Traits, external>> format(std::span<std::byte> buffer) noexcept;
@@ -67,6 +72,7 @@ result<basic_document<Traits, external>> format(std::span<std::byte> buffer) noe
  @return The document; @ref errc::not_a_document for bytes that are not an image or a buffer that
  is not 16-aligned, @ref errc::incompatible_document for an image of another format version,
  Boost version, layout, byte order or traits.
+ @see "Images", in the guide.
 */
 template <class Traits = default_traits>
 result<basic_document<Traits, external>> open(std::span<std::byte> buffer) noexcept;
@@ -79,6 +85,7 @@ result<basic_document<Traits, external>> open(std::span<std::byte> buffer) noexc
  @param max_bytes The size the copy may grow to.
  @return The document; the errors of @ref open, and @ref errc::capacity when the image is larger
  than `max_bytes`.
+ @see "Images", in the guide.
 */
 template <class Traits = default_traits>
 result<basic_document<Traits, owned>> from_image(
@@ -94,6 +101,8 @@ result<basic_document<Traits, owned>> from_image(
 
  @tparam Traits The traits: the stored types, the encoding, the bytes policy and the key order.
  @tparam Storage @ref owned or @ref external.
+ @see "Handles", in the guide.
+ @see "Images", in the guide.
 */
 template <class Traits, class Storage>
 class basic_document {
@@ -128,6 +137,7 @@ public:
      with exceptions.
 
      @throws capacity_error When even an empty document does not fit.
+     @see "The sugar that throws", in the guide.
     */
     basic_document()
         requires detail::exceptions_enabled<Traits> && std::same_as<Storage, owned>;

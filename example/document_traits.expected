@@ -1,0 +1,23 @@
+javascript_order: {"1":4,"2":2,"b":1,"a":3,"01":5}
+insertion_order : {"b":1,"2":2,"a":3,"1":4,"01":5}
+sorted          : {"01":5,"1":4,"2":2,"a":3,"b":1}
+erased, created : {"1":7,"2":2,"a":3,"01":5,"b":6}
+UTF-8 length : 3
+UTF-16 length: 3
+UTF-8 as std::string_view: é😀
+UTF-8 as std::u16string_view: a value of another kind
+UTF-16 as std::u16string_view: 3 code units
+UTF-16 as std::string: é😀
+both write: ["é😀","tab\there \"q\" \u0001"] ["é😀","tab\there \"q\" \u0001"]
+UTF-16 set: ok
+UTF-8 set : a value of another kind
+UTF-16 writes: "\ud800"
+is_date: false true false
+ms since the epoch: 1791774245678
+set the last date: ok
+set one ms later : a number or index out of range
+written: {"at":"2026-10-12T03:04:05.678Z","day":"2026-10-12","last":"+275760-09-13T00:00:00.000Z"}
+base64          : "3q2+7w=="
+base64url       : "3q2-7w"
+javascript_bytes: {"0":222,"1":173,"2":190,"3":239}
+revived: true, 4 bytes

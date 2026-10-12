@@ -1,0 +1,125 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-numbers]
+== Numbers
+
+JavaScript's numbers are doubles: `JSON.parse` rounds every number to the nearest one, so a peer
+that sends 34 exact digits receives 17. With its default traits, document stores every number
+exactly as it was sent, and writes it back as JavaScript would write that value; with `js_traits`,
+it holds JavaScript's own doubles, and agrees with JavaScript on every digit.
+
+[#document-numbers-by-value]
+=== Stored by value
+
+A number is stored in one of two forms, chosen by its value, never by its spelling: an integer that
+fits the traits' `integer`, `std::int64_t`, is one; any other number is the traits' `number`,
+Boost.Decimal's `decimal128_t` by default, normalised, without trailing zeros. So `1`, `1.0` and
+`1e0` are one stored value, as they are one number in JavaScript, and `18446744073709551615`, past
+`std::int64_t`, is an exact `number`. Parsing reads a number from its text, never through a double:
+more than 34 significant digits, or an exponent past the range of `decimal128_t`, is `errc::range`.
+
+Writing follows JavaScript's Number::toString on the stored digits, with `k` significant digits
+and the decimal point after position `n`:
+
+[cols="2,3,2",options="header"]
+|===
+| When | Written as | Example
+
+| `+k <= n <= 21+`
+| the digits, then `n - k` zeros
+| `1e20` writes `100000000000000000000`
+
+| `+0 < n <= 21+`
+| the digits, with a point after `n` of them
+| `123.45`
+
+| `+-6 < n <= 0+`
+| `0.`, then `-n` zeros, then the digits
+| `0.000001`
+
+| otherwise
+| one digit, a point and the others if any, `e`, the sign, `n - 1`
+| `1e+21`, `1e-7`, `1.5e+300`
+|===
+
+So every number `JSON.stringify` writes, the shortest text of a double, is written back byte for
+byte as JavaScript writes it, and a number a double cannot hold stays exact. The program parses one text
+with each traits:
+
+[source]
+----
+include::{examples}/document_numbers.cpp[tag=exact,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_numbers.expected[lines=1..2]
+----
+
+With `js_traits`, the numbers are what Node holds, written as Node writes them: the 34 digits
+round to `0.1`, and 2^62^, `4611686018427387904`, is written `4611686018427388000`. A number under
+`js_traits` is first rounded to a double, then stored as an integer when that double is integral
+and fits `std::int64_t`, so it writes back as Node writes the double.
+
+[#document-numbers-refused]
+=== What each refuses
+
+The default traits refuse a number they cannot store exactly; `js_traits` rounds as `JSON.parse`
+does, and refuse only a number past a double's range, which `JSON.parse` would make `Infinity`, a
+value JSON cannot write:
+
+[source]
+----
+include::{examples}/document_numbers.cpp[tag=refused,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_numbers.expected[lines=3..5]
+----
+
+`set` refuses a NaN or an infinity of a Boost.Decimal type with `errc::range`. A double's NaN and
+infinities, which only arithmetic makes, are stored under `js_traits`, and written `null`, as
+JavaScript writes them.
+
+[#document-numbers-reading]
+=== Reading a number
+
+`get<T>()` gives a number as any integer type, a Boost.Decimal type, or the traits' number type,
+when `T` holds it exactly, and `errc::range` otherwise: a number that is not an integer, or does
+not fit, is never truncated or rounded into `T`. `is_integer()` is `Number.isInteger`, true for a
+`number` such as `1e30` too:
+
+[source]
+----
+include::{examples}/document_numbers.cpp[tag=read,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_numbers.expected[lines=6..11]
+----
+
+A double is read or set only when the traits' number type is one: the default traits have no
+conversion from or to `double`, nor to `float` ever, so a program cannot lose digits by accident.
+
+[#document-numbers-arithmetic]
+=== Arithmetic
+
+A document stores numbers; it computes nothing. A program reads a value in the traits' own number
+type, computes, and stores the result, so the arithmetic is the number type's: exact in decimal,
+binary in a double.
+
+[source]
+----
+include::{examples}/document_numbers.cpp[tag=arithmetic,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_numbers.expected[lines=12..13]
+----

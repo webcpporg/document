@@ -1,0 +1,13 @@
+default_traits: [0.1000000000000000000000000000000001,18446744073709551615,4611686018427387904,1e+21,1.5,1e-7,1,0]
+js_traits     : [0.1,18446744073709552000,4611686018427388000,1e+21,1.5,1e-7,1,0]
+40 digits, default_traits: a number or index out of range
+40 digits, js_traits     : 1.2345678901234568e+39
+1e400, js_traits         : a number or index out of range
+small as int64_t: 300
+small as int8_t: a number or index out of range
+big as uint64_t: 18446744073709551615
+big as int64_t: a number or index out of range
+half as int64_t: a number or index out of range
+Number.isInteger(huge): true
+{"a":0.1,"b":0.2,"sum":0.3}
+{"a":0.1,"b":0.2,"sum":0.30000000000000004}

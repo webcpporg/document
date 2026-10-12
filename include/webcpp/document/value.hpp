@@ -243,6 +243,7 @@ struct access {
 
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
+ @see "Handles", in the guide.
 */
 template <class Traits, class Storage>
 class WEBCPP_DOCUMENT_NO_DANGLING basic_const_value {
@@ -488,6 +489,7 @@ public:
      `std::u16string_view` with `utf16`.
 
      @return The range; empty for any other kind than an object.
+     @see "Key order", in the guide.
     */
     [[nodiscard]] detail::children<Traits, Storage, detail::children_of::keys> keys()
         const noexcept {
@@ -566,6 +568,7 @@ public:
      @return The value.
      @throws type_error For another kind.
      @throws range_error For a number that does not fit.
+     @see "The sugar that throws", in the guide.
     */
     template <class T>
     [[nodiscard]] T as() const
@@ -730,6 +733,8 @@ private:
 
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
+ @see "Handles", in the guide.
+ @see "Arrays", in the guide.
 */
 template <class Traits, class Storage>
 class WEBCPP_DOCUMENT_NO_DANGLING basic_value : public basic_const_value<Traits, Storage> {
@@ -946,6 +951,7 @@ public:
      @param v The values to insert.
      @return A new owned document holding the array of the removed elements; @ref errc::type for
      any other kind.
+     @see "Arrays", in the guide.
     */
     template <class... T>
     [[nodiscard]] result<basic_document<Traits, owned>> splice(std::int64_t start,
@@ -986,6 +992,7 @@ public:
      @return This handle.
      @throws type_error For a place that is nothing.
      @throws capacity_error When there is no room.
+     @see "The sugar that throws", in the guide.
     */
     template <class T>
     basic_value& operator=(const T& v)

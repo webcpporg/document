@@ -1,0 +1,163 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-handles]
+== Handles
+
+A document holds one value, and a program reaches the values inside it through handles:
+`wd::value`, which reads and writes, and `wd::const_value`, which reads. `doc.root()`, `doc["key"]`,
+`doc[3]` and every navigation from a handle return one. A handle names one place in one document,
+and is cheap to copy: it holds the document's address and the ids of nodes, not a pointer into
+the tree.
+
+[#document-handles-navigation]
+=== Navigation never fails
+
+In JavaScript, `doc.user.nick` is `undefined` when `user` has no `nick`, and `doc.n.x.y` throws a
+`TypeError` when `doc.n` is a number. A handle never fails: it names one of three things, and
+reads `undefined` where nothing is there.
+
+[cols="2,2,3",options="header"]
+|===
+| A handle names | Made by | Reads, and `set` does
+
+| a node
+| navigation to a value that exists
+| the value; `set` replaces it
+
+| a missing member or element of a container that exists
+| `obj["absent"]`, or `arr[9]` past the end
+| `undefined`; `set` creates the member, or the element, filling the elements between with `null`
+
+| nothing
+| navigation through `undefined`, a scalar, or an erased value
+| `undefined`; `set` fails with `errc::type`, JavaScript's `TypeError`
+|===
+
+The program of <<document-javascript>> parses a user and a number, and navigates:
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=navigation,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=1..5]
+----
+
+A handle resolves its place again at every call, so it reads what is there now: `user["nick"]`
+reads `undefined` until a `set` creates the member, and the same handle then reads the new value.
+A handle stays valid while the document grows and its image moves to a larger buffer; it reads
+`undefined` once its value is erased; and it is invalid once its document is moved from or
+destroyed, as a container's iterators are.
+
+[#document-handles-reading]
+=== Reading
+
+`kind()` is JavaScript's `typeof`, with `null`, arrays, dates and bytes told apart: one of the
+enumerators of `wd::kind`, `undefined`, `null`, `boolean`, `number`, `string`, `date`, `bytes`,
+`array` and `object`, each with an `is_` function. `get<T>()` reads the value as `T` and returns
+a `result`: `errc::type` for another kind, and `errc::range` for a number that `T` cannot hold
+exactly. `T` is `bool`, any integer type, a Boost.Decimal type, the traits' number type,
+`std::string`, `std::string_view`, `std::u16string`, `std::u16string_view`, `wd::date_ms`,
+`std::vector<std::byte>` or `std::span<const std::byte>` (<<document-strings>>).
+
+`value_or(fallback)` is JavaScript's `??`: the value `get<T>()` gives, `T` being the fallback's type, or
+the fallback when nothing is there, when the value is `null`, or when it cannot be read as `T`.
+`contains(key)` is `key in v` for an object, `size()` an object's key count or an array's length,
+and `length()` an array's length or a string's in UTF-16 code units, as JavaScript counts them:
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=reading,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=6..11]
+----
+
+A `std::string_view` that `get` returns, and a key that `keys()` gives, are views into the
+document's image: each is valid until the document's next change, which may move the image.
+
+[#document-handles-writing]
+=== Writing
+
+`set(x)` is assignment. It takes `bool`, any integer type, the Boost.Decimal types, the traits'
+number type, text (`std::string_view`, `const char*`, `std::string`, `std::u16string_view`), bytes
+(`std::span<const std::byte>`), a `wd::date_ms`, `nullptr` or `wd::null`, the literals
+`wd::object` and `wd::array`, which are JSON written in {cpp}, a handle or a document of the same
+traits, which it copies, and `wd::undefined`. A character is not a number: `set('a')` does not
+compile, nor does `set` of a `float`, nor of a `double` unless the traits' number type is one.
+
+`erase(key)` is `delete`, and returns whether the key was there. `set(wd::undefined)` erases a
+member too: JavaScript keeps a member whose value is `undefined`, and writes nothing for it, while a
+document never stores `undefined`. In an array, it stores `null`, the text JavaScript writes for
+it; at the root, the document holds `undefined`, and writes nothing. `assign_from(source)` is
+`Object.assign`: each member of the source is set here, in its order, as one operation that
+completes or changes nothing; an array's elements are its members `"0"` to `"n-1"`, and `null` or
+`undefined` add nothing.
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=writing,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=12..14]
+----
+
+Every writing function returns a `result` and is `+[[nodiscard]]+`. It completes, or it changes
+nothing: it finds the room it needs in the image before it allocates (<<document-images>>), so a
+full image, a value of the wrong kind or a number out of range leave the document as it was.
+
+[#document-handles-copies]
+=== Copies, never aliases
+
+JavaScript's `doc.copy = doc.user` makes two names of one object, so that a change through one is
+seen through the other. A document is a tree, as JSON is, so `set` of a handle copies the subtree:
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=copy,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=15..16]
+----
+
+A copy reads its source before it changes anything, so a value may be copied into its own
+subtree. Between documents, copies need the same traits, and any storage. `doc.clone()` copies a
+whole document into a new owned one, as `structuredClone` would.
+
+[#document-handles-iteration]
+=== Iteration and equality
+
+`entries()`, `keys()` and `values()` are `Object.entries`, `Object.keys` and `Object.values`, in
+the order of the traits' object policy (<<document-order>>), and a `for` over an array's handle
+visits its elements. A key is a `std::string_view` with UTF-8 strings, and a
+`std::u16string_view` with UTF-16 ones (<<document-traits>>):
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=iteration,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=17..22]
+----
+
+A range reads the document as it is when each step is taken, so changing the container it walks
+is undefined, as it is for a standard container.
+
+`==` compares two values structurally, which JavaScript does not: the same kind; numbers by value,
+so `1`, `1.0` and `1e0` are equal; strings, dates and bytes by value; arrays element by element;
+objects with the same keys, each holding an equal value, in any order. Two documents compare
+their roots.

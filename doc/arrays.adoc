@@ -1,0 +1,145 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-arrays]
+== Arrays
+
+A handle of an array has JavaScript's array methods, under their JavaScript names, with
+JavaScript's index rules. Each is a core function: it returns a `result`, completes or changes
+nothing, and fails with `errc::type`, JavaScript's `TypeError`, on anything but an array.
+
+[cols="2,2,3",options="header"]
+|===
+| JavaScript | document | Returns
+
+| `a.push(x, y)`
+| `a.push(x, y)`
+| `result<std::uint64_t>`: the new length
+
+| `a.pop()`
+| `a.pop()`
+| `result<document>`: a new document holding the removed element, or holding `undefined` when the
+  array was empty
+
+| `a.shift()`
+| `a.shift()`
+| the same, from the front
+
+| `a.unshift(x, y)`
+| `a.unshift(x, y)`
+| `result<std::uint64_t>`: the new length
+
+| `a.splice(start, count, x, y)`
+| `a.splice(start, count, x, y)`
+| `result<document>`: the array of the removed elements
+
+| `a.splice(start)`
+| `a.splice(start)`
+| the same, removing every element from `start`
+
+| `a.reverse()`
+| `a.reverse()`
+| `result<void>`
+
+| `a.slice(start, end)`
+| `a.slice(start, end)`
+| `result<document>`: a new array of copies of the elements
+
+| `a.concat(b, x)`
+| `a.concat(b, x)`
+| `result<document>`: a new array of this array's elements, then each argument's, an array's
+  elements or the value itself
+
+| `a.at(i)`
+| `a.at(i)`
+| a handle, which names nothing out of range
+
+| `a.length = n`
+| `a.set_length(n)`
+| `result<void>`: truncates, or appends `null`
+
+| `a[i] = x` past the end
+| `a[i].set(x)`
+| `result<void>`: the elements between become `null`
+|===
+
+The values a method takes are what `set` takes (<<document-handles-writing>>), each copied into the
+array; a method that returns removed or copied elements returns them in a new owned document, so
+that they outlive the array. The program logs each call, what it returned and the array after it:
+
+[source]
+----
+include::{examples}/document_arrays.cpp[tag=helpers,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_arrays.cpp[tag=methods,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_arrays.expected[lines=1..9]
+----
+
+[#document-arrays-indices]
+=== Indices
+
+Indices follow JavaScript exactly. A negative `start` counts from the end and is clamped at 0, and
+a `start` past the length is the length; an omitted `count` removes to the end, and a negative one
+is 0. The `end` of `slice` follows the same rules as `start`, and `at` counts a negative index from the
+end:
+
+[source]
+----
+include::{examples}/document_arrays.cpp[tag=indices,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_arrays.expected[lines=10..13]
+----
+
+[#document-arrays-dense]
+=== Dense arrays
+
+JavaScript's arrays may have holes, elements that were never set; JSON has none, and writes a hole
+as `null`. A document's arrays are dense, the traits' only array policy, `wd::dense`: a longer
+`length`, or a write past the end, fills the elements between with `null`, which writes the same
+text. So `pop` or `shift` of an element that was a hole returns `null`, where JavaScript returns
+`undefined`:
+
+[source]
+----
+include::{examples}/document_arrays.cpp[tag=length,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_arrays.expected[lines=14..18]
+----
+
+[#document-arrays-differences]
+=== Copies and empty arrays
+
+`pop` and `shift` of an empty array return a document that holds `undefined`, as JavaScript
+returns `undefined`. And since a document is a tree, `a.splice(0, 1, a)` inserts a copy of the array
+as it was before the call, where JavaScript inserts the array itself, a cycle; the copy is a value
+of its own:
+
+[source]
+----
+include::{examples}/document_arrays.cpp[tag=differences,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_arrays.expected[lines=19..21]
+----
+
+A method that inserts many values, `push`, `unshift`, `splice` or `concat`, finds the room for all
+of them first: in a full external buffer, it returns `errc::capacity` and the array is as it was
+(<<document-images>>).

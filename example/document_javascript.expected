@@ -1,0 +1,33 @@
+user.name -> "Ada"
+user.nick -> undefined
+doc.n.x.y -> undefined
+user.tags[0] -> "math"
+user.tags.at(-1) -> "math"
+typeof user.name === 'string' -> true
+'tags' in user -> true
+user.name.length -> 3
+doc.n ?? 0 -> 3
+user.nick ?? 'none' -> none
+Number.isInteger(doc.n) -> true
+user -> {"name":"Ada","tags":["math","poetry"],"nick":"Countess","age":36,"home":{"city":"London","rooms":[1,2]}}
+delete user.age -> true
+user -> {"name":"Lovelace","tags":["math","poetry"],"home":{"city":"London","rooms":[1,2]},"lang":"en"}
+user.name -> "Lovelace"
+copy.name -> "Byron"
+name: "Lovelace"
+tags: ["math","poetry"]
+home: {"city":"London","rooms":[1,2]}
+lang: "en"
+tag "math"
+tag "poetry"
+2 Ada
+doc.n -> "Ada"
+doc.user -> {"name":"Ada"}
+TypeError: a value of another kind
+TypeError: a value of another kind
+SyntaxError: malformed JSON text at 3
+null {"n":"Ada","user":{"name":"Ada"}} {"n":3,"user":{"name":"Ada"}}
+doc.list['0'] -> undefined
+doc.o[3] -> undefined
+doc.z -> 0
+JSON.parse('"\ud800"') refused -> true

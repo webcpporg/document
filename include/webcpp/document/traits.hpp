@@ -36,19 +36,31 @@
 
 namespace webcpp::document {
 
-/** The encoding of strings and keys that stores UTF-8, the default. */
+/**
+ The encoding of strings and keys that stores UTF-8, the default.
+
+ @see "Strings, dates and bytes", in the guide.
+*/
 struct utf8 {
     /** The encoding's name in the image's layout tag. */
     static constexpr std::string_view name = "utf8";
 };
 
-/** The encoding of strings and keys that stores UTF-16 code units, as JavaScript holds strings. */
+/**
+ The encoding of strings and keys that stores UTF-16 code units, as JavaScript holds strings.
+
+ @see "Strings, dates and bytes", in the guide.
+*/
 struct utf16 {
     /** The encoding's name in the image's layout tag. */
     static constexpr std::string_view name = "utf16";
 };
 
-/** The bytes policy that writes bytes as base64, RFC 4648 with padding, the default. */
+/**
+ The bytes policy that writes bytes as base64, RFC 4648 with padding, the default.
+
+ @see "Strings, dates and bytes", in the guide.
+*/
 struct base64 {
     /** The policy's name in the image's layout tag. */
     static constexpr std::string_view name = "base64";
@@ -66,7 +78,11 @@ struct javascript_bytes {
     static constexpr std::string_view name = "javascript";
 };
 
-/** The object policy of JavaScript: array-index keys ascending, then the others as created. */
+/**
+ The object policy of JavaScript: array-index keys ascending, then the others as created.
+
+ @see "Key order", in the guide.
+*/
 struct javascript_order {
     /** The policy's name in the image's layout tag. */
     static constexpr std::string_view name = "javascript";
@@ -308,6 +324,7 @@ concept stored_scalar =
  Each specialisation has the static members of `number_codec<boost::decimal::decimal128_t>`.
 
  @tparam T The number type.
+ @see "Numbers", in the guide.
 */
 template <class T>
 struct number_codec;
@@ -668,6 +685,8 @@ private:
  The default traits: exact numbers, UTF-8 strings, base64 bytes and JavaScript's key order.
 
  A number is stored by value: an integer that fits `integer` as one, any other as `number`.
+
+ @see "Traits", in the guide.
 */
 struct default_traits {
     /** The type of `true` and `false`. */
@@ -695,7 +714,11 @@ struct default_traits {
     using array = dense;
 };
 
-/** The traits of JavaScript itself: doubles, UTF-16 strings, and bytes written as a Uint8Array. */
+/**
+ The traits of JavaScript itself: doubles, UTF-16 strings, and bytes written as a Uint8Array.
+
+ @see "Traits", in the guide.
+*/
 struct js_traits : default_traits {
     /** The type of a number that is not an integer that fits: JavaScript's own double. */
     using number = double;
@@ -715,6 +738,7 @@ struct js_traits : default_traits {
  `number` is the traits' choice.
 
  @tparam T The traits.
+ @see "Traits", in the guide.
 */
 template <class T>
 concept document_traits =

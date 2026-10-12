@@ -29,4 +29,24 @@ specific to document.
 
 ## The page
 
-`doc/document.adoc` and its sections; `b2 libs/document/doc` builds it with the strict reference.
+- `doc/document.adoc` includes one file per section, in this order: `introduction.adoc`,
+  `javascript.adoc`, `handles.adoc`, `numbers.adoc`, `strings.adoc`, `order.adoc`, `arrays.adoc`,
+  `stringify.adoc`, `parsing.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`,
+  `exceptions.adoc`, `errors.adoc`, `testing.adoc`, then the reference and the changelog.
+  `b2 libs/document/doc` builds it with the strict reference.
+- Each `@see "<title>"` of a Doc Comment names a section's title: "Introduction", "From
+  JavaScript", "Handles", "Numbers", "Strings, dates and bytes", "Key order", "Arrays", "Writing
+  JSON", "Parsing", "Selectors", "Traits", "Images", "The sugar that throws", "Errors", "Testing".
+  Renaming a section renames its `@see` lines in the same commit; doc-check fails otherwise.
+- The guide's programs are `example/document_<topic>.cpp`, each with its `.expected`, whose lines
+  are what Node prints for the same JavaScript wherever the page does not say otherwise; check a
+  new output against Node before committing it. The page shows their regions by tag and their
+  outputs by `lines=`: a change to a program's output checks the `lines=` ranges of the sections
+  that show it.
+- `document_javascript.cpp` shows the sugar and declares `<exception-handling>on`;
+  `document_no_exceptions.cpp` declares `<exception-handling>off`. Every other example builds both
+  ways.
+- `document_image.expected` holds a digest of an image, which is the same on every target: a
+  change to the image's layout, or to what the example stores, changes it on every target at once.
+- The README copies `example/document_quick_start.cpp[tag=program]` and its output; doc-check
+  compares the copy at every doc build.

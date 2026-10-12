@@ -1,0 +1,92 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-exceptions]
+== The sugar that throws
+
+document has two layers. The core, every function this page has shown so far, never throws and
+exists in every build: each operation that can fail returns a `result`. The sugar reads as
+JavaScript reads, and throws as JavaScript throws, so it exists only in a build with exceptions:
+
+[cols="2,3",options="header"]
+|===
+| Sugar | Its core function
+
+| `h = x`
+| `h.set(x)`
+
+| `h = other`, `doc["a"] = doc["b"]`
+| `h.set(other)`: a deep copy of the other handle's value
+
+| `h.as<T>()`
+| `h.get<T>()`
+
+| `h.as_string()`
+| `h.get<std::string_view>()`
+
+| `h.as_bool()`
+| `h.get<bool>()`
+
+| `wd::parse_or_throw(text)`
+| `wd::parse(text)`
+
+| `wd::document d;`
+| `wd::document::create()`
+
+| `wd::document copy = doc;`
+| `doc.clone()`
+|===
+
+Each member is its core function, then, on failure, the exception of the core's error: `errc::syntax`
+throws `wd::syntax_error`, which also holds the byte offset; `errc::type` throws `wd::type_error`,
+`errc::range` `wd::range_error`, `errc::capacity` `wd::capacity_error`, and
+`errc::not_a_document` and `errc::incompatible_document` `wd::image_error`. Each derives from
+`wd::error`, which derives from `std::runtime_error` and holds the code (<<document-errors>>). A
+member that throws has changed nothing, since its core function completes or changes nothing.
+
+[source]
+----
+include::{examples}/document_javascript.cpp[tag=sugar,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_javascript.expected[lines=23..29]
+----
+
+[#document-exceptions-rules]
+=== Its rules
+
+* *Assignment writes; it never rebinds.* `h = x` stores `x` at the place `h` names, and `h` still
+  names that place afterward. `h = other`, with `other` a handle, stores a deep copy of the value
+  `other` names, as `doc["a"] = doc["b"]` does: never an alias (<<document-handles-copies>>).
+* *`= wd::undefined` erases a member,* as `set(wd::undefined)` does.
+* *`as_string()` reads UTF-8 strings only:* it returns a `std::string_view`, which a UTF-16
+  string cannot give. Under `js_traits`, a program uses `as<std::u16string_view>()` or
+  `as<std::string>()`.
+* *`wd::document d;` holds `null`,* and the copy constructor gives an equal and independent copy.
+  Both are for owned documents only: an external document has no buffer to be made or copied into.
+* *An external document throws `wd::capacity_error` when it is full,* where `set` would return
+  `errc::capacity`.
+
+[#document-exceptions-without]
+=== Without exceptions
+
+In a build without exceptions, the sugar is not there: each member carries the constraint
+`detail::exceptions_enabled`, which no such build satisfies, so a call does not compile, and the
+compiler's note names the constraint. For `as<std::int32_t>()`, Clang writes "no matching member
+function for call to 'as'", with the note "because 'int' does not satisfy 'exceptions_enabled'",
+and the test `no_exceptions` holds what it writes for each member (<<document-testing>>). A
+generic program can ask whether the sugar is there:
+
+[source]
+----
+include::{examples}/document_no_exceptions.cpp[tag=absent,indent=0]
+----
+
+The core is the same in both builds, and an example of it is in <<document-errors>>. A build has
+no exceptions when webcpp has none, or when the program defines `WEBCPP_DOCUMENT_NO_EXCEPTIONS`
+for document alone (<<document-testing-exceptions>>).

@@ -28,7 +28,11 @@
 
 namespace webcpp::document {
 
-/** The limits and the revivers of a parse. */
+/**
+ The limits and the revivers of a parse.
+
+ @see "Parsing", in the guide.
+*/
 struct parse_options {
     /** The deepest nesting of arrays and objects; one deeper is @ref errc::capacity. */
     std::uint64_t max_depth = 256;
@@ -59,6 +63,7 @@ struct parse_options {
  @param o The limits and the revivers.
  @return The document; @ref errc::syntax for malformed text, @ref errc::range for a number the
  traits' `number` refuses, @ref errc::capacity past a limit.
+ @see "Parsing", in the guide.
 */
 template <class Traits = default_traits>
 // The parser ends the program where the process heap, which holds its frames and pending text,
@@ -106,6 +111,7 @@ result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
  @throws syntax_error For malformed text, with the byte offset where it was found.
  @throws range_error For a number the traits' `number` refuses.
  @throws capacity_error Past a limit.
+ @see "The sugar that throws", in the guide.
 */
 template <class Traits = default_traits>
     requires detail::exceptions_enabled<Traits>

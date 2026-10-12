@@ -23,6 +23,7 @@ namespace webcpp::document {
 
  @note The values are fixed: they are never reused for a different meaning, so a stored value
  keeps its meaning across versions.
+ @see "Handles", in the guide.
 */
 enum class kind : std::uint8_t {
     /** JavaScript's `undefined`: never stored; what a handle reads when nothing is there. */

@@ -320,6 +320,8 @@ struct object_member {  // NOLINT(misc-no-recursion)
 
  Its members are stored in the order written, by the traits' key order, and a key written twice
  keeps the last value, in the first one's place, as JavaScript does.
+
+ @see "Handles", in the guide.
 */
 class object {  // NOLINT(misc-no-recursion)
 public:
@@ -345,7 +347,11 @@ private:
 };
 
 // Copied and destroyed with its literals, recursively: see literal's exemption.
-/** An array, as JavaScript writes `[...]`: `wd::array{1, "x", nullptr}`. */
+/**
+ An array, as JavaScript writes `[...]`: `wd::array{1, "x", nullptr}`.
+
+ @see "Handles", in the guide.
+*/
 class array {  // NOLINT(misc-no-recursion)
 public:
     /** An empty array, `[]`. */

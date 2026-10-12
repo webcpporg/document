@@ -40,6 +40,8 @@ inline constexpr std::uint32_t byte_order_mark = 0x01020304;
  The 64 bytes at the start of every image, in the byte order of the machine that wrote it.
 
  The heap follows it, at offset 64.
+
+ @see "Images", in the guide.
 */
 struct image_header {
     /** @ref image_magic. */

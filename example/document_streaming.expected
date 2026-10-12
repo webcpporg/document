@@ -1,0 +1,13 @@
+{"name":"Ada","tags":["math"],"n":1500}
+write [1,2: ok
+write ,]: malformed JSON text at 5
+cause: syntax error
+write 3]: malformed JSON text at 5
+write [1]: ok
+finish: [1]
+write [2]: malformed JSON text at 3
+write [[1],: ok
+write [2]]: no room left at 5
+[[[1]]]: no room left
+{"name":|"Ada","t|ags":["m|ath"],"n|":1500}|
+{"name": then no room left

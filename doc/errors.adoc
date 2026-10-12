@@ -1,0 +1,88 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-errors]
+== Errors
+
+Every operation of the core that can fail returns a `wd::result<T>`, Boost.System's `result`: the
+value, or a `boost::system::error_code`. document's own codes are the enumerators of `wd::errc`, of
+the category `webcpp.document`, whose values are fixed and never reused, so that a stored code
+keeps its meaning across versions. The error a sink or a selector's callback returns is passed on
+unchanged, in its own category.
+
+[cols="2,4,2,2",options="header"]
+|===
+| `errc` | When | JavaScript | Exception, with exceptions only
+
+| `syntax`, 1
+| malformed JSON text, with Boost.JSON's code as the parser's `cause()` and the byte offset as its
+  `offset()`; text after a finished parse
+| `SyntaxError`
+| `wd::syntax_error`, with `offset()`
+
+| `type`, 2
+| a value of another kind; a write through nothing; text invalid in the encoding; a malformed
+  selector; a method of arrays on anything but an array
+| `TypeError`
+| `wd::type_error`
+
+| `range`, 3
+| a number that does not fit or is not exact; a date out of JavaScript's range
+| `RangeError`
+| `wd::range_error`
+
+| `capacity`, 4
+| no room: a full external buffer, an owned document at its `max_bytes`, a parser's limit
+| none
+| `wd::capacity_error`
+
+| `not_a_document`, 5
+| bytes that are not an image
+| none
+| `wd::image_error`
+
+| `incompatible_document`, 6
+| an image of another format version, Boost version, layout, byte order or traits
+| none
+| `wd::image_error`
+|===
+
+An `errc` converts to an `error_code` and compares with one, `r.error() == wd::errc::type`, and
+`wd::error_category()` is the category. The program below is built without exceptions, which
+`example/Jamfile` asks for it whatever the build asks, and makes each error once:
+
+[source]
+----
+include::{examples}/document_no_exceptions.cpp[tag=print,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_no_exceptions.cpp[tag=errors,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_no_exceptions.expected[lines=1..8]
+----
+
+An operation that fails changes nothing, so the program goes on with the document as it was:
+
+[source]
+----
+include::{examples}/document_no_exceptions.cpp[tag=compare,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_no_exceptions.expected[lines=9]
+----
+
+A failure of the process heap is not an error value. The image's heap is never exhausted by
+surprise, since every operation finds its room first, but a few things live on the process heap:
+the text `stringify` returns, the key a handle of a missing member holds, and the parser's frames.
+The standard library's `std::bad_alloc` there is thrown with exceptions and ends the program
+without them, as it does for any {cpp} container.

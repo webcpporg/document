@@ -1,0 +1,129 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-selectors]
+== Selectors
+
+A stream of a million records should not need the memory of a million records. A parser's
+selectors name places in the text, and deliver each value there as soon as it is complete, while
+the rest of the text is still to come: `on` delivers a value and drops it from the document being
+built, and `observe` delivers it and keeps it.
+
+[#document-selectors-language]
+=== The language
+
+A selector is a subset of JSONPath: `$`, the root, then any sequence of these steps.
+
+[cols="1,3",options="header"]
+|===
+| Step | What it matches
+
+| `.name`
+| The member `name`. A name starts with a letter, `+_+`, `$` or a byte past ASCII, and goes on with
+  those and digits.
+
+| `['name']`
+| The member `name`, any key, with `+\'+` and `+\\+` as its only escapes.
+
+| `[n]`
+| The element `n`, written in decimal without a leading zero.
+
+| `+[*]+`
+| Every element of an array.
+
+| `+.*+`
+| Every member of an object.
+|===
+
+So `+$.items[*].id+` matches the `id` of each element of `items`. A malformed selector is
+`errc::type`, returned by `on` or `observe`.
+
+[#document-selectors-delivery]
+=== Delivery
+
+A callback takes a `wd::const_value`, the value, which it reads but cannot change, and a
+`wd::path_view`, where the value is in the text, valid during the call; `to_string()` writes it as
+normalised JSONPath. A callback returns `void` or `wd::result<void>`. The program sums the
+quantities of `items` as they stream, and keeps `meta`:
+
+[source]
+----
+include::{examples}/document_selectors.cpp[tag=print,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_selectors.cpp[tag=on,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_selectors.expected[lines=1..5]
+----
+
+A scalar is delivered when its token ends, and an array or an object when it closes. A value
+inside another that also matches is delivered first, since it completes first; if `on` took it,
+the outer value no longer holds it. A path's indices are those of the text, which `on` does not
+renumber:
+
+[source]
+----
+include::{examples}/document_selectors.cpp[tag=nested,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_selectors.expected[lines=6..10]
+----
+
+`on("$")` takes the root, and `finish` then returns a document that holds `undefined`. A number at
+the top of the text completes only when the text ends, since another digit could follow, so it is
+delivered by `finish`:
+
+[source]
+----
+include::{examples}/document_selectors.cpp[tag=root,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_selectors.expected[lines=11..15]
+----
+
+[#document-selectors-failure]
+=== A failing callback
+
+A failure a callback returns fails the parser: `write` returns it, and so does every later call,
+until `reset`. In a build with exceptions, an exception a callback throws fails the parser the same
+way: `write` or `finish` rethrows it, and every later call throws it again, until `reset`.
+
+[source]
+----
+include::{examples}/document_selectors.cpp[tag=failing,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_selectors.expected[lines=16..17]
+----
+
+[#document-selectors-bounded]
+=== In bounded memory
+
+A value `on` takes is erased from the document once delivered, its blocks zeroed and freed, so
+the next one takes the same room: a stream of any length needs the memory of one element at a
+time. A callback that must keep a value copies it, into a document of its own, with `set` or
+`clone`.
+
+[source]
+----
+include::{examples}/document_selectors.cpp[tag=bounded,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_selectors.expected[lines=18]
+----

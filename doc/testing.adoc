@@ -7,8 +7,17 @@
 [#document-testing]
 == Testing
 
+A test of a program that uses document compares values: a document with `==`, which compares
+structurally, or the text `stringify` writes, which is what `JSON.stringify` writes, byte for byte, so that an
+expected text can be measured with Node. Every failure is a value, which a test compares with an
+`errc`; nothing depends on a clock, a thread or global state; and the same operations give the
+same image, so that two runs, or two targets, can be compared byte for byte.
+
+[#document-testing-library]
+=== How document is tested
+
 document's tests are lightweight_test programs, one per subject, under `test/`, each declared in
-`test/Jamfile` with webcpp's `webcpp.run`:
+`test/Jamfile` with webcpp's `webcpp.run`. The JavaScript facts they hold are Node 26's:
 
 [cols="1,3",options="header"]
 |===
@@ -18,50 +27,179 @@ document's tests are lightweight_test programs, one per subject, under `test/`, 
 | The values of `errc` and `kind`, which are fixed, the category's name and messages, and the
   conversion and the comparison with an `error_code`; built again with exceptions as
   `errors_raise`, the exception each `errc` raises.
+
+| `number`
+| Numbers read from JSON text exactly, at the edges of their text and of `decimal128_t`; written
+  as JavaScript's Number::toString writes them, row by row of <<document-numbers>>; converted to
+  and from every integer width and decimal type.
+
+| `traits`
+| Array-index keys; dates as `Date.prototype.toJSON` writes them; base64 against RFC 4648's
+  vectors; UTF-8 and UTF-16 validation and transcoding; the scalar and number codecs; the concept
+  traits satisfy, and the tags that tell traits apart.
+
+| `heap`
+| The image's heap: strings of exact size zeroed when freed, an allocator that hands out and frees
+  zeros, probes that leave the heap as it was, regions owned and external, grown, copied and
+  shrunk, the same bytes at any address, and the header's check.
+
+| `selector_grammar`
+| The selectors' grammar and matcher, apart from any parser: which texts parse into which steps,
+  which are refused, and which paths each selector matches.
+
+| `tree`
+| The tree under each object policy, keys that look like array indices, elements renumbered, deep
+  copies and literals, the header it keeps, and every operation, which completes or changes
+  nothing, in buffers of every size and in owned images that grow.
+
+| `literal`
+| `wd::object` and `wd::array` before a document stores them: each form a value takes, nesting,
+  members in the order written, and what a literal refuses at compile time.
+
+| `convert`
+| Every settable type stored by value, and every node read back as every readable type, with
+  their type and range failures; text validated and transcoded; dates, bytes, and structural
+  equality.
+
+| `value`
+| The handles: navigation that never fails, `set` that creates and replaces, numbers, strings,
+  dates and bytes, `value_or`, `erase` and `assign_from`, deep copies, a handle kept while the
+  image grows and moves, equality, iteration, a deep copy into external buffers of every size, a
+  moved-from document and one that holds `undefined`.
+
+| `order`
+| The key order through the handles, with keys that look like array indices and one that holds a
+  zero byte, under each object policy and both encodings: assignment keeps a key's place, and a
+  key erased and created again takes a new key's.
+
+| `image`
+| Images copied to another address and opened there, formatted, refused, the same for the same
+  operations, no byte left of an erased secret, shrunk, a full external buffer, and a buffer that
+  is not 16-aligned.
+
+| `stringify`
+| `stringify` and `stringify_to` against Node's text: indentation, empty containers, escapes,
+  numbers, dates, bytes under each policy, a lone surrogate under `js_traits`, an undefined root,
+  every piece size from 1 to 64, a sink that fails or throws, and a document nested 100,000 levels
+  deep.
+
+| `parse`
+| What `parse` accepts, written back as Node writes it, and what it refuses, with the offset; the
+  limits of depth, bytes and image, exact; an object of 100,000 keys and a 64 MB string; the
+  revivers; a parse into external buffers of every size. Built again with exceptions as
+  `parse_sugar`, it checks `parse_or_throw`.
+
+| `streaming`
+| Every text of the corpus split at every byte, and written one byte at a time, gives the document
+  a whole parse gives; a syntax error's offset is the same however the text is split; a failed
+  parser stays failed and a finished one takes no more text; `max_bytes` counts every chunk; an
+  external parser.
+
+| `selector`
+| Deliveries by `on` and `observe`, nested values first, scalars when their token ends, the root,
+  a callback that fails or throws, a callback that cannot write, a million elements under `on`
+  within 64 KB of image, and the same deliveries however the text is split.
+
+| `array`
+| Each array method against Node's results, with JavaScript's index rules, on empty arrays and on
+  anything but an array; a handle kept while pushes grow the image; and a splice into external
+  buffers of every size, which completes or changes nothing.
+
+| `sugar`
+| Built with exceptions: assignment stores as `set` does and never rebinds, `as`, `as_string` and
+  `as_bool` read as `get` does, a default-constructed document holds `null`, a copy is equal and
+  independent, and each failure throws the exception of the core's code and changes nothing.
+
+| `no_exceptions`
+| Built without exceptions, a test of the compiler's diagnostics: each member of the sugar called
+  once does not compile, and the note names `exceptions_enabled` (<<document-exceptions>>).
+
+| `oracle_cases`
+| Node as the oracle, from {cpp}: every case of the corpus parsed, changed by its operations
+  through the core and written, under `default_traits` and `js_traits`, must give Node's text and
+  Node's return values, byte for byte (<<document-testing-oracle>>).
 |===
 
-Beside them, `test/Jamfile` compiles each public header alone, as the only include of its
-translation unit, so that a header that leans on an include it does not make fails, naming it.
+Each case is a function named after the rule it checks, such as `handle_survives_growth`, and
+`main` calls them all and returns `boost::report_errors()`. Every test is built and passes without
+exceptions too, but those that declare `<exception-handling>on`. Beside them, `test/Jamfile`
+compiles each public header alone, as the only include of its translation unit, so that a header
+that leans on an include it does not make fails, naming it. And `example/Jamfile` builds every
+program this page shows, runs it, and compares what it printed with the `.expected` beside it; a
+program that returns anything but 0 fails too.
+
+[#document-testing-oracle]
+=== Node as the oracle
+
+`test/oracle/` runs the same cases in Node and in {cpp}. A case, `test/fixtures/cases/<name>.json`,
+is a JSON text, an indent, and a list of operations: `set`, `erase`, `push`, `pop`, `shift`,
+`unshift`, `splice`, `reverse`, the length set and `Object.assign`, each value written as JSON
+text, so that neither side reads a number through a double. `oracle.mjs` runs each case with
+`JSON.parse`, the operations in JavaScript and `JSON.stringify`, and writes what it gets to
+`test/fixtures/expected/<name>.json`, which is committed; the test `oracle_cases` runs each case
+through the document and must give those bytes. The cases written by hand follow the rules of this
+page, key order, numbers, arrays, strings, dates, bytes and indentation; the others are random
+documents and operations, which `generate.mjs` writes from a fixed seed. A case of numbers a double
+does not keep runs with `js_traits` alone; every other runs with both traits.
+
+No case holds what the two sides do differently by design (<<document-javascript-differences>>):
+a lone surrogate, a number past a double's range or past 34 digits, an operation JavaScript would
+throw on, or the key `+__proto__+`, which sets a prototype in JavaScript.
 
 [#document-testing-exceptions]
 === Without exceptions
 
 That document works without exceptions is checked by the lint, which compiles every public header,
-and every test, which instantiate its templates, with `exception-handling=off`.
+and every test and example, which instantiate its templates, with `exception-handling=off`.
 `<webcpp/document/config.hpp>`, which every public header of document includes first, defines
 `WEBCPP_DOCUMENT_NO_EXCEPTIONS` when webcpp has no exceptions (`WEBCPP_HAS_EXCEPTIONS` is not
 defined: the compiler has none, or the program defined `WEBCPP_NO_EXCEPTIONS`), and a program may
 define it for document alone, as Boost.Asio's `BOOST_ASIO_NO_EXCEPTIONS` does. The core never
-throws, so the macro removes only the sugar that throws and the exception types. The tests `config`,
-`config_developer_defined` and `config_all_off` check the three ways it is defined, and the lint
-refuses a `throw` in a public header: an exception goes through `boost::throw_exception`.
+throws, so the macro removes only the sugar that throws and the exception types
+(<<document-exceptions>>). The tests `config`, `config_developer_defined` and `config_all_off`
+check the three ways it is defined, and the lint refuses a `throw` in a public header: an
+exception goes through `boost::throw_exception`.
 
 [#document-testing-targets]
 === Targets
 
-`test/Jamfile` declares the targets it is built for, `webcpp.targets native emscripten wasip2
-wasip3`, and b2 builds each program for those alone. From the root of a webcpp checkout, each of
-these builds and runs:
+`test/Jamfile` and `example/Jamfile` declare the targets they are built for, `webcpp.targets
+native emscripten wasip2 wasip3`, and b2 builds each program for those alone. From the root of a
+webcpp checkout, each of these builds and runs:
 
 `b2 libs/document/test`::
 The {n-tests-native} tests natively: the lightweight_test programs, and each of the {n-headers}
 public headers compiled alone.
 
-`b2 libs/document/test toolset=emscripten`::
-The same on emscripten: {n-tests-emscripten} tests, each run by node, b2's toolset itself.
+`b2 libs/document/example`::
+The {n-examples} examples, each built, run, and its output compared with the one beside it.
 
-`b2 libs/document/test toolset=clang-wasip2 testing.launcher=wasmtime`::
-The same for wasm32-wasip2: {n-tests-wasip2} tests, each run by wasmtime. `toolset=clang-wasip3`
-does the same for wasm32-wasip3: {n-tests-wasip3} tests.
+`b2 libs/document/test libs/document/example toolset=emscripten`::
+The same on emscripten: {n-tests-emscripten} tests and {n-examples-emscripten} examples, each run
+by node, b2's toolset itself.
+
+`b2 libs/document/test libs/document/example toolset=clang-wasip2 testing.launcher=wasmtime`::
+The same for wasm32-wasip2: {n-tests-wasip2} tests and {n-examples-wasip2} examples, each run by
+wasmtime. `toolset=clang-wasip3` does the same for wasm32-wasip3: {n-tests-wasip3} tests and
+{n-examples-wasip3} examples.
+
+`b2 libs/document/test/oracle//oracle`::
+The oracle lane: Node runs every case, and what it writes must be what `test/fixtures/expected`
+holds. It needs Node, and no package.
+
+`b2 libs/document/test/oracle//update-expected`::
+Not a check: it writes Node's results again, over the committed ones, after a case is added or
+changed.
 
 b2 compares timestamps, so a result that counts is built from scratch, with `b2 -a`.
-`b2 libs/document/test//errors` builds and runs one test alone, while working on it.
+`b2 libs/document/test//value` builds and runs one test alone, while working on it.
 
 [#document-testing-report]
 === The test matrix
 
-The continuous integration runs document's tests in lanes, one toolset each: the native compilers,
-emscripten, wasip2 and wasip3. Each lane builds from scratch and records what b2 built and ran:
+The continuous integration runs document's tests and examples in lanes, one toolset each: the
+native compilers, emscripten, wasip2 and wasip3. Each lane builds from scratch and records what b2
+built and ran:
 
 [source,bash]
 ----

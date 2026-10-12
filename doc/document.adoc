@@ -20,8 +20,41 @@ and a {cpp} program agree byte for byte.
 
 Its tree lives in one relocatable image, built through an allocator, so that a document can live in
 a memory segment, be made durable, and travel as binary. Its core never throws: every operation that
-can fail returns its error as a value. The <<reference,reference>> that closes this page lists every
-name the headers declare.
+can fail returns its error as a value.
+
+This page teaches document concept by concept, from JavaScript's side: what each part does, its
+smallest example, its variations and its rules. Every program it shows was compiled and run,
+natively, on emscripten, and for wasm32-wasip2 and wasm32-wasip3, and printed the output shown under
+it, which is what Node prints for the same JavaScript wherever the page does not say otherwise. The
+<<reference,reference>> that closes it lists every name the headers declare.
+
+include::introduction.adoc[]
+
+include::javascript.adoc[]
+
+include::handles.adoc[]
+
+include::numbers.adoc[]
+
+include::strings.adoc[]
+
+include::order.adoc[]
+
+include::arrays.adoc[]
+
+include::stringify.adoc[]
+
+include::parsing.adoc[]
+
+include::selectors.adoc[]
+
+include::traits.adoc[]
+
+include::images.adoc[]
+
+include::exceptions.adoc[]
+
+include::errors.adoc[]
 
 include::testing.adoc[]
 

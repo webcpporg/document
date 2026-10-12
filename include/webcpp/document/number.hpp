@@ -346,6 +346,7 @@ inline result<decimal_digits> scan_number(std::string_view json_number) noexcept
 
  @param d The number.
  @return Its text, which never holds more than 64 characters.
+ @see "Numbers", in the guide.
 */
 inline number_text write_javascript(const decimal_digits& d) noexcept {
     number_text t;

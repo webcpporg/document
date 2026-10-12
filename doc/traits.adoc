@@ -1,0 +1,78 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-traits]
+== Traits
+
+A document's traits choose what it stores and how: the {cpp} types of its scalars, the encoding of
+its strings, how it writes bytes, and the order of an object's keys. `wd::basic_document<Traits,
+Storage>` takes them first; `wd::document` is `wd::basic_document<wd::default_traits, wd::owned>`,
+and its handles `wd::value` and `wd::const_value` are those of the default traits too.
+
+[cols="1,2,2",options="header"]
+|===
+| Member | `wd::default_traits` | `wd::js_traits`
+
+| `boolean`
+| `bool`
+| `bool`
+
+| `integer`
+| `std::int64_t`
+| `std::int64_t`
+
+| `number`
+| `boost::decimal::decimal128_t`: exact, 34 significant digits
+| `double`: JavaScript's own numbers
+
+| `string`
+| `wd::utf8`
+| `wd::utf16`, as JavaScript holds strings
+
+| `date`
+| `wd::date_ms`
+| `wd::date_ms`
+
+| `bytes`
+| `wd::base64`
+| `wd::javascript_bytes`, as `JSON.stringify` writes a Uint8Array
+
+| `object`
+| `wd::javascript_order`
+| `wd::javascript_order`
+
+| `array`
+| `wd::dense`
+| `wd::dense`
+|===
+
+`js_traits` derive from the default traits, and a program's traits do the same, changing what they
+need:
+
+[source]
+----
+include::{examples}/document_traits.cpp[tag=define,indent=0]
+----
+
+<<document-order>> parses a text with both, and <<document-strings-bytes>> writes bytes with the
+second. The concept `wd::document_traits` says what traits must give, and a document of traits
+that do not satisfy it does not compile. This version fixes `boolean`, `integer` and `date` to
+`bool`, `std::int64_t` and `wd::date_ms`; `number` is the traits' choice, a type that satisfies
+`wd::stored_scalar`, trivially copyable, of 1, 2, 4, 8 or 16 bytes, with a `wd::scalar_codec` that
+stores it the same way on every target and a `wd::number_codec` that reads it from JSON text and
+writes it as JavaScript writes numbers. `string`, `bytes` and `object` are one of the encodings and
+policies <<document-strings>> and <<document-order>> list, and `array` is `wd::dense`, the one
+array policy.
+
+[#document-traits-identity]
+=== Traits are part of the image
+
+A document's image records its traits: its header holds a tag that hashes the size and the codec
+of each scalar, the encoding, the bytes policy and the object policy, with the sizes of the tree's
+nodes. An image written with other traits is refused with `errc::incompatible_document`, never read
+wrongly (<<document-images-refused>>). Copies between documents need the same traits, and a
+document's handles carry them in their type, so a handle of one traits cannot be given to a
+document of another.
