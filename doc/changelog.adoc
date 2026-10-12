@@ -19,4 +19,5 @@ of every version are on webcpp's index page.
 * Added the library: a JSON document that behaves as JavaScript does.
 * Added traits that choose the stored types, dates and bytes included.
 * Added one relocatable binary image per document, the same on every target.
+* Added JavaScript's key order, kept by every change to an object.
 // end::unreleased[]

@@ -38,5 +38,7 @@ webcpp.run traits : traits_test.cpp ;
 webcpp.run heap : heap_test.cpp ;
 # The selectors' grammar and matcher, apart from any parser.
 webcpp.run selector_grammar : selector_grammar_test.cpp ;
+# The tree: nodes, indices, key order, and changes that find their room first.
+webcpp.run tree : tree_test.cpp ;
 # The literals: values written in C++ before they are stored.
 webcpp.run literal : literal_test.cpp ;
