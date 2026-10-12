@@ -178,7 +178,7 @@ private:
 }  // namespace detail
 
 /**
- A lease of one block of an @ref image_pool: the block is its holder's until the lease is destroyed
+ A lease of one block of an @ref image_pool; the block is its holder's until the lease is destroyed
  or assigned, and then goes back to the pool, its bytes zeroed.
 
  A lease is moved, never copied; a moved-from lease holds no block.

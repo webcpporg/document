@@ -67,11 +67,11 @@ constexpr std::string_view expected_text =
     R"(6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]})";
 
 /** The golden image's file name for the traits. */
-std::string file_name(const wd::default_traits*) {
+std::string file_name(const wd::default_traits* /*traits*/) {
     return "default_traits.image";
 }
 
-std::string file_name(const wd::js_traits*) {
+std::string file_name(const wd::js_traits* /*traits*/) {
     return "js_traits.image";
 }
 
@@ -160,9 +160,10 @@ int write_goldens(const std::filesystem::path& directory) {
 
 }  // namespace
 
-int main(int argc, char** argv) {
-    if (argc == 3 && std::string_view(argv[1]) == "--write") {
-        return write_goldens(argv[2]);
+int main(int argc, char* argv[]) {
+    const std::span<char*> arguments(argv, static_cast<std::size_t>(argc));
+    if (arguments.size() == 3 && std::string_view(arguments[1]) == "--write") {
+        return write_goldens(arguments[2]);
     }
     check<wd::default_traits>();
     check<wd::js_traits>();

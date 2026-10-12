@@ -742,8 +742,8 @@ public:
     /**
      Inserts the member `key` holding `v` unless it is there, as `std::map::try_emplace`.
 
-     It is @ref insert: neither builds a value before the key is known to be absent, so `v` is
-     read only when it is stored.
+     It is @ref insert, since neither builds a value before the key is known to be absent, so `v`
+     is read only when it is stored.
 
      @tparam T The value's type, any that `set` takes but @ref undefined.
      @param key The key, in UTF-8.

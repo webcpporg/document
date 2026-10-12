@@ -191,7 +191,8 @@ void format_and_open() {
 // open and from_image alike; the same image with them as written is read.
 void reserved_bytes_and_versions_are_refused() {
     wd::document doc = make_document();
-    webcpp::test::require(BOOST_TEST(doc.root().set(wd::object{{"k", "v"}}).has_value()));
+    wd::value root = doc.root();
+    webcpp::test::require(BOOST_TEST(root.set(wd::object{{"k", "v"}}).has_value()));
     const aligned_buffer buffer(doc.image().size());
     std::ranges::copy(doc.image(), buffer.bytes().begin());
     BOOST_TEST(wd::open(buffer.bytes()).has_value());
