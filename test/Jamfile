@@ -42,3 +42,5 @@ webcpp.run selector_grammar : selector_grammar_test.cpp ;
 webcpp.run tree : tree_test.cpp ;
 # The literals: values written in C++ before they are stored.
 webcpp.run literal : literal_test.cpp ;
+# Every settable type into an item, and a node back into every readable type.
+webcpp.run convert : convert_test.cpp ;
