@@ -12,23 +12,32 @@
 :example-caption!:
 :attribute-missing: warn
 
-document is a header-only JSON document for {cpp}20, one of the libraries of
+webcpp::document brings JavaScript programmers the wonders of {cpp} without the risks of {cpp}. It is
+a header-only JSON document for {cpp}20, one of the libraries of
 https://github.com/webcpporg/webcpp[webcpp], whose behaviour is JavaScript's: what `JSON.parse`,
 property access, assignment, `delete`, the array methods and `JSON.stringify` do in JavaScript,
 document does in {cpp}, with the same key order and the same text out, so that a JavaScript peer
 and a {cpp} program agree byte for byte.
 
 Its tree lives in one relocatable image, built through an allocator, so that a document can live in
-a memory segment, be made durable, and travel as binary. Its core never throws: every operation that
-can fail returns its error as a value.
+a memory segment, be made durable, be shared between threads and processes, and travel as binary
+and be opened where it lands, with no parse. It reads and writes JSON and NDJSON streams, keeps
+numbers exact, seals images with a CRC, and answers queries over ordered keys, from {cpp} and from
+JavaScript. Its core never throws: every operation that can fail returns its error as a value.
 
 This page teaches document concept by concept, from JavaScript's side: what each part does, its
-smallest example, its variations and its rules. Every program it shows was compiled and run,
-natively, on emscripten, and for wasm32-wasip2 and wasm32-wasip3, and printed the output shown under
-it, which is what Node prints for the same JavaScript wherever the page does not say otherwise. The
+smallest example, its variations and its rules. Every {cpp} program it shows was compiled and run,
+natively and, where the program does not need Boost.Asio, Boost.Cobalt, threads, shared memory or
+xactor, on emscripten and for wasm32-wasip2 and wasm32-wasip3 too (<<document-testing>>), and printed
+the output shown under it, which is what Node prints for the same JavaScript wherever the page does
+not say otherwise. The listings of the JavaScript module are copied from the tests that run it. The
 <<reference,reference>> that closes it lists every name the headers declare.
 
 include::introduction.adoc[]
+
+include::gains.adoc[]
+
+include::js-module.adoc[]
 
 include::javascript.adoc[]
 
@@ -42,6 +51,8 @@ include::order.adoc[]
 
 include::arrays.adoc[]
 
+include::containers.adoc[]
+
 include::stringify.adoc[]
 
 include::parsing.adoc[]
@@ -53,6 +64,12 @@ include::selectors.adoc[]
 include::traits.adoc[]
 
 include::images.adoc[]
+
+include::wire.adoc[]
+
+include::sharing.adoc[]
+
+include::boost-json.adoc[]
 
 include::exceptions.adoc[]
 

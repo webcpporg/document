@@ -1,18 +1,44 @@
 # document
 
+webcpp::document brings JavaScript programmers the wonders of C++ without the risks of C++.
+
 document is a header-only JSON document for C++20, one of the libraries of
 [webcpp](https://github.com/webcpporg/webcpp), whose behaviour is JavaScript's: what `JSON.parse`,
 property access, assignment, `delete`, the array methods and `JSON.stringify` do in JavaScript,
 document does in C++, with the same key order and the same text out, so that a JavaScript peer and
-a C++ program agree byte for byte.
+a C++ program agree byte for byte. Its core never throws: every operation that can fail returns its
+error as a value, and the sugar that throws as JavaScript does exists only in a build with
+exceptions.
 
-Numbers are exact by default, stored by value and written as JavaScript writes them, or
-JavaScript's own doubles with `js_traits`. The parser takes text in chunks of any size, and its
-selectors deliver values while they stream, in bounded memory. A document lives in one relocatable
-binary image, which works at any address and has the same bytes on 64-bit native targets and on
-wasm32, so that it can live in memory its user owns and travel as binary. Its core never throws:
-every operation that can fail returns its error as a value, and the sugar that throws as
-JavaScript does exists only in a build with exceptions.
+What C++ gives JavaScript, and JavaScript does not have:
+
+- JSON and NDJSON streams, read as the bytes arrive, in chunks of any size, with Boost.Asio,
+  Boost.Cobalt or an actor system.
+- Exact numbers: stored as the decimal that was written, written as JavaScript writes them, read
+  back in full with `getDecimal`; or JavaScript's own doubles with `js_traits`.
+- Images sealed by a CRC, so that a byte changed by accident is refused when an image is opened.
+- Memory you manage: one relocatable image, `reserve` and `capacity`, `shrink_to_fit` and `compact`,
+  pools of blocks, and no garbage collector in the way; the image has the same bytes on 64-bit
+  native targets and on wasm32.
+- Shared documents, counted by reference and copied on write, between threads and between processes.
+- Binary transmission: an image is sent as it is and opened in place, with no parse and no
+  allocation on receipt.
+- Ordered-index queries: `lower_bound`, `equal_range` and prefix queries over an object's keys,
+  with no sorting.
+
+The parser takes text in chunks of any size, and its selectors deliver values while they stream,
+in bounded memory.
+
+Binary transmission is where document wins outright: moving an image costs nothing or a memory
+copy between a page and its Worker, between threads, through shared memory between processes, and
+from a socket into a pool block on a machine or a fast local link. It is honest about where it
+loses. It parses more slowly than Boost.JSON. An image is many times larger than its JSON text, so
+over a network the compressed text is the smaller payload. And a seal is a CRC against accidental
+damage, not authentication: never open an image from a source you do not trust.
+
+The same document is a JavaScript module, `js/webcpp-document.mjs`, compiled with Emscripten, for
+a page, a Worker or Node: `Document.parse`, `get`, `set`, `push`, `splice`, `stringify`,
+`getDecimal`, `keysInRange`, `image`, `Document.open`, `StreamParser` and `free`.
 
 `<webcpp/document.hpp>` includes every public header, whose names are in the namespace
 `webcpp::document`. document needs Boost 1.92 or newer (Interprocess, MultiIndex, Decimal, System,

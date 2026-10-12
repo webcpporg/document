@@ -1,0 +1,229 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-wire]
+== Images on the wire
+
+A document is its image, and its image can be sent as it is: the sender writes the bytes, and the
+receiver reads them into a block of memory and opens the document there. Nothing is parsed, no tree
+is built, and nothing is allocated for the values or for the message; the receiver's work is the
+copy of the bytes off the stream and, for a sealed image, one pass to check the seal. JSON text
+needs a parse on arrival and allocates for each value it holds.
+
+That is the use document's image is built for, between programs that trust each other: a page and its
+Worker, the threads of a process, the processes of a machine, two machines on a fast local link whose
+receiver's CPU is the bottleneck (<<document-gains-wire>>). It is not the use for a narrow network:
+an image is many times the size of its JSON text, and larger than the compressed text
+(<<document-benchmarks-wire>>), so there the text is the smaller payload. The benchmarks measure
+what the receiver saves on each side of the trade (<<document-benchmarks-reading>>).
+
+This section sends images over a stream with Boost.Asio and receives them into a pool of blocks;
+sealing them, what a reader refuses and how big a block must be follow. <<document-sharing>> shares
+images between threads and processes without any stream.
+
+[#document-wire-framing]
+=== An image frames itself
+
+An image states its size in its header (<<document-images-header>>), so a stream of images needs no
+separator and no length prefix: the images follow one another, and a reader that has the first 64
+bytes of one knows where it ends. `wd::async_write_image(stream, doc, token)` seals the document and
+writes its image as one buffer. `wd::async_read_image(stream, pool, token)` reads the header of the
+next image into a block of a pool, checks it before it reads another byte, reads the rest of the
+image into the same block and opens the document there. It reads exactly the bytes the image needs,
+so the stream is left at the end of the image it completed.
+
+Both are composed operations of Boost.Asio, in `<webcpp/document/asio.hpp>`, which take any completion
+token, and are built natively only, as the rest of that header is (<<document-streams-asio>>).
+`async_write_image` completes with an `error_code`; `async_read_image` completes with an
+`error_code` and a `wd::leased_document<>`, which holds the document and the block it lives in.
+
+[#document-wire-pools]
+=== Pools of blocks
+
+`wd::image_pool::create(block_bytes, blocks)` allocates a pool once: `blocks` blocks of `block_bytes`
+bytes each, 16-aligned and zeroed, in one allocation. A block is leased to each image a reader
+receives, and goes back when the `leased_document` that holds it goes, its bytes zeroed. The pool
+therefore allocates nothing per message; a receiver that can hold two images at once makes a pool of
+two blocks:
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=pool,indent=0]
+----
+
+When every block is leased, `async_read_image` completes with `errc::capacity` and reads nothing:
+this is the backpressure of a stream of images, and the stream is read again when a block is given
+back. A pool outlives its leases and its readers, and is not thread-safe: a block is leased and
+given back, a lease destroyed included, on one thread at a time. For blocks that threads and
+processes share, see <<document-sharing-pool>>.
+
+A `leased_document` is moved, never copied, and reads and writes as any document does within its
+image; a change that needs more room than its block has returns `errc::capacity`. The sans-IO
+`wd::image_reader` under `async_read_image` is the same reader without Asio: `write(bytes)` takes
+the bytes of a stream and opens each image they complete, and `prepare()` and `commit()` let a
+socket read straight into the block, with no copy at all.
+
+[#document-wire-sizing]
+=== Sizing a block
+
+A block holds the largest image the pool will receive, a multiple of 16 and at least 64: an image
+larger than a block is refused with `errc::capacity`. What a document costs on the wire is its image,
+whatever it holds.
+
+A document that is parsed starts at 4096 bytes, as the parser gives it room, so a document of a few
+values sent as it is travels as 4096 bytes. `shrink_to_fit()` gives back the free space at the end of
+the image, and only that: for a small document it brings the image down to little more than a
+kilobyte (<<document-images-shrink>>). `compact()` rebuilds the image with no hole in it, and
+`compact_size()` says how large that image is before it is built (<<document-images-compact>>), so a
+program sizes its blocks, and what it sends, to what a document holds. This function makes the
+documents of the next example, parsing each and shrinking it before it is sent:
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=documents,indent=0]
+----
+
+[#document-wire-asio]
+=== Sending and receiving
+
+The example sends three documents over a connection on the loopback address, in one program, and
+receives them twice, once in a coroutine and once with a callback. The receiver prints each document
+with `stringify` while its image is held in its block, whether the image is sealed, and the blocks the
+pool has free then:
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=held,indent=0]
+----
+
+The coroutine sends each image, awaiting each write, and shuts the write side down at the end, which
+the reader sees as `eof`. The receiver awaits `async_read_image` in a loop. Each image is printed
+while its block is leased, and the block goes back when the iteration ends:
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=coroutine,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_asio.expected[lines=1..5]
+----
+
+With a pool of two blocks and one document held, one block is free, and at `eof` both are. With
+callbacks, the next write and the next read are
+posted rather than called, so that none starts inside the callback of the one before it:
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=callback,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_asio.expected[lines=6..10]
+----
+
+[#document-wire-sealed]
+=== Sealed images
+
+`doc.seal()` writes a seal into the image's header: the CRC-32C (Castagnoli) of the image's bytes, with
+the seal's own eight bytes taken as zero, and a marker in the high bit. `async_write_image` seals the
+document it sends. Opening a sealed image, with `wd::open`, `wd::from_image` or the image reader,
+checks the seal first of all, before anything else its header states is trusted, and refuses an
+image whose bytes do not match with `errc::damaged_document`. A flipped bit on a disk or a wire, a
+torn write, a stray write over a buffer and an image cut short are all damage, and none of the image
+is read:
+
+[source]
+----
+include::{examples}/document_image_errors.cpp[tag=damaged,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_errors.expected[lines=10]
+----
+
+The seal holds until the document's next change, which clears it: an image is then simply not
+sealed, never wrongly sealed, and `sealed()` says which. It costs a pass over the image, about 600
+MB/s, and checking it when the image is opened costs the same. A program that trusts its memory, such
+as one that opens an image it has just written, skips the check with `wd::verify::none`. The changed
+byte of the example then reads as it is:
+
+[source]
+----
+include::{examples}/document_image_errors.cpp[tag=unverified,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_errors.expected[lines=11]
+----
+
+A sealed image left in reused memory, which a later use wrote over in part, is refused too, since
+the seal shows that the bytes changed since the image was written. An image that is not damaged opens
+in place, and is still sealed:
+
+[source]
+----
+include::{examples}/document_image_errors.cpp[tag=reused,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_image_errors.cpp[tag=opened,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_errors.expected[lines=12..13]
+----
+
+*A seal is a checksum against accidental damage, and is not authentication.* Anyone can compute a
+valid seal for any bytes, so a sealed image from a source that is not trusted is no safer than an
+unsealed one. *Never open an image from an untrusted source:* the checks of <<document-images-refused>>
+cannot prove sound every offset inside a tree, and an image travels only between programs that trust
+each other. Untrusted data enters as JSON text, which the parser checks entirely.
+
+[#document-wire-errors]
+=== What a reader refuses
+
+The completion of `async_read_image` says what happened, and on every error the lease it carries is
+empty:
+
+[cols="2,3",options="header"]
+|===
+| Error | When
+
+| none
+| An image was read and opened; the lease holds it.
+
+| `asio::error::eof`
+| The stream ended between two images.
+
+| `errc::capacity`
+| Every block of the pool is leased, and the stream is not read; or an image is larger than a block.
+  The end of the stream is reported this way too while the pool is full, since the reader needs a
+  block to learn that the stream ended.
+
+| `errc::not_a_document`
+| Bytes that are not an image, or an image whose heap is not sound.
+
+| `errc::incompatible_document`
+| An image of another format version, byte order, Boost version or traits.
+
+| `errc::damaged_document`
+| A sealed image whose bytes do not match its seal.
+
+| another
+| The error of a read.
+|===
+
+The refusal of an image ends the reader, as an error ends a stream of documents
+(<<document-streams-errors>>), because a stream of images that has lost its place cannot find the
+next header. The refusals are the ones of <<document-images-refused>>, which that section shows one
+by one.

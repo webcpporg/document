@@ -36,19 +36,28 @@ unchanged, in its own category.
 
 | `capacity`, 4
 | no room: a full external buffer, an owned document at its `max_bytes`, a parser's limit
-| none
+| none; `RangeError` from the module
 | `wd::capacity_error`
 
 | `not_a_document`, 5
 | bytes that are not an image
-| none
+| none; `TypeError` from the module
 | `wd::image_error`
 
 | `incompatible_document`, 6
 | an image of another format version, Boost version, layout, byte order or traits
-| none
+| none; `TypeError` from the module
+| `wd::image_error`
+
+| `damaged_document`, 7
+| a sealed image whose bytes do not match its seal: changed, torn or cut short
+  (<<document-wire-sealed>>)
+| none; `TypeError` from the module
 | `wd::image_error`
 |===
+
+The JavaScript column is the error JavaScript itself throws for the same fault; the module of
+<<document-js-errors>> throws a `SyntaxError`, a `RangeError` or a `TypeError` for every code.
 
 An `errc` converts to an `error_code` and compares with one, `r.error() == wd::errc::type`, and
 `wd::error_category()` is the category. The program below is built without exceptions, which

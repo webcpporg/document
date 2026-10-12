@@ -1,0 +1,168 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-sharing]
+== Sharing
+
+JavaScript shares an object by sharing a reference to it, and its collector decides when the object
+goes. A {cpp} program that shares a document between threads or processes needs the same two things,
+a reference that several holders have and a moment when the last one lets go, and document gives
+them without a collector and without copying the document. Its image is relocatable and holds
+offsets, not addresses, so it is the same bytes in every thread and in every process that maps it,
+at whatever address.
+
+[#document-sharing-threads]
+=== Threads
+
+A document that moves from one thread to another moves its handle and never the bytes of its image.
+A producer parses documents and pushes each into a queue; the consumer receives them and keeps
+them. The queue is the program's, of any kind; this one wakes the consumer on a push and tells it
+when nothing more comes:
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=queue,indent=0]
+----
+
+What the producer sends is the document and the address of its image before the push, so that the
+consumer can show the image did not move:
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=exchange,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_threads.expected[lines=1..4]
+----
+
+Every document arrived with the image the producer sent: no byte was copied and nothing was parsed
+on the consumer's side.
+
+[#document-sharing-pool]
+=== Shared documents
+
+Several threads that read one document share it with `wd::shared_document<>`, which is
+`std::shared_ptr` for a document: copies share one image, a count says how many hold it, and the last
+holder to let go gives the image back. The images live in the blocks of a `wd::shared_pool`, over a
+region of memory the program gives, the process heap or a segment of shared memory. A pool is
+formatted once, `wd::shared_pool::format(region, block_bytes)`, with a 16-aligned region; its
+`region_bytes(block_bytes, blocks)` sizes the region for a number of blocks, `blocks()`,
+`block_bytes()` and `available()` describe it, and `wd::shared_pool::attach(region)` is how another
+view of the same region, in this thread or another process, joins it.
+
+A block is a header of 64 bytes, which holds the count of references to its image, and the room of
+one image. The pool works through offsets from the region's start and never addresses, its counts
+are lock-free atomics and its free blocks a lock-free stack: no lock is held at any moment, so no
+thread or process waits on another, and one that dies leaves no lock behind. A block that is free is
+all zero, and a block given back is zeroed.
+
+`shared_document<>::from_image(pool, bytes)` copies an image into a free block, `create(pool)` makes a
+new empty document in one, and `use_count()` says how many hold the document, in every process.
+Copying a `shared_document` adds a reference, destroying one drops it, and a reader takes a
+`const` reference and never writes. A reader holds its copy until it returns:
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=readers,indent=0]
+----
+
+The image of a parsed document keeps the room the parser gave it, 4096 bytes at first, and a block of
+2048 would refuse it, so the example shrinks the image to its content before it copies it into the
+pool (<<document-images-shrink>>). Four readers then share the document, and the count is the
+number of holders:
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=readers_main,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_threads.expected[lines=5..12]
+----
+
+[#document-sharing-cow]
+=== Copy on write
+
+A holder that wants to write calls `make_mutable()`. When it is the only holder, the document is its
+own and nothing happens. When others hold the image, `make_mutable` copies it into a free block of
+its own, the copy including the seal, and the holder changes the copy while the others keep the
+document as it was. It is `errc::capacity` when every block is leased.
+
+The library does not synchronise writers. A block that has several writers, or a writer and readers
+of that same block, must wait for each other by the program's own means, such as a mutex; the
+writer below changes only the copy that `make_mutable` made, which no other holder reads:
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=copy_on_write,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=copy_on_write_main,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_threads.expected[lines=13..15]
+----
+
+The change was made to the writer's copy, so the document that `main` holds still reads `Ada`, and the last holder
+to let go returned its block to the pool.
+
+[#document-sharing-processes]
+=== Processes
+
+A pool in a segment of shared memory is shared by processes, each of which maps the segment at an
+address of its own, and a document is passed between them by the offset of its image. The program
+below is its own consumer: the producer formats a pool of eight blocks of 4096 bytes in
+Boost.Interprocess's shared memory, parses or builds four documents in blocks of it, seals each,
+and sends the offsets through a message queue, and then runs itself again as the consumer, which
+attaches to the same segment. The constants say how many blocks and how large, and the end of the
+stream is an offset no image has:
+
+[source]
+----
+include::{examples}/document_image_interprocess.cpp[tag=layout,indent=0]
+----
+
+The producer makes each document in a block of the pool. `release()` gives up the producer's
+reference without dropping it, and returns the offset of the image, which is the document now as far
+as the consumer is concerned:
+
+[source]
+----
+include::{examples}/document_image_interprocess.cpp[tag=produce,indent=0]
+----
+
+The consumer attaches to the segment, and for each offset it receives, `adopt` takes over the
+reference `release` gave up, opens the image in place, and checks its seal. The document is read
+where it is and dropped, which returns its block to the pool. One image of the example was damaged
+after it was sealed: `adopt` refuses it with `errc::damaged_document`, and the reference it
+was handed is still counted, so the consumer gives it back by offset with `pool.drop(offset)`, which
+reads nothing of the image and returns the block:
+
+[source]
+----
+include::{examples}/document_image_interprocess.cpp[tag=consume,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_interprocess.expected[]
+----
+
+Before the consumer ran, the pool had four free blocks of the eight, the four documents' blocks
+being leased; after it, all eight are free. The reference count of each document read was one, the
+consumer's.
+
+A process that dies holding references leaves their blocks counted for good, as
+Boost.Interprocess's own `shared_ptr` does; recovering them is the program's. Images in shared memory
+are trusted input, as every image is (<<document-wire-sealed>>): the processes that map a pool trust
+one another.

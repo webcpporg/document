@@ -10,7 +10,9 @@
 document's interface is JavaScript's ways with JSON, written in {cpp}: a name of JavaScript
 becomes a member function of the same meaning, and an operation that JavaScript makes throw
 returns its error instead. A program that knows how JavaScript reads and writes a parsed object
-knows how document does.
+knows how document does. This section is for the {cpp} programmer who knows JavaScript; the
+JavaScript programmer who wants document in a page, a Worker or Node reads <<document-js>>, and
+what {cpp} gives that JavaScript does not is in <<document-gains>>.
 
 [#document-javascript-table]
 === JavaScript, then {cpp}

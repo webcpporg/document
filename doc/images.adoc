@@ -12,7 +12,9 @@ the tree, its nodes, its indices and its strings. Every pointer inside is an off
 is stored, and every size a 64-bit integer, so the image works at any 16-aligned address and has
 the same bytes on a 64-bit native target and on wasm32. A document can therefore live in memory
 it does not own, such as a browser's, be copied as bytes, be written to a file and read back, and
-travel as binary between a program's processes.
+travel as binary between a program's processes. This section teaches the image itself: its bytes,
+its header, what opening refuses, where it lives and how its size is managed. <<document-wire>>
+sends images over streams and <<document-sharing>> shares them between threads and processes.
 
 [#document-images-bytes]
 === The bytes
@@ -59,7 +61,8 @@ The header says what the bytes after it are, in the byte order of the machine th
 | 24 | 8 | the size of the image
 | 32 | 8 | the offset of the tree's container, the heap's first block, the same in every image
 | 40 | 8 | the id the next node takes; ids are never reused
-| 48 | 16 | zero
+| 48 | 8 | the seal: zero for an image that is not sealed, else the high bit and the CRC-32C of the image, with these eight bytes taken as zero (<<document-wire-sealed>>)
+| 56 | 8 | zero
 |===
 
 [#document-images-refused]
@@ -70,7 +73,8 @@ and another magic, with `errc::not_a_document`; and an image of another format v
 Boost version or layout tag, with `errc::incompatible_document`. A mismatch is refused, never read
 or converted. Then the heap's own check of its structure runs, and a container offset other than
 the heap's first block, or a pointer to the root that leaves the image, is `errc::not_a_document`
-too, refused before anything is read through it.
+too, refused before anything is read through it. A sealed image whose bytes do not match its seal is
+`errc::damaged_document`, and is checked first of all (<<document-wire-sealed>>).
 
 [source]
 ----
@@ -82,9 +86,27 @@ include::{examples}/document_image.cpp[tag=refused,indent=0]
 include::{examples}/document_image.expected[lines=4..5]
 ----
 
+Each refusal has its own cause, and a program tells them apart by the `errc` of the error. This
+program makes one of each and prints the code and the message: an image of other traits, an image of
+another format version, text that is longer than a header and has no magic, zeroed memory, a buffer
+that is not 16-aligned (since `open` reads in place), an image cut short, a header that states a size
+larger than the bytes it is given, and a header that names a container outside the heap. The last
+line is the same image cut short after it was sealed (<<document-wire-sealed>>):
+
+[source]
+----
+include::{examples}/document_image_errors.cpp[tags=layout;version;garbage;zeroed;misaligned;truncated;size;container,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_errors.expected[lines=1..9]
+----
+
 *An image is trusted input.* Those checks cannot prove sound every offset inside the tree, so an
 image travels only between a program's own processes and peers it trusts; untrusted data enters as
-JSON text, which the parser checks entirely.
+JSON text, which the parser checks entirely. A seal (<<document-wire-sealed>>) catches bytes that
+changed by accident and is not authentication: *never open an image from a source you do not trust.*
 
 [#document-images-storage]
 === Owned and external storage
@@ -122,12 +144,41 @@ include::{examples}/document_image.cpp[tag=external,indent=0]
 include::{examples}/document_image.expected[lines=6..8]
 ----
 
+[#document-images-reserve]
+=== Reserving
+
+A document that is to be built large grows by doubling: each time the image is full, a buffer twice
+the size is made, the image is copied into it and the old one is freed. `reserve(bytes)` is
+`std::vector::reserve` for an image: it makes the image hold at least `bytes` in one step, so that a
+batch of insertions of a known size moves nothing, and `capacity()` says how large the image is. A
+reservation moves the image once, which invalidates every `std::string_view` read from a value but no
+handle or iterator, and clears a seal; a reservation within the capacity changes nothing. A request
+past the document's `max_bytes`, or past an external image's size, is `errc::capacity` and changes
+nothing.
+
+This program inserts ten thousand members into two objects, one without a reservation and one with
+a reservation of 256 bytes a member, and asks whether the image grew:
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=reserve,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_containers.expected[lines=31..33]
+----
+
 [#document-images-shrink]
 === Shrinking
 
-`doc.shrink_to_fit()` gives back the free space at the end of an owned image. Blocks are never
-moved, so a value that sits at the end of the heap keeps the image as large as its end; a deep copy
-into a new document packs the content:
+A document that is parsed starts at 4096 bytes, and a document that is built grows from there as it
+needs. `doc.shrink_to_fit()` gives back the free space at the end of an owned image, and only that:
+blocks are never moved, so a value that sits at the end of the heap keeps the image as large as its
+end. For a small document it is the whole story, a few values shrinking to little more than a
+kilobyte. For a document that grew and then let its values go, it may leave an image nearly as large
+as it was, and a deep copy into a new document packs the content, as `compact` does in place
+(<<document-images-compact>>):
 
 [source]
 ----
@@ -138,6 +189,41 @@ include::{examples}/document_image.cpp[tag=shrink,indent=0]
 ----
 include::{examples}/document_image.expected[lines=9..10]
 ----
+
+[#document-images-compact]
+=== Compacting
+
+`doc.compact()` rebuilds an owned image as the compact image of its content: the nodes in document
+order, their ids numbered from the first, each block right after the last with no hole between, and
+the image exactly as large as they are. Where `shrink_to_fit` can only trim the free tail,
+`compact` takes out every hole, so a document that lost most of its values is smaller compacted
+than shrunk. Measured, the same on a 64-bit target and on wasm32: a small document of 60 members
+after 54 of them were erased is 15,312 bytes after `shrink_to_fit` and 2,352 after `compact`; a
+large one, with 90% of its members erased, is 2,080,304 bytes and 209,424.
+
+Compacting also makes the image a function of the content alone. Two documents of equal content
+have byte-identical images after it, whatever edits made them, whether they were parsed, or built by
+`set`, `erase` and `splice`, or had values replaced; and a compact image compacts to itself. Equal
+documents can then be compared, hashed or stored by their bytes, and a seal over a compact image is
+the same everywhere.
+
+`compact_size()` is the exact size of the compact image, which it reads from the nodes without
+allocating anything, so a program sizes a block with it before it builds the image.
+`compact_into(buffer)` writes the compact image into a 16-aligned buffer of the program's own and
+opens it there, as an external document, zeroing the rest of the buffer and leaving the document as it was: it is the way to compact a
+document that cannot reallocate, such as one leased from a pool or held in a shared block, or to send
+an image without waste. It is `errc::capacity` for a buffer that is smaller than `compact_size()` or
+not aligned, and writes nothing then.
+
+Compacting removes holes, not the 192 bytes of each node (<<document-parsing-memory>>), so it does
+not change how an image compares in size with the JSON text of the same document
+(<<document-benchmarks-wire>>).
+
+`compact()` builds the new image before it replaces the old one, so a failure changes nothing. As a
+vector's reallocation does, it invalidates every handle, every `std::string_view` read from a value
+and every iterator, and, the bytes having changed, it clears a seal: sealing again is the caller's.
+The image's size afterwards is `compact_size()`, which is also its `capacity()`, so the next change
+that needs room grows it.
 
 A moved document takes the image of the one it is moved from, which then holds nothing: its
 handles, and those of the document moved into, are invalid.

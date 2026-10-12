@@ -33,14 +33,17 @@ specific to document.
 ## The page
 
 - `doc/document.adoc` includes one file per section, in this order: `introduction.adoc`,
-  `javascript.adoc`, `handles.adoc`, `numbers.adoc`, `strings.adoc`, `order.adoc`, `arrays.adoc`,
-  `stringify.adoc`, `parsing.adoc`, `streams.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`,
-  `exceptions.adoc`, `errors.adoc`, `testing.adoc`, then the reference and the changelog.
+  `gains.adoc`, `js-module.adoc`, `javascript.adoc`, `handles.adoc`, `numbers.adoc`,
+  `strings.adoc`, `order.adoc`, `arrays.adoc`, `containers.adoc`, `stringify.adoc`,
+  `parsing.adoc`, `streams.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`, `wire.adoc`,
+  `sharing.adoc`, `boost-json.adoc`, `exceptions.adoc`, `errors.adoc`, `testing.adoc`,
+  `benchmarks.adoc`, then the reference and the changelog.
   `b2 libs/document/doc` builds it with the strict reference.
-- Each `@see "<title>"` of a Doc Comment names a section's title: "Introduction", "From
-  JavaScript", "Handles", "Numbers", "Strings, dates and bytes", "Key order", "Arrays", "Writing
-  JSON", "Parsing", "Streams of documents", "Selectors", "Traits", "Images", "The sugar that
-  throws", "Errors", "Testing".
+- Each `@see "<title>"` of a Doc Comment names a section's title: "Introduction", "What C++
+  gives JavaScript", "Using it from JavaScript", "From JavaScript", "Handles", "Numbers", "Strings,
+  dates and bytes", "Key order", "Arrays", "Containers", "Writing JSON", "Parsing", "Streams of
+  documents", "Selectors", "Traits", "Images", "Images on the wire", "Sealed images", "Sharing",
+  "Compared with Boost.JSON", "The sugar that throws", "Errors", "Testing", "Benchmarks".
   Renaming a section renames its `@see` lines in the same commit; doc-check fails otherwise.
 - The guide's programs are `example/document_<topic>.cpp`, each with its `.expected`, whose lines
   are what Node prints for the same JavaScript wherever the page does not say otherwise; check a

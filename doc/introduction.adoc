@@ -7,12 +7,44 @@
 [#document-introduction]
 == Introduction
 
-A web application speaks JSON with JavaScript, and JavaScript decides what that JSON means: the
-order in which an object's keys come out, what `JSON.stringify` writes for a number, what
-`splice` removes. A {cpp} program that is to agree with a JavaScript peer byte for byte needs a
-JSON document that makes the same decisions. document is that document: what `JSON.parse`,
-property access, assignment, `delete`, the array methods and `JSON.stringify` do in JavaScript, it
-does in {cpp}, with the same key order and the same text out.
+webcpp::document brings JavaScript programmers the wonders of {cpp} without the risks of {cpp}.
+
+The wonders are what JavaScript does not give:
+
+* *JSON and NDJSON streams,* read as the bytes arrive, in chunks of any size (<<document-streams>>).
+* *Exact numbers:* a number is stored as the decimal that was written, and `getDecimal` reads it
+  back in full (<<document-numbers>>).
+* *Images sealed by a CRC,* so that a byte changed by accident is refused when an image is opened
+  (<<document-wire-sealed>>).
+* *Memory you manage:* one relocatable image, `reserve` and `capacity`, `shrink_to_fit` and
+  `compact`, pools of blocks, and no garbage collector in the way (<<document-images>>).
+* *Shared documents,* counted by reference and copied on write, between threads and between
+  processes (<<document-sharing>>).
+* *Binary transmission:* an image is sent as it is and opened in place, with no parse and no
+  allocation on receipt (<<document-wire>>).
+* *Ordered-index queries:* lower bounds, equal ranges and prefix queries over an object's keys,
+  with no sorting (<<document-containers-by-key>>).
+
+The risks are the ones of {cpp}: a pointer that dangles, a buffer that overflows, behaviour that is
+undefined. document leaves them out. A handle never fails, a write completes or changes nothing,
+the core never throws, and a full buffer is an error value: a failure is a value the program
+tests, and not a crash (<<document-handles>>).
+
+*Where it wins outright is binary transmission,* where moving an image costs nothing or a memory
+copy: between a page and its Worker, between the threads of a process, through shared memory
+between processes, and from a socket into a pool block on a machine or a fast local link whose
+receiver's CPU is the bottleneck (<<document-gains>>). It is honest about where it loses. It parses
+more slowly than Boost.JSON. An image is many times larger than its JSON text, so over a network the
+JSON text, compressed, is the smaller payload. And a seal is a CRC against accidental damage, not
+authentication: *never open an image from a source you do not trust* (<<document-gains-losses>>).
+
+The JavaScript programmer also keeps JavaScript's ways with JSON. A web application speaks JSON with
+JavaScript, and JavaScript decides what that JSON means: the order in which an object's keys come
+out, what `JSON.stringify` writes for a number, what `splice` removes. A {cpp} program that is to
+agree with a JavaScript peer byte for byte needs a JSON document that makes the same decisions.
+document is that document: what `JSON.parse`, property access, assignment, `delete`, the array
+methods and `JSON.stringify` do in JavaScript, it does in {cpp}, with the same key order and the same
+text out. Its module for JavaScript is taught in <<document-js>>.
 
 [#document-introduction-why]
 === Why not Boost.JSON
@@ -39,6 +71,7 @@ document was written for. Measured on Boost 1.92:
   every pointer in it an offset (<<document-images>>).
 
 document uses Boost.JSON's SAX parser, `boost::json::basic_parser`, and nothing else of it.
+<<document-vs-boost-json>> puts the two side by side, program by program, and says what Boost.JSON does better.
 
 [#document-introduction-first]
 === A first document
@@ -112,6 +145,10 @@ writes for the same operations.
 * *Exceptions are the program's choice.* The core never throws, in a build with exceptions or
   without; the sugar that throws as JavaScript does exists only with them
   (<<document-exceptions>>).
+* *Optional:* Boost.Asio, for the readers and writers of streams and images, and Boost.Cobalt for
+  its coroutines, in `<webcpp/document/asio.hpp>`, which builds natively only
+  (<<document-streams-asio>>); xactor for the actor example (<<document-streams-xactor>>);
+  Emscripten, for the JavaScript module (<<document-js>>).
 * *Nothing else:* no threads, no clock, no file, no global or static mutable state.
 
 [#document-reading]
@@ -121,12 +158,16 @@ writes for the same operations.
 `webcpp::document`. The code of this page writes them `wd::parse` and `wd::document`, as after
 `namespace wd = webcpp::document;`.
 
-<<document-javascript>> sets JavaScript's ways with JSON beside document's, and lists where the
-two differ on purpose. <<document-handles>> teaches the handles that read and write a document;
-<<document-numbers>>, <<document-strings>> and <<document-order>> the values they hold and the
-order of an object's keys; <<document-arrays>> the array methods. <<document-stringify>>,
-<<document-parsing>> and <<document-selectors>> write and read JSON text, whole or in pieces.
-<<document-traits>> chooses what a document stores, <<document-images>> shows the binary image,
-<<document-exceptions>> the sugar that throws, and <<document-errors>> every error.
-<<document-testing>> shows how document is tested, and the <<reference,reference>> closes the
-page.
+<<document-gains>> lists what {cpp} gives JavaScript, and <<document-js>> teaches the module that
+brings it to a page, a Worker and Node. <<document-javascript>> sets JavaScript's ways with JSON
+beside document's, and lists where the two differ on purpose. <<document-handles>> teaches the
+handles that read and write a document; <<document-numbers>>, <<document-strings>> and
+<<document-order>> the values they hold and the order of an object's keys; <<document-arrays>> the
+array methods. <<document-stringify>>, <<document-parsing>>, <<document-streams>> and
+<<document-selectors>> write and read JSON text, whole or in pieces, and <<document-containers>>
+shows the containers a {cpp} program walks. <<document-traits>> chooses what a document stores;
+<<document-images>> shows the binary image, <<document-wire>> sends it, and <<document-sharing>>
+shares it. <<document-vs-boost-json>> compares document with Boost.JSON, <<document-exceptions>>
+teaches the sugar that throws, and <<document-errors>> lists every error. <<document-testing>> shows
+how document is tested, <<document-benchmarks>> what it costs, and the <<reference,reference>>
+closes the page.

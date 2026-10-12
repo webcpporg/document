@@ -1,0 +1,216 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-gains]
+== What {cpp} gives JavaScript
+
+webcpp::document brings JavaScript programmers the wonders of {cpp} without the risks of {cpp}. A
+JavaScript programmer who reaches for {cpp} gets control over memory, exact arithmetic, shared
+memory and bytes that move without a parse, and pays for them with pointers that dangle, buffers
+that overflow and behaviour that is undefined. document keeps the first and refuses the second: a
+handle never fails, a write completes or changes nothing, the core never throws, and a full buffer
+is an error value (<<document-handles>>).
+
+This section lists what document gives that JavaScript does not, each with the smallest program that
+shows it and a link to the section that teaches it. The programs are {cpp}; the same document is
+reached from JavaScript by the module of <<document-js>>, which gives a page or a Worker the
+points that need no {cpp} to write. Binary transmission comes first, because it is where document
+wins outright, and the last subsection says where it does not.
+
+[#document-gains-wire]
+=== Binary transmission
+
+A document is its own wire format. `doc.image()` is its bytes, and a receiver opens them where they
+landed: `wd::open(buffer)`, or `Document.open(bytes)` in JavaScript, reads a header of 64 bytes and,
+for a sealed image, a CRC, and the document is there. Nothing is parsed and no tree is built, and
+the receiver allocates nothing per value and nothing per message. A JSON text must be parsed on
+arrival, and a parse allocates for every value it holds.
+
+That is where document wins outright, in the places where moving the image costs nothing or a
+memory copy:
+
+* *A page and its Worker.* The image crosses as a transferred `ArrayBuffer`, which moves in constant
+  time, where `postMessage` of an object makes a structured clone of every node
+  (<<document-js-worker>>).
+* *Threads of one process.* A document moves through a queue as a small handle, and its image
+  stays where it is (<<document-sharing-threads>>).
+* *Processes of one machine.* A pool of blocks in shared memory, and the offset of a block sent
+  through a queue (<<document-sharing-processes>>).
+* *A socket, on one machine or a fast local link.* A reader fills a block of a pool straight from
+  the stream and opens the image there, so the receiver's CPU, which is the bottleneck on such a
+  link, spends none of its time parsing (<<document-wire>>).
+
+This program copies an image into a buffer of the program's own and opens it there, with no parse;
+Boost.JSON, for which a value points into its memory resource, can only be serialized and parsed
+again:
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=image,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=13..15]
+----
+
+Over a network the text is the smaller payload. An image is several times the size of the JSON text
+it holds, since it keeps a node of 192 bytes for each value (<<document-parsing-memory>>), and it
+is still larger once both are compressed (<<document-benchmarks-wire>>). On a link that carries the
+bytes, compressed JSON is smaller and arrives sooner, unless the receiver's parse costs more than
+the extra bytes take to cross.
+
+[#document-gains-streams]
+=== JSON and NDJSON streams
+
+JavaScript reads one JSON text with `JSON.parse`, and reads a stream by cutting it into texts first.
+`wd::stream_parser` takes the bytes of a stream as they arrive, in chunks of any size, split
+anywhere, and delivers each document as soon as the bytes that end it are in: NDJSON, JSON text
+sequences, and concatenated JSON with or without whitespace between the documents
+(<<document-streams>>). A bad line can be dropped, with its line number reported, and the stream
+goes on (<<document-streams-errors>>). Reading NDJSON by hand takes a loop over `next()`:
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=lines,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_sync.expected[lines=1..5]
+----
+
+The same parser reads from Boost.Asio, Boost.Cobalt and an actor system, and a JavaScript sender
+can feed it chunk by chunk (<<document-streams-asio>>, <<document-js-streams>>).
+
+[#document-gains-numbers]
+=== Exact numbers
+
+A JavaScript number is a double, and `0.1 + 0.2` is `0.30000000000000004`. document stores a number
+as the decimal that was written, in a decimal128, writes it as JavaScript writes a number, and
+leaves the arithmetic to the program: in the traits' own number type it is exact, and `get<T>()`
+refuses to round. `js_traits` stores doubles, to read a number as JavaScript would
+(<<document-numbers>>):
+
+[source]
+----
+include::{examples}/document_numbers.cpp[tag=arithmetic,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_numbers.expected[lines=13..14]
+----
+
+A JavaScript peer reads the exact digits of a number back with `getDecimal`, where `get` gives the
+`Number` that rounds them (<<document-js-numbers>>).
+
+[#document-gains-sealed]
+=== Sealed images
+
+An image is a function of the operations that made it, the same bytes on every target. `seal()`
+writes the CRC-32C of those bytes into its header, and opening checks it, so a bit flipped on a disk
+or a wire, a torn write or a stray write is refused as `errc::damaged_document` before any of the
+image is read (<<document-wire-sealed>>):
+
+[source]
+----
+include::{examples}/document_image_errors.cpp[tag=damaged,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_errors.expected[lines=10]
+----
+
+A seal is a CRC against accidental damage and is not authentication: anyone can compute a valid seal
+for any bytes. *Never open an image from a source you do not trust*; data from an untrusted source
+enters as JSON text, which the parser checks entirely (<<document-images-refused>>).
+
+[#document-gains-memory]
+=== Memory you manage
+
+A document lives in one block of memory, a single relocatable image, and there is no garbage
+collector in the way: the program decides when the memory grows, when it shrinks and when it goes.
+`reserve` grows the image once for a batch (the way `std::vector::reserve` does) and `capacity` says
+how large it is; `shrink_to_fit` gives back the free space at its end, and `compact` rewrites the
+image without the holes that deleted values leave (<<document-images-compact>>); `free()` in
+JavaScript releases a document at once, where the collector would. A pool of blocks, allocated
+once, leases a block to each image that arrives and takes it back, zeroed, when the document goes
+(<<document-wire>>):
+
+[source]
+----
+include::{examples}/document_image.cpp[tag=shrink,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image.expected[lines=9..10]
+----
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=pool,indent=0]
+----
+
+[#document-gains-sharing]
+=== Shared documents with copy on write
+
+`wd::shared_document` is `std::shared_ptr` for a document: copies share one image, a count in the
+block's header says how many hold it, and the last one gives the block back. A holder that wants to
+write calls `make_mutable`, which copies the image into a block of its own when others hold it, so
+the others keep the document as it was. The count lives in the pool, so it is the same in every
+thread and every process that maps it (<<document-sharing>>):
+
+[source]
+----
+include::{examples}/document_threads.cpp[tag=copy_on_write,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_threads.expected[lines=13..15]
+----
+
+[#document-gains-queries]
+=== Ordered-index queries
+
+An object is kept in two orders at once: JavaScript's, which iteration follows, and key order, which
+`by_key()` gives with `lower_bound`, `upper_bound` and `equal_range`. A prefix query is two bounds,
+and nothing is sorted: a JavaScript program sorts every key to get the same answer, and gets it
+again at each query (<<document-containers-by-key>>):
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=by_key,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_containers.expected[lines=25..30]
+----
+
+[#document-gains-losses]
+=== Where document does not win
+
+document is a different trade from Boost.JSON and from JavaScript's own objects, and some of it is
+a loss:
+
+* *Parsing is slower than Boost.JSON's and than `JSON.parse`.* Every value is a node of a tree of
+  indices inside the image, which the parse must build; Boost.JSON appends to contiguous arrays.
+  The benchmarks measure it, natively, in Node and in Chrome (<<document-benchmarks-reading>>).
+* *An image is larger than its JSON text,* many times larger, and still larger when both are
+  compressed. On a narrow network, compressed JSON is the smaller payload and the better choice
+  (<<document-benchmarks-wire>>).
+* *A seal is not authentication.* It is a CRC against accidental damage. An image is trusted input,
+  and an image from a source that is not trusted must never be opened (<<document-images-refused>>).
+* *A lookup walks a tree* where JavaScript and Boost.JSON hash, and an array splice renumbers the
+  positions after it (<<document-benchmarks-reading>>).
+
+What document asks for in return is what the other sections teach: a document that behaves as
+JavaScript does, that moves as bytes, that lives in memory its program manages, and that cannot
+make the program crash.

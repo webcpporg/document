@@ -1,0 +1,150 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-vs-boost-json]
+== Compared with Boost.JSON
+
+Boost.JSON is the JSON library of Boost, and document reads JSON with its parser. Its document,
+`boost::json::value`, is built for speed, and document is built to behave as JavaScript does and to
+move as bytes: the two make different choices, and this section puts them side by side. Each part of
+the program below runs the same JSON through both libraries and prints both outputs. The line of
+document is what JavaScript gives where the part says nothing else, and the line of Boost.JSON is
+what that library gives. It uses Boost.JSON by `<boost/json.hpp>`, beside document's header:
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=includes,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=helpers,indent=0]
+----
+
+[#document-vs-boost-json-order]
+=== Key order
+
+`boost::json::object` keeps the keys in the order they came. JavaScript puts the keys that are array
+indices first, ascending, then the others in the order they were created, and document does the
+same (<<document-order>>):
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=key_order,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=1..3]
+----
+
+A key that is repeated keeps the last value, in the place of the first, as JavaScript does:
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=repeated,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=16..18]
+----
+
+[#document-vs-boost-json-erase]
+=== Erasing keeps the order
+
+`boost::json::object::erase` copies the last member into the gap, so `d` comes before `b` and `c`.
+JavaScript's `delete` keeps the order of the others, and so does document's `erase`:
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=erase,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=4..6]
+----
+
+[#document-vs-boost-json-numbers]
+=== Exact numbers
+
+Boost.JSON stores a number as a double when it is not an integer, and writes it back as `1E-1`.
+document keeps the digits that were sent, and writes them as JavaScript writes a number
+(<<document-numbers>>):
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=numbers,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=7..9]
+----
+
+[#document-vs-boost-json-arrays]
+=== Array methods
+
+`boost::json::array` has `insert` and `erase`, which make the same edit as `splice` and `unshift` but
+return no removed values. document has the array methods of JavaScript (<<document-arrays>>):
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=arrays,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=10..12]
+----
+
+[#document-vs-boost-json-image]
+=== An image copied and opened in place
+
+A `boost::json::value` points into its memory resource, so its bytes cannot be copied to another
+buffer: the only way to move it is to serialize it and parse it again. document's image is the
+document, and a copy of its bytes in a buffer of the program's own, opened there, is the same
+document with no parse (<<document-images>>):
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=image,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=13..15]
+----
+
+[#document-vs-boost-json-errors]
+=== Errors are values
+
+document's operations return a `result`, neither a bad parse nor a bad write throws, and the core
+never throws at all. Boost.JSON's parse reports through an `error_code` when it is given one, but its
+accessors, `at` and `as_string` among them, throw (<<document-errors>>):
+
+[source]
+----
+include::{examples}/document_vs_boost_json.cpp[tag=errors,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_vs_boost_json.expected[lines=19..21]
+----
+
+[#document-vs-boost-json-speed]
+=== What Boost.JSON does better
+
+document is not a fast JSON tree. Boost.JSON parses faster, stringifies faster, finds a key faster
+(it hashes, where document walks an ordered tree) and splices an array faster, and its values are
+smaller than document's images: a node of an image takes 192 bytes whatever it holds
+(<<document-parsing-memory>>). The benchmarks measure each of these against Boost.JSON and against
+JavaScript (<<document-benchmarks>>, and <<document-benchmarks-reading>> for where document is slower
+and why). The reasons to choose document are the ones above, and the ones that no parser has: an
+image that is sent as it is, opened in place and shared between threads and processes, which
+<<document-wire>> and <<document-sharing>> teach.

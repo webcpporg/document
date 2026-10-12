@@ -121,6 +121,84 @@ function compiled with Emscripten. Its documents come out in one of two ways:
 the documents delivered so far. The core never throws, as the rest of document: an exception that
 `f` throws propagates, with the bytes up to the document it was given consumed.
 
+[#document-streams-sync]
+==== By hand
+
+The program below reads each stream from a string, with no I/O at all. Its helpers print the error a
+call returned with the line it was found on, take every document the parser holds, and write the
+text in pieces of one, five, two and seven bytes in turn, as a socket might deliver it:
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=report,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=take,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=pieces,indent=0]
+----
+
+NDJSON ends each document at its line's newline, so a line may end in CRLF, a line may be empty, and
+the last line may lack its newline, which `finish()` closes. The documents are taken with `next()`:
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=lines,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_sync.expected[lines=1..5]
+----
+
+Concatenated JSON, with no separator or with indentation between the documents, is pushed to a
+callback, which sees each document as soon as its last byte is consumed:
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=concatenated,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_sync.expected[lines=6..12]
+----
+
+With `on_error::skip`, a bad line is reported with its line number and the stream goes on at the next
+line:
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=skip,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_sync.expected[lines=13..17]
+----
+
+And a stream of JSON text sequences, whose records open with the byte 0x1E and may span lines:
+
+[source]
+----
+include::{examples}/document_stream_sync.cpp[tag=rfc7464,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_sync.expected[lines=18..21]
+----
+
+*A bare number or other scalar that ends a concatenated stream is closed only by the end of the
+input.* A document that is an object or an array ends where its value closes, but `42` has no byte
+that ends it: the number could go on in the next chunk. It is delivered when `finish()` is called,
+which the Asio and Cobalt readers of this section call when the stream reaches its end.
+
 [#document-streams-asio]
 === With Boost.Asio
 
@@ -160,3 +238,126 @@ is complete. It is a composed operation that takes any completion token of Boost
 On an error the document is empty. A completion is never called inside `async_read_document`: one
 that needs no read is dispatched to the handler's immediate executor, or posted to the stream's.
 One operation at a time reads a stream, its buffer and its parser, which outlive it.
+
+The program below runs a server and a client on the loopback address, in one thread. The server
+writes NDJSON, then concatenated JSON, in pieces of one, three, seven, two and thirteen bytes, so the
+client's parser meets documents cut in the middle. The connection is a pair of sockets:
+
+[source]
+----
+include::{examples}/document_stream_asio.cpp[tag=link,indent=0]
+----
+
+The server's end is written in pieces, and after each piece the context is drained until the client
+has consumed it, so that the output does not depend on timing; the write side is then shut down,
+which the client reads as the end of the stream:
+
+[source]
+----
+include::{examples}/document_stream_asio.cpp[tag=send,indent=0]
+----
+
+The client reads the NDJSON in a coroutine, awaiting `async_read_document` in a loop until the
+completion is `eof`:
+
+[source]
+----
+include::{examples}/document_stream_asio.cpp[tag=coroutine,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_asio.expected[lines=1..6]
+----
+
+and the concatenated JSON with a callback, which starts the next read by posting it, so that no read
+begins inside its own callback. The last document of this stream is the bare number `42`, which
+arrives only when `eof` makes the reader finish the parser:
+
+[source]
+----
+include::{examples}/document_stream_asio.cpp[tag=callback,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_asio.expected[lines=7..14]
+----
+
+[#document-streams-cobalt]
+=== With Boost.Cobalt
+
+`async_read_document` takes `boost::cobalt::use_op` as it takes any token, so a Cobalt task reads a
+stream of documents in the style of Cobalt, and `cobalt::as_result` turns the completion into a
+`result` whose error is the stream's, `eof` included. One task writes the lines in pieces, another
+reads each document and prints it with its number, until the end of the stream, which the last line
+ends without a newline:
+
+[source]
+----
+include::{examples}/document_stream_cobalt.cpp[tag=send,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_stream_cobalt.cpp[tag=read,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_stream_cobalt.cpp[tag=main,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_cobalt.expected[]
+----
+
+[#document-streams-xactor]
+=== In an actor system
+
+A parser can live inside an actor, because it is sans-IO: the actor gives it bytes and takes its
+documents. The program below runs two actors on xactor's FIFO driver, which makes its output the
+same on every run. The messages are the bytes of the stream, its end, a document the parser
+completed, and a line it dropped:
+
+[source]
+----
+include::{examples}/document_stream_xactor.cpp[tag=messages,indent=0]
+----
+
+The parser actor writes each chunk it receives to a `stream_parser`, whose push form hands each
+document to a callback that sends it to the consumer. The document is moved in the message, and its
+image stays where it is. A line that is not JSON is dropped, and the actor reports it and goes on:
+
+[source]
+----
+include::{examples}/document_stream_xactor.cpp[tag=parser,indent=0]
+----
+
+The consumer prints what it receives:
+
+[source]
+----
+include::{examples}/document_stream_xactor.cpp[tag=consumer,indent=0]
+----
+
+and the host delivers the chunks one at a time, cut inside a string, a number and a line, and runs
+the actors until they are idle after each:
+
+[source]
+----
+include::{examples}/document_stream_xactor.cpp[tag=host,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_xactor.expected[]
+----
+
+[#document-streams-javascript]
+=== Fed from JavaScript
+
+A sender written in JavaScript can feed the parser compiled from {cpp} chunk by chunk, and a
+`ReadableStream` such as a response body can be turned into an async iterable of documents. The
+module that does this is taught in <<document-js-streams>>.

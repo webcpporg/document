@@ -17,13 +17,13 @@ of every version are on webcpp's index page.
 
 // tag::unreleased[]
 * Added the library: a JSON document that behaves as JavaScript does.
-* Added traits that choose the stored types, dates and bytes included.
-* Added one relocatable binary image per document, the same on every target.
-* Added JavaScript's key order, kept by every change to an object.
-* Added handles that read and write a document as JavaScript does.
-* Added JavaScript-style sugar that throws, compiled only with exceptions.
-* Added JavaScript's array methods, splice included, with its index rules.
-* Added stringify and stringify_to, writing JSON.stringify's exact bytes.
-* Added parse, an incremental parser, and selectors that stream in bounded memory.
-* Added streams of documents: NDJSON, JSON text sequences, concatenated JSON, and Asio.
+* Added traits that choose the stored types, and JavaScript's key order.
+* Added handles, array methods and JavaScript-style sugar that throws, compiled only with exceptions.
+* Added object and array views that the standard algorithms read, with key-ordered queries.
+* Added stringify, parse, and selectors that stream in bounded memory.
+* Added streams of documents: NDJSON, JSON text sequences, concatenated JSON, Asio, Cobalt and xactor.
+* Added one relocatable binary image per document, with reserve, shrink_to_fit and compact.
+* Added sealed images, and Asio readers and writers that open them in place in pools of blocks.
+* Added shared documents, reference counted over shared memory, with copy on write.
+* Added a JavaScript module: exact decimals, key ranges, images, streams and Workers.
 // end::unreleased[]

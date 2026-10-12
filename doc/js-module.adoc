@@ -1,0 +1,287 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-js]
+== Using it from JavaScript
+
+document is also a JavaScript module. `js/webcpp-document.mjs` is an ES module that wraps the
+library, compiled to WebAssembly with Emscripten, in two classes, `Document` and `StreamParser`,
+and runs in Node, in a page and in a Worker. A JavaScript program keeps JavaScript's values and
+JavaScript's errors, and gets what JavaScript lacks: exact numbers, queries over ordered keys, a
+binary image it can send to a Worker with no parse, and memory it frees when it chooses. This
+section teaches the module; the sections before it teach the {cpp} library behind it.
+
+The listings of this section are literal, and are not compiled by this page: each is copied from a
+test or from the example of `libs/document/js`, where Node's test runner runs the tests and a headless
+Chromium runs the example, so that what they show is checked. The files are named above each
+listing.
+
+The package is built, and its tests run, with b2 and Emscripten's toolset; the module is the
+`webcpp-document-core` program, an ES module, which `webcpp-document.mjs` imports and awaits when it
+loads:
+
+[source,bash]
+----
+b2 toolset=emscripten libs/document/js//package
+b2 toolset=emscripten libs/document/js//js-tests
+----
+
+[#document-js-documents]
+=== Documents
+
+A `Document` is made by `Document.parse(text)`, which is `JSON.parse` and throws the `SyntaxError`
+that `JSON.parse` throws, or by `Document.open(bytes)` (<<document-js-images>>). A place in the
+document is a path: an array of string keys and non-negative integer indices from the root, `[]`
+being the root itself. A path that leads to nothing reads `undefined`, as property access does.
+`get`, `set`, `erase`, `push`, `splice`, `length` and `stringify` do what their names do in
+JavaScript:
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"user":{"name":"Ada","age":36,"langs":["C"]},"n":null,"t":false}')
+assert.equal(doc.get(['user', 'name']), 'Ada')
+assert.equal(doc.get(['user', 'age']), 36)
+assert.deepEqual(doc.get(['user', 'langs']), ['C'])
+assert.equal(doc.get(['n']), null)
+assert.equal(doc.get(['missing', 'deeper']), undefined)
+assert.equal(doc.get(['user', 'langs', 0]), 'C')
+doc.free()
+----
+
+`get` returns a scalar as its JavaScript value and a container as a copy, and `toJSON()` is `get([])`,
+so `JSON.stringify(doc)` works on a document. `set` writes what `JSON.stringify` writes for its
+value, so `undefined` erases a member, and `-0` is `0`. `erase` says whether the key was there:
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"user":{"name":"Ada"},"langs":[]}')
+doc.set(['user', 'age'], 30)
+doc.set(['user', 'tags'], { a: [1, 'two', null] })
+doc.set(['pi'], 3.14159)
+doc.set(['zero'], -0)
+assert.equal(doc.get(['user', 'age']), 30)
+doc.set([], [true])
+assert.equal(doc.stringify(), '[true]')
+doc.free()
+----
+
+`push` returns the new length, as `Array.prototype.push` does, and `splice` takes the arguments
+of `Array.prototype.splice`, negative positions and clamped counts included, and returns the elements it removed:
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"langs":["C","Rust","Go"]}')
+assert.equal(doc.push(['langs'], 'Note G'), 4)
+assert.equal(doc.length(['langs']), 4)
+assert.deepEqual(doc.splice(['langs'], 0, 1), ['C'])
+assert.deepEqual(doc.splice(['langs'], -1, 1, 'JS', 'Lisp'), ['Note G'])
+assert.equal(doc.stringify(), JSON.stringify({ langs: ['Rust', 'Go', 'JS', 'Lisp'] }))
+doc.free()
+----
+
+`stringify(indent)` is `JSON.stringify(doc, null, indent)`, with the same bytes, and the key order is
+JavaScript's (<<document-order>>).
+
+[#document-js-errors]
+=== Errors
+
+An operation that fails throws the error JavaScript would throw for it: `SyntaxError` for malformed
+text, `RangeError` for a number out of range or for no room left in a buffer, and `TypeError` for a
+value of another kind, a write through something that is not a container, a value that is not JSON (a
+function, a symbol, a BigInt), a path that is not an array of keys and indices, bytes that are not an
+image, a sealed image that is damaged, and a document that was freed. These are the `errc` values of
+<<document-errors>>, each under the name JavaScript gives it. An operation that throws changes
+nothing:
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"obj":{"a":1},"arr":[1,2],"num":5,"str":"s"}')
+assert.throws(() => doc.set(['missing', 'x'], 1), TypeError)
+assert.throws(() => doc.push(['obj'], 1), TypeError)
+assert.throws(() => doc.erase(['arr', 0]), TypeError)
+assert.throws(() => doc.splice(['num'], 0, 1), TypeError)
+assert.throws(() => doc.set(['f'], () => 1), TypeError)
+assert.throws(() => doc.get(['arr', 1.5]), TypeError)
+doc.free()
+----
+
+[#document-js-numbers]
+=== Exact numbers
+
+`get` gives the `Number` of a JSON number, which rounds a number that a double cannot hold.
+`getDecimal` gives the number exactly, as the text of its decimal, so a price or an identifier of
+thirty digits survives a round trip through a JavaScript program (<<document-numbers>>):
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const text = '0.1234567890123456789012345678901234'
+const doc = Document.parse(`{"price":${text},"small":1.50}`)
+assert.equal(doc.getDecimal(['price']), text)
+assert.equal(doc.get(['price']), Number(text))
+assert.equal(doc.getDecimal(['small']), '1.5')
+assert.equal(doc.get(['small']), 1.5)
+doc.free()
+----
+
+[#document-js-keys]
+=== Ordered keys
+
+The keys of an object are also kept in key order, so a range of keys is found without sorting them.
+`keysInRange(path, low, high)` gives the keys from `low` up to, and not including, `high`; a prefix
+query is the range from the prefix to the prefix followed by `￿` (<<document-containers-by-key>>):
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"users":{"user_2":{},"user_10":{},"admin":{},"user_1":{},' +
+    '"user_":{},"user`":{}}}')
+assert.deepEqual(doc.keysInRange(['users'], 'user_', 'user_￿'),
+    ['user_', 'user_1', 'user_10', 'user_2'])
+assert.deepEqual(doc.keysInRange(['users'], 'x', 'y'), [])
+doc.free()
+----
+
+[#document-js-images]
+=== Images
+
+A document is its image, and the module hands the image to the program. `doc.byteLength` is its size,
+and `doc.image()` is a `Uint8Array` that views the bytes where they are in WebAssembly memory, with
+no copy: it stays valid until the memory grows or the document changes, so a program that keeps
+the bytes copies them with `slice()`. `Document.open(bytes)` makes a document of an image. When the
+bytes are a view of WebAssembly memory, 16-aligned, such as another document's `image()`, it opens
+them in place and shares them; otherwise it copies them into the module's memory first, which is a
+memory copy and no parse. A document opened from bytes is its own, and the bytes it was opened from
+may change or go. `seal()` writes the CRC of the image into it, which `open` checks, and refuses a
+sealed image whose bytes changed with a `TypeError` (<<document-wire-sealed>>):
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"a":[1,2,3]}')
+assert.equal(doc.byteLength, doc.image().byteLength)
+assert.equal(doc.seal(), undefined)
+const image = doc.image().slice()
+assert.equal(Document.open(image).stringify(), '{"a":[1,2,3]}')
+image[image.length - 1] ^= 0xff
+assert.throws(() => Document.open(image), TypeError)
+doc.free()
+----
+
+An image is trusted input. `open` refuses bytes that are not an image, and a seal catches bytes
+that changed by accident; it does not authenticate them, and an image from a source that is not
+trusted must never be opened (<<document-images-refused>>).
+
+[#document-js-memory]
+=== Memory
+
+A document lives in WebAssembly memory, outside the heap that JavaScript's collector manages, in one
+relocatable image. Memory is therefore a thing the program holds, not a thing the collector
+finds:
+
+* `doc.free()` releases the image at once, and a second `free()` does nothing. A freed document
+  refuses every operation with a `TypeError`. A program that makes many documents, such as one
+  per message of a stream, frees each when it is done.
+* A document that is never freed is released when the collector collects its object, through a
+  `FinalizationRegistry`, which runs when the engine chooses and not when the program needs the
+  memory. It is a safety net and not a plan.
+* The module's memory grows on demand, up to 4 GB, and WebAssembly never returns memory to the
+  system; a freed image returns to the module's allocator, for the next document to use.
+* `image()` is a view of that memory and `byteLength` its size, so a program knows what a document
+  costs, and a document that is to travel as bytes is already the bytes.
+
+The calls of `reserve`, `shrink_to_fit` and `compact` of the {cpp} library, which size and pack an
+image (<<document-images>>), are not in the module: a parsed document starts at 4096 bytes and
+grows as it needs.
+
+[#document-js-worker]
+=== An image sent to a Worker
+
+A page parses a document, copies its image into an `ArrayBuffer` of its own and transfers the
+buffer to a Worker. The transfer moves the buffer in constant time and detaches it from the sender,
+where `postMessage` of an object would clone every value of it. The copy is made first because a
+view of WebAssembly memory cannot be transferred. The Worker opens the image in its own memory, which
+is one memory copy, and reads from it: nothing is parsed there. The page is `js/example/page.mjs`:
+
+.Copied from js/example/page.mjs
+[listing]
+----
+const doc = Document.parse(text)
+doc.set(['user', 'age'], 36)
+const bytes = doc.image().slice()
+doc.free()
+
+worker.postMessage({ image: bytes.buffer }, [bytes.buffer])
+----
+
+and the Worker, `js/example/worker.mjs`, which answers with what the document holds:
+
+.Copied from js/example/worker.mjs
+[listing]
+----
+self.onmessage = ({ data }) => {
+    const doc = Document.open(new Uint8Array(data.image))
+    self.postMessage({
+        name: doc.get(['user', 'name']),
+        age: doc.get(['user', 'age']),
+        langs: doc.get(['user', 'langs']),
+        price: doc.getDecimal(['price']),
+        text: doc.stringify(),
+    })
+    doc.free()
+}
+----
+
+A headless Chromium runs the example and fails unless the Worker answered what the document holds
+and the transfer detached the buffer. How the transfer compares with `postMessage` of an object is
+measured in <<document-benchmarks>>.
+
+[#document-js-streams]
+=== Streams
+
+`StreamParser` is the stream parser of <<document-streams>>, with the same framings, `concatenated`
+(the default), `lines` for NDJSON and `rfc7464`, and the same policy on errors, `onError` `stop`
+or `skip`, the latter for the framings that can go on. `StreamParser.from(source, options)` is an
+async generator that takes a `ReadableStream` of bytes or strings, such as a response body, or any
+async iterable of them, and yields a `Document` as soon as the bytes that end it arrive, whatever
+the chunks:
+
+.Copied from js/test/stream.test.mjs
+[listing]
+----
+for await (const doc of StreamParser.from(chunked(encoder.encode(lines), size), { framing: 'lines' })) {
+    assert.ok(doc instanceof Document)
+    out.push(doc.toJSON())
+}
+----
+
+A bad line throws a `SyntaxError` once the documents before it are yielded, and under `onError`
+`skip` it is dropped and counted in `parser.dropped`. The end of the source ends the stream, as
+`finish()` does, so a top-level number or a last line without its newline is delivered
+(<<document-streams-errors>>).
+
+The parser can also be driven by hand, which is how a sender written in JavaScript feeds the parser
+compiled from {cpp}: `write` takes a chunk, `read` gives the next complete document or `undefined`,
+and `finish` ends the stream:
+
+.Copied from js/test/stream.test.mjs
+[listing]
+----
+const parser = new StreamParser({ framing: 'lines' })
+parser.write(encoder.encode('{"a":'))
+assert.equal(parser.read(), undefined)
+parser.write(encoder.encode('1}\n'))
+assert.deepEqual(parser.read().toJSON(), { a: 1 })
+assert.equal(parser.read(), undefined)
+parser.finish()
+----
+
+Each document `read` or `from` gives is a `Document`, in WebAssembly memory like any other, which
+the program frees when it has used it.

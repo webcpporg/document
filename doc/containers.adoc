@@ -1,0 +1,112 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-containers]
+== Containers
+
+The handles of <<document-handles>> read and write a document as JavaScript does. A {cpp} program
+that walks a document also wants the interface its containers have, and document gives it:
+`as_object()` makes of an object a view that is a sorted map, `as_array()` makes of an array a view
+that is a vector, and both are ranges that the standard algorithms and views read. They are views of
+the document and own nothing, `wd::object_ref` and `wd::array_ref`, and every operation that can fail
+returns its `result` as the rest of the library does. The program of this section is
+`example/document_containers.cpp`, and prints the same lines on every target.
+
+Its helpers print the message of a failed result and the document after an operation:
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=helpers,indent=0]
+----
+
+[#document-containers-object]
+=== An object is a sorted map
+
+`insert` and `try_emplace` answer the member and whether it was inserted, and a key that is there
+keeps its value; `insert_or_assign` assigns to it, as JavaScript's `o[key] = v` does. `find` answers
+the member's iterator, or `end()`, `contains` whether the key is there, and `erase` how many members
+it removed. Iteration follows JavaScript's order, so a new key comes last, and so does a key that is
+erased and inserted again (<<document-order>>):
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=object,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_containers.expected[lines=1..11]
+----
+
+[#document-containers-array]
+=== An array is a vector
+
+`push_back`, `emplace_back`, `insert`, `erase` and `resize` change an array as they change a
+`std::vector`, and `at` checks the index: an index past the end is an error value and not an
+undefined element. `erase` answers the iterator of the element after the one it removed, and
+`resize` to a larger size fills with `null` (<<document-arrays-dense>>):
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=array,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_containers.expected[lines=12..21]
+----
+
+[#document-containers-ranges]
+=== Ranges
+
+An object and an array are `std::ranges::bidirectional_range`s, so the standard algorithms and the
+views over them read their members as they read a vector or a map:
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=ranges,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_containers.expected[lines=22..24]
+----
+
+What a change leaves valid is more than the standard containers leave: an insertion, and any growth
+of the image, keeps every iterator and handle valid and invalidates only the `std::string_view`s read
+from a value; an erase invalidates the iterators to the erased member and its subtree. A range reads
+the document as it is when each step is taken, so changing the container it walks is undefined, as it
+is for a standard container.
+
+[#document-containers-by-key]
+=== Keys in order
+
+An object is kept in JavaScript's order, and also in key order: `by_key()` is the same object ordered
+by key, by UTF-16 code units whatever the encoding, with `find`, `lower_bound`, `upper_bound` and
+`equal_range`. Each step and each bound is a search of a tree, so a query costs O(log n), and nothing
+is sorted: a JavaScript program sorts every key to get any of these answers, and gets it again each
+time. A prefix query is a range from the first key at or after the prefix up to the first key at or
+after the prefix with its last character raised by one:
+
+[source]
+----
+include::{examples}/document_containers.cpp[tag=by_key,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_containers.expected[lines=25..30]
+----
+
+The module of <<document-js>> gives the same query to JavaScript as `keysInRange`.
+
+[#document-containers-reserve]
+=== Reserving room
+
+A batch of insertions of a known size is made with the image reserved once, as a vector is
+reserved: the insertions then move nothing, where without the reservation the same insertions grow
+the image and move it. The example of this section measures it with `reserve` and `capacity`
+(<<document-images-reserve>>).
