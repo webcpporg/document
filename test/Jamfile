@@ -6,6 +6,7 @@
 
 project : requirements <library>/webcpp/document//document ;
 
+import regex ;
 import webcpp ;
 
 webcpp.targets native emscripten wasip2 wasip3 ;
@@ -67,3 +68,14 @@ webcpp.run array : array_test.cpp ;
 # The sugar that throws, and its refusal in a build without exceptions.
 webcpp.run sugar : sugar_test.cpp : <exception-handling>on ;
 webcpp.compile-diagnostic no_exceptions : no_exceptions_test.cpp : <exception-handling>off ;
+
+# Node as the oracle, from C++: every case of fixtures/cases applied through the document and
+# compared with what Node wrote in fixtures/expected. The fixtures' directory with forward
+# slashes, the whole define quoted, as xstate's test/Jamfile does; wasmtime is given the
+# directory (webcpp.data).
+path-constant FIXTURES : fixtures ;
+local fixtures = [ regex.replace $(FIXTURES) "\\\\" "/" ] ;
+.case-files = [ glob fixtures/cases/*.json fixtures/expected/*.json ] ;
+webcpp.run oracle_cases : oracle_test.cpp
+  : <define>"\"WEBCPP_TEST_DOCUMENT_FIXTURES=\\\"$(fixtures)\\\"\"" <dependency>$(.case-files)
+    [ webcpp.data $(FIXTURES) ] ;
