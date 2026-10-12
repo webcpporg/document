@@ -37,6 +37,7 @@
 #include <string_view>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace webcpp::document {
 
@@ -144,7 +145,8 @@ public:
     children_iterator() noexcept = default;
 
     /** The child `child` of a container of `doc`, or the end when `child` is 0. */
-    children_iterator(basic_document<Traits, Storage>* doc, std::uint64_t child) noexcept;
+    children_iterator(basic_document<Traits, Storage>* doc, std::uint64_t child) noexcept
+        : doc_(doc), child_(child) {}
 
     /** The current child. */
     value_type operator*() const noexcept;
@@ -153,7 +155,11 @@ public:
     children_iterator& operator++() noexcept;
 
     /** Moves to the next child, and returns where it was. */
-    children_iterator operator++(int) noexcept;
+    children_iterator operator++(int) noexcept {
+        children_iterator was = *this;
+        ++*this;
+        return was;
+    }
 
     /** Whether two iterators are at the same child, or both at the end. */
     friend bool operator==(const children_iterator& a, const children_iterator& b) noexcept {
@@ -169,14 +175,15 @@ private:
 template <class Traits, class Storage, children_of Kind>
 class WEBCPP_DOCUMENT_NO_DANGLING children {
 public:
-    /** The children of the node `parent` of `doc`; none when `doc` is null. */
-    children(basic_document<Traits, Storage>* doc, std::uint64_t parent) noexcept;
+    /** The children of the node `parent` of `doc`; none when `doc` is null or `parent` is 0. */
+    children(basic_document<Traits, Storage>* doc, std::uint64_t parent) noexcept
+        : doc_(doc), parent_(parent) {}
 
     /** The first child. */
     [[nodiscard]] children_iterator<Traits, Storage, Kind> begin() const noexcept;
 
     /** The end. */
-    [[nodiscard]] children_iterator<Traits, Storage, Kind> end() const noexcept;
+    [[nodiscard]] children_iterator<Traits, Storage, Kind> end() const noexcept { return {}; }
 
 private:
     basic_document<Traits, Storage>* doc_ = nullptr;
@@ -187,28 +194,40 @@ private:
 struct access {
     /** The tree of a document, or null when it was moved from. */
     template <class Traits, class Storage>
-    static tree<Traits>* tree_of(basic_document<Traits, Storage>& d) noexcept;
+    static tree<Traits>* tree_of(basic_document<Traits, Storage>& d) noexcept {
+        return d.region_.data() == nullptr ? nullptr : &d.tree_;
+    }
 
     /** The tree of a document, or null when it was moved from. */
     template <class Traits, class Storage>
-    static const tree<Traits>* tree_of(const basic_document<Traits, Storage>& d) noexcept;
+    static const tree<Traits>* tree_of(const basic_document<Traits, Storage>& d) noexcept {
+        return d.region_.data() == nullptr ? nullptr : &d.tree_;
+    }
 
     /** The tree of a handle's document, or null when it names nothing. */
     template <class Traits, class Storage>
-    static const tree<Traits>* tree_of(const basic_const_value<Traits, Storage>& v) noexcept;
+    static const tree<Traits>* tree_of(const basic_const_value<Traits, Storage>& v) noexcept {
+        return v.tree_ptr();
+    }
 
     /** The node a handle names, or null when it reads `undefined`. */
     template <class Traits, class Storage>
-    static const node<Traits>* node_of(const basic_const_value<Traits, Storage>& v) noexcept;
+    static const node<Traits>* node_of(const basic_const_value<Traits, Storage>& v) noexcept {
+        return v.resolve();
+    }
 
     /** The read-only handle of the node `id` of a document. */
     template <class Traits, class Storage>
     static basic_const_value<Traits, Storage> handle_of(basic_document<Traits, Storage>& d,
-                                                        std::uint64_t id) noexcept;
+                                                        std::uint64_t id) noexcept {
+        return basic_const_value<Traits, Storage>(&d, place::node, id, 0, {});
+    }
 
     /** The document of a region whose tree was formatted or attached, the tree rebound to it. */
     template <class Traits, class Storage>
-    static basic_document<Traits, Storage> make_document(region r) noexcept;
+    static basic_document<Traits, Storage> make_document(region r) noexcept {
+        return basic_document<Traits, Storage>(std::move(r));
+    }
 };
 
 }  // namespace detail
@@ -236,77 +255,106 @@ public:
 
      @return The kind; @ref kind::undefined when nothing is there.
     */
-    [[nodiscard]] webcpp::document::kind kind() const noexcept;
+    [[nodiscard]] webcpp::document::kind kind() const noexcept {
+        const detail::node<Traits>* n = resolve();
+        return n == nullptr ? webcpp::document::kind::undefined : n->kind;
+    }
 
     /**
      Whether nothing is there, `v === undefined`.
 
      @return Whether the kind is @ref kind::undefined.
     */
-    [[nodiscard]] bool is_undefined() const noexcept;
+    [[nodiscard]] bool is_undefined() const noexcept {
+        return kind() == webcpp::document::kind::undefined;
+    }
 
     /**
      Whether the value is `null`.
 
      @return Whether the kind is @ref kind::null.
     */
-    [[nodiscard]] bool is_null() const noexcept;
+    [[nodiscard]] bool is_null() const noexcept { return kind() == webcpp::document::kind::null; }
 
     /**
      Whether the value is `true` or `false`.
 
      @return Whether the kind is @ref kind::boolean.
     */
-    [[nodiscard]] bool is_boolean() const noexcept;
+    [[nodiscard]] bool is_boolean() const noexcept {
+        return kind() == webcpp::document::kind::boolean;
+    }
 
     /**
      Whether the value is a number.
 
      @return Whether the kind is @ref kind::number.
     */
-    [[nodiscard]] bool is_number() const noexcept;
+    [[nodiscard]] bool is_number() const noexcept {
+        return kind() == webcpp::document::kind::number;
+    }
 
     /**
      Whether the value is a number that is an integer, JavaScript's `Number.isInteger`.
 
      @return Whether it is a number with no fractional part.
     */
-    [[nodiscard]] bool is_integer() const noexcept;
+    [[nodiscard]] bool is_integer() const noexcept {
+        const detail::node<Traits>* n = resolve();
+        if (n == nullptr || n->kind != webcpp::document::kind::number) {
+            return false;
+        }
+        if (n->number == detail::repr::integer) {
+            return true;
+        }
+        // One held as `number` is still an integer when it is too large for `integer`, as 1e30 is.
+        using codec = number_codec<typename Traits::number>;
+        const auto v = n->template load<typename Traits::number>();
+        if (!codec::finite(v)) {
+            return false;
+        }
+        const decimal_digits d = codec::digits(v);
+        return d.count == 0 || std::cmp_greater_equal(d.point, d.count);
+    }
 
     /**
      Whether the value is a string.
 
      @return Whether the kind is @ref kind::string.
     */
-    [[nodiscard]] bool is_string() const noexcept;
+    [[nodiscard]] bool is_string() const noexcept {
+        return kind() == webcpp::document::kind::string;
+    }
 
     /**
      Whether the value is a date.
 
      @return Whether the kind is @ref kind::date.
     */
-    [[nodiscard]] bool is_date() const noexcept;
+    [[nodiscard]] bool is_date() const noexcept { return kind() == webcpp::document::kind::date; }
 
     /**
      Whether the value is bytes.
 
      @return Whether the kind is @ref kind::bytes.
     */
-    [[nodiscard]] bool is_bytes() const noexcept;
+    [[nodiscard]] bool is_bytes() const noexcept { return kind() == webcpp::document::kind::bytes; }
 
     /**
      Whether the value is an array, `Array.isArray`.
 
      @return Whether the kind is @ref kind::array.
     */
-    [[nodiscard]] bool is_array() const noexcept;
+    [[nodiscard]] bool is_array() const noexcept { return kind() == webcpp::document::kind::array; }
 
     /**
      Whether the value is a plain object.
 
      @return Whether the kind is @ref kind::object.
     */
-    [[nodiscard]] bool is_object() const noexcept;
+    [[nodiscard]] bool is_object() const noexcept {
+        return kind() == webcpp::document::kind::object;
+    }
 
     /**
      Reads the value as `T`.
@@ -324,7 +372,14 @@ public:
     */
     template <class T>
     [[nodiscard]] result<T> get() const noexcept
-        requires detail::readable<Traits, T>;
+        requires detail::readable<Traits, T>
+    {
+        const detail::tree<Traits>* t = tree_ptr();
+        if (t == nullptr) {
+            return errc::type;
+        }
+        return detail::read<T>(*t, resolve());
+    }
 
     /**
      The value as `T`, or `fallback`: JavaScript's `v ?? fallback`, and the fallback too when the
@@ -336,7 +391,14 @@ public:
     */
     template <class T>
     [[nodiscard]] T value_or(T fallback) const noexcept
-        requires detail::readable<Traits, T>;
+        requires detail::readable<Traits, T>
+    {
+        result<T> read = get<T>();
+        if (read.has_value()) {
+            return std::move(read.unsafe_value());
+        }
+        return fallback;
+    }
 
     /**
      Whether an object has the member `key`, `key in v`.
@@ -344,21 +406,44 @@ public:
      @param key The key, in UTF-8.
      @return Whether it is there; false for any other kind.
     */
-    [[nodiscard]] bool contains(std::string_view key) const noexcept;
+    [[nodiscard]] bool contains(std::string_view key) const noexcept {
+        const detail::node<Traits>* n = resolve();
+        return n != nullptr && n->kind == webcpp::document::kind::object &&
+               tree_ptr()->member(n->id, key) != nullptr;
+    }
 
     /**
      An object's key count or an array's length.
 
      @return The count; 0 for any other kind.
     */
-    [[nodiscard]] std::uint64_t size() const noexcept;
+    [[nodiscard]] std::uint64_t size() const noexcept {
+        const detail::node<Traits>* n = resolve();
+        return n == nullptr ? 0 : tree_ptr()->count(n->id);
+    }
 
     /**
      An array's `length`, or a string's in UTF-16 code units, as JavaScript counts it.
 
      @return The length; @ref errc::type for any other kind.
     */
-    [[nodiscard]] result<std::uint64_t> length() const noexcept;
+    [[nodiscard]] result<std::uint64_t> length() const noexcept {
+        const detail::node<Traits>* n = resolve();
+        if (n == nullptr) {
+            return errc::type;
+        }
+        if (n->kind == webcpp::document::kind::array) {
+            return tree_ptr()->count(n->id);
+        }
+        if (n->kind != webcpp::document::kind::string) {
+            return errc::type;
+        }
+        if constexpr (std::same_as<typename Traits::string, utf16>) {
+            return n->text.units().size();
+        } else {
+            return detail::utf16_length(n->text.chars());
+        }
+    }
 
     /**
      The member `key`, `v.key`, which never fails.
@@ -366,7 +451,9 @@ public:
      @param key The key, in UTF-8.
      @return Its handle: the member, a missing member of an object, or nothing.
     */
-    basic_const_value operator[](std::string_view key) const noexcept;
+    basic_const_value operator[](std::string_view key) const noexcept {
+        return member_handle<basic_const_value>(key);
+    }
 
     /**
      The element `index`, `v[index]`, which never fails.
@@ -374,7 +461,9 @@ public:
      @param index The index.
      @return Its handle: the element, a missing element of an array, or nothing.
     */
-    basic_const_value operator[](std::uint64_t index) const noexcept;
+    basic_const_value operator[](std::uint64_t index) const noexcept {
+        return element_handle<basic_const_value>(index);
+    }
 
     /**
      `Array.prototype.at`: the element `index`, a negative index counting from the end.
@@ -390,7 +479,9 @@ public:
      @return The range; empty for any other kind than an object.
     */
     [[nodiscard]] detail::children<Traits, Storage, detail::children_of::entries> entries()
-        const noexcept;
+        const noexcept {
+        return {doc_, id_of(webcpp::document::kind::object)};
+    }
 
     /**
      `Object.keys`: each key, in the policy's order; a `std::string_view` with `utf8`, a
@@ -399,7 +490,9 @@ public:
      @return The range; empty for any other kind than an object.
     */
     [[nodiscard]] detail::children<Traits, Storage, detail::children_of::keys> keys()
-        const noexcept;
+        const noexcept {
+        return {doc_, id_of(webcpp::document::kind::object)};
+    }
 
     /**
      `Object.values`: each value, in the policy's order.
@@ -407,7 +500,9 @@ public:
      @return The range; empty for any other kind than an object.
     */
     [[nodiscard]] detail::children<Traits, Storage, detail::children_of::values> values()
-        const noexcept;
+        const noexcept {
+        return {doc_, id_of(webcpp::document::kind::object)};
+    }
 
     /**
      The first element of an array, for `for (auto v : arr)`.
@@ -415,7 +510,11 @@ public:
      @return The iterator; the end for any other kind.
     */
     [[nodiscard]] detail::children_iterator<Traits, Storage, detail::children_of::values> begin()
-        const noexcept;
+        const noexcept {
+        return detail::children<Traits, Storage, detail::children_of::values>(
+                   doc_, id_of(webcpp::document::kind::array))
+            .begin();
+    }
 
     /**
      The end of an array's elements.
@@ -423,7 +522,9 @@ public:
      @return The iterator.
     */
     [[nodiscard]] detail::children_iterator<Traits, Storage, detail::children_of::values> end()
-        const noexcept;
+        const noexcept {
+        return {};
+    }
 
     /**
      `Array.prototype.slice`: a copy of the elements from `start` to `stop`, each a negative index
@@ -508,18 +609,88 @@ public:
     }
 
 private:
+    // A missing member's key is held on the process heap, whose exhaustion ends the program, as
+    // the library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
     /**
      A handle of `doc` at the place `where`: the node or container `id`, and a missing element's
      `index` or member's `key`.
     */
     basic_const_value(basic_document<Traits, Storage>* doc, detail::place where, std::uint64_t id,
-                      std::uint64_t index, std::string_view key) noexcept;
+                      std::uint64_t index, std::string_view key) noexcept
+        // A handle that names nothing holds no document, so that nothing reaches one through it.
+        : doc_(where == detail::place::nothing ? nullptr : doc),
+          id_(where == detail::place::nothing ? 0 : id),
+          index_(where == detail::place::element ? index : 0),
+          key_(where == detail::place::member ? key : std::string_view()),
+          place_(doc_ == nullptr ? detail::place::nothing : where) {}
+
+    // NOLINTEND(bugprone-exception-escape)
+
+    /** The tree of the handle's document, or null when it names nothing or the document none. */
+    [[nodiscard]] const detail::tree<Traits>* tree_ptr() const noexcept {
+        return doc_ == nullptr ? nullptr : detail::access::tree_of(std::as_const(*doc_));
+    }
 
     /** The node the handle names now, or null when it reads `undefined`. */
-    [[nodiscard]] const detail::node<Traits>* resolve() const noexcept;
+    [[nodiscard]] const detail::node<Traits>* resolve() const noexcept {
+        const detail::tree<Traits>* t = tree_ptr();
+        if (t == nullptr) {
+            return nullptr;
+        }
+        // A missing member or element is looked for again: it reads what is there now.
+        const detail::node<Traits>* n = nullptr;
+        switch (place_) {
+            case detail::place::node: n = t->find(id_); break;
+            case detail::place::member: n = t->member(id_, key_); break;
+            case detail::place::element: n = t->element(id_, index_); break;
+            case detail::place::nothing: break;
+        }
+        // Only a root holds undefined, which reads as nothing there.
+        return n == nullptr || n->kind == webcpp::document::kind::undefined ? nullptr : n;
+    }
+
+    /** The id of the node the handle names when it is of kind `k`, else 0. */
+    [[nodiscard]] std::uint64_t id_of(webcpp::document::kind k) const noexcept {
+        const detail::node<Traits>* n = resolve();
+        return n == nullptr || n->kind != k ? 0 : n->id;
+    }
+
+    /** The handle, of type `Handle`, of the member `key` of what this handle names. */
+    template <class Handle>
+    [[nodiscard]] Handle member_handle(std::string_view key) const noexcept {
+        const detail::node<Traits>* n = resolve();
+        if (n == nullptr || n->kind != webcpp::document::kind::object) {
+            return Handle(nullptr, detail::place::nothing, 0, 0, {});
+        }
+        if (const detail::node<Traits>* m = tree_ptr()->member(n->id, key)) {
+            return Handle(doc_, detail::place::node, m->id, 0, {});
+        }
+        return Handle(doc_, detail::place::member, n->id, 0, key);
+    }
+
+    /** The handle, of type `Handle`, of the element `index` of what this handle names. */
+    template <class Handle>
+    [[nodiscard]] Handle element_handle(std::uint64_t index) const noexcept {
+        const detail::node<Traits>* n = resolve();
+        if (n == nullptr || n->kind != webcpp::document::kind::array) {
+            return Handle(nullptr, detail::place::nothing, 0, 0, {});
+        }
+        if (const detail::node<Traits>* e = tree_ptr()->element(n->id, index)) {
+            return Handle(doc_, detail::place::node, e->id, 0, {});
+        }
+        return Handle(doc_, detail::place::element, n->id, index, {});
+    }
 
     /** Whether the values of two handles are equal. */
-    static bool equals(const basic_const_value& a, const basic_const_value& b) noexcept;
+    static bool equals(const basic_const_value& a, const basic_const_value& b) noexcept {
+        const detail::node<Traits>* x = a.resolve();
+        const detail::node<Traits>* y = b.resolve();
+        if (x == nullptr || y == nullptr) {
+            return x == y;
+        }
+        return detail::equal(*a.tree_ptr(), x, *b.tree_ptr(), y);
+    }
 
     /** The document, or null for a handle that names nothing. */
     basic_document<Traits, Storage>* doc_ = nullptr;
@@ -595,7 +766,9 @@ public:
      @param key The key, in UTF-8.
      @return Its handle: the member, a missing member of an object, or nothing.
     */
-    basic_value operator[](std::string_view key) noexcept;
+    basic_value operator[](std::string_view key) noexcept {
+        return this->template member_handle<basic_value>(key);
+    }
 
     /**
      The element `index`, `v[index]`, which never fails.
@@ -603,7 +776,9 @@ public:
      @param index The index.
      @return Its handle: the element, a missing element of an array, or nothing.
     */
-    basic_value operator[](std::uint64_t index) noexcept;
+    basic_value operator[](std::uint64_t index) noexcept {
+        return this->template element_handle<basic_value>(index);
+    }
 
     /**
      `Array.prototype.at`: the element `index`, a negative index counting from the end.
@@ -632,7 +807,32 @@ public:
     */
     template <class T>
     [[nodiscard]] result<void> set(const T& v) noexcept
-        requires detail::settable<Traits, T> || std::same_as<T, undefined_t>;
+        requires detail::settable<Traits, T> || std::same_as<T, undefined_t>
+    {
+        if constexpr (std::same_as<T, undefined_t>) {
+            return store_undefined();
+        } else if constexpr (detail::copy_source<Traits, T>) {
+            const auto source = copy_from(v);
+            if (!source.has_value()) {
+                return source.error();
+            }
+            const auto [from, n] = source.unsafe_value();
+            if (n == nullptr) {
+                // The source reads undefined, which stores as undefined does.
+                return store_undefined();
+            }
+            // The tree reads the source before it changes anything, so it may be this tree.
+            detail::prepared<Traits> p;
+            p.copy_of(*from, n->id);
+            return store(p.value());
+        } else {
+            detail::prepared<Traits> p;
+            if (const auto made = detail::prepare(v, p); !made.has_value()) {
+                return made;
+            }
+            return store(p.value());
+        }
+    }
 
     /**
      `delete v[key]`: erases an object's member and its subtree.
@@ -640,8 +840,17 @@ public:
      @param key The key, in UTF-8.
      @return Whether it was there; @ref errc::type for any other kind than an object.
     */
-    [[nodiscard]] result<bool> erase(std::string_view key) noexcept;
+    [[nodiscard]] result<bool> erase(std::string_view key) noexcept {
+        const detail::node<Traits>* n = this->resolve();
+        if (n == nullptr || n->kind != webcpp::document::kind::object) {
+            return errc::type;
+        }
+        return writable_tree()->erase_member(n->id, key);
+    }
 
+    // The source's keys and ids are staged on the process heap, whose exhaustion ends the program,
+    // as the library tolerates; the source is taken by value, as every handle is passed.
+    // NOLINTBEGIN(bugprone-exception-escape,performance-unnecessary-value-param)
     /**
      `Object.assign(v, source)`: sets each member of `source` here, in its order, as one operation.
 
@@ -653,7 +862,39 @@ public:
      @ref errc::capacity when there is no room.
     */
     template <class S>
-    [[nodiscard]] result<void> assign_from(basic_const_value<Traits, S> source) noexcept;
+    [[nodiscard]] result<void> assign_from(basic_const_value<Traits, S> source) noexcept {
+        const detail::node<Traits>* target = this->resolve();
+        if (target == nullptr || target->kind != webcpp::document::kind::object) {
+            return errc::type;
+        }
+        const detail::node<Traits>* s = source.resolve();
+        if (s == nullptr || s->kind == webcpp::document::kind::null) {
+            return {};
+        }
+        const bool elements = s->kind == webcpp::document::kind::array;
+        if (!elements && s->kind != webcpp::document::kind::object) {
+            return errc::type;
+        }
+        const detail::tree<Traits>& from = *source.tree_ptr();
+        // The keys are owned here, in UTF-8, before an entry points at one: the tree may move the
+        // source's image while it finds its room, when the source is this document.
+        std::vector<std::string> keys;
+        std::vector<std::uint64_t> ids;
+        for (const detail::node<Traits>* c = from.first_child(s->id); c != nullptr;
+             c = from.next_sibling(*c)) {
+            keys.push_back(elements ? std::to_string(c->ordinal) : utf8_key(*c));
+            ids.push_back(c->id);
+        }
+        std::vector<detail::literal_entry<Traits>> entries(keys.size());
+        for (std::size_t i = 0; i < keys.size(); ++i) {
+            entries[i].key = keys[i];
+            entries[i].value.from = &from;
+            entries[i].value.from_id = ids[i];
+        }
+        return writable_tree()->set_members(target->id, entries);
+    }
+
+    // NOLINTEND(bugprone-exception-escape,performance-unnecessary-value-param)
 
     /**
      `Array.prototype.push`: appends each value.
@@ -774,7 +1015,111 @@ private:
 
     /** A handle of `doc` at the place `where`, as the read-only handle's. */
     basic_value(basic_document<Traits, Storage>* doc, detail::place where, std::uint64_t id,
-                std::uint64_t index, std::string_view key) noexcept;
+                std::uint64_t index, std::string_view key) noexcept
+        : basic_const_value<Traits, Storage>(doc, where, id, index, key) {}
+
+    /** The tree of the handle's document, to write; null when it names nothing. */
+    [[nodiscard]] detail::tree<Traits>* writable_tree() const noexcept {
+        return this->doc_ == nullptr ? nullptr : detail::access::tree_of(*this->doc_);
+    }
+
+    /** Where a deep copy of a document reads: its tree and its root; none when moved from. */
+    template <class S>
+    static result<std::pair<const detail::tree<Traits>*, const detail::node<Traits>*>> copy_from(
+        const basic_document<Traits, S>& d) noexcept {
+        const detail::tree<Traits>* t = detail::access::tree_of(d);
+        if (t == nullptr) {
+            return errc::type;
+        }
+        return std::pair(t, detail::access::node_of(d.root()));
+    }
+
+    /** Where a deep copy of a handle's value reads: its tree and its node, null for undefined. */
+    template <class S>
+    static result<std::pair<const detail::tree<Traits>*, const detail::node<Traits>*>> copy_from(
+        const basic_const_value<Traits, S>& v) noexcept {
+        return std::pair(detail::access::tree_of(v), detail::access::node_of(v));
+    }
+
+    /** A key of `n`, in UTF-8: what the tree's operations take. */
+    static std::string utf8_key(const detail::node<Traits>& n) {
+        if constexpr (std::same_as<typename Traits::string, utf16>) {
+            const std::u16string_view units = n.key.units();
+            std::string out(static_cast<std::size_t>(detail::utf8_size(units)), '\0');
+            detail::to_utf8(units, out.data());
+            return out;
+        } else {
+            return std::string(n.key.chars());
+        }
+    }
+
+    /** Stores an item at this place: the node replaced, or the member or element created. */
+    result<void> store(const detail::item<Traits>& v) noexcept {
+        detail::tree<Traits>* t = writable_tree();
+        if (t == nullptr) {
+            return errc::type;
+        }
+        switch (this->place_) {
+            case detail::place::node: return t->assign(this->id_, v);
+            case detail::place::member: {
+                const auto set = t->set_member(this->id_, this->key_, v);
+                if (!set.has_value()) {
+                    return set.error();
+                }
+                return {};
+            }
+            case detail::place::element: return t->set_element(this->id_, this->index_, v);
+            case detail::place::nothing: break;
+        }
+        return errc::type;
+    }
+
+    // A member's key is turned into UTF-8 on the process heap, whose exhaustion ends the program,
+    // as the library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
+    /**
+     Stores `undefined` at this place: a member erased, an element `null`, a root holding
+     `undefined`.
+    */
+    result<void> store_undefined() noexcept {
+        detail::tree<Traits>* t = writable_tree();
+        if (t == nullptr) {
+            return errc::type;
+        }
+        switch (this->place_) {
+            case detail::place::node: break;
+            case detail::place::member: {
+                const auto erased = t->erase_member(this->id_, this->key_);
+                if (!erased.has_value()) {
+                    return erased.error();
+                }
+                return {};
+            }
+            case detail::place::element:
+                return t->set_element(this->id_, this->index_,
+                                      detail::empty_item<Traits>(webcpp::document::kind::null));
+            case detail::place::nothing: return errc::type;
+        }
+        const detail::node<Traits>* n = t->find(this->id_);
+        if (n == nullptr) {
+            return errc::type;
+        }
+        if (n->parent == 0) {
+            return t->assign(this->id_,
+                             detail::empty_item<Traits>(webcpp::document::kind::undefined));
+        }
+        if (const detail::node<Traits>* parent = t->find(n->parent);
+            parent->kind == webcpp::document::kind::array) {
+            return t->assign(this->id_, detail::empty_item<Traits>(webcpp::document::kind::null));
+        }
+        const auto erased = t->erase_member(n->parent, utf8_key(*n));
+        if (!erased.has_value()) {
+            return erased.error();
+        }
+        return {};
+    }
+
+    // NOLINTEND(bugprone-exception-escape)
 };
 
 /** A handle of a @ref document, reading and writing. */
@@ -782,6 +1127,97 @@ using value = basic_value<>;
 
 /** A handle of a @ref document, read only. */
 using const_value = basic_const_value<>;
+
+// The members below make handles, which are complete only here.
+
+template <class Traits, class Storage>
+basic_value<Traits, Storage> basic_document<Traits, Storage>::root() noexcept {
+    return basic_value<Traits, Storage>(this, detail::place::node, detail::root_id, 0, {});
+}
+
+template <class Traits, class Storage>
+basic_const_value<Traits, Storage> basic_document<Traits, Storage>::root() const noexcept {
+    // A read-only handle never writes through the document it names.
+    return basic_const_value<Traits, Storage>(const_cast<basic_document*>(this),
+                                              detail::place::node, detail::root_id, 0, {});
+}
+
+template <class Traits, class Storage>
+basic_value<Traits, Storage> basic_document<Traits, Storage>::operator[](
+    std::string_view key) noexcept {
+    return root()[key];
+}
+
+template <class Traits, class Storage>
+basic_value<Traits, Storage> basic_document<Traits, Storage>::operator[](
+    std::uint64_t index) noexcept {
+    return root()[index];
+}
+
+template <class Traits, class Storage>
+basic_const_value<Traits, Storage> basic_document<Traits, Storage>::operator[](
+    std::string_view key) const noexcept {
+    return root()[key];
+}
+
+template <class Traits, class Storage>
+basic_const_value<Traits, Storage> basic_document<Traits, Storage>::operator[](
+    std::uint64_t index) const noexcept {
+    return root()[index];
+}
+
+namespace detail {
+
+// A handle of a node holds no key, so copying one allocates nothing; were it to, the process heap's
+// exhaustion would end the program, as the library tolerates.
+// NOLINTBEGIN(bugprone-exception-escape)
+template <class Traits, class Storage, children_of Kind>
+auto children_iterator<Traits, Storage, Kind>::operator*() const noexcept -> value_type {
+    if constexpr (Kind == children_of::values) {
+        return basic_const_value<Traits, Storage>(doc_, place::node, child_, 0, {});
+    } else {
+        // A key is a view of the image, valid until the document's next change.
+        const tree<Traits>* t = doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
+        const node<Traits>* n = t == nullptr ? nullptr : t->find(child_);
+        text_view_t<Traits> key;
+        if (n != nullptr) {
+            if constexpr (std::same_as<typename Traits::string, utf16>) {
+                key = n->key.units();
+            } else {
+                key = n->key.chars();
+            }
+        }
+        if constexpr (Kind == children_of::keys) {
+            return key;
+        } else {
+            return value_type(key,
+                              basic_const_value<Traits, Storage>(doc_, place::node, child_, 0, {}));
+        }
+    }
+}
+
+// NOLINTEND(bugprone-exception-escape)
+
+template <class Traits, class Storage, children_of Kind>
+children_iterator<Traits, Storage, Kind>&
+children_iterator<Traits, Storage, Kind>::operator++() noexcept {
+    const tree<Traits>* t = doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
+    const node<Traits>* n = t == nullptr ? nullptr : t->find(child_);
+    const node<Traits>* next = n == nullptr ? nullptr : t->next_sibling(*n);
+    child_ = next == nullptr ? 0 : next->id;
+    return *this;
+}
+
+template <class Traits, class Storage, children_of Kind>
+children_iterator<Traits, Storage, Kind> children<Traits, Storage, Kind>::begin() const noexcept {
+    // The root's parent is 0: the children of 0 are those of nothing, not the root.
+    const tree<Traits>* t =
+        doc_ == nullptr || parent_ == 0 ? nullptr : access::tree_of(std::as_const(*doc_));
+    const node<Traits>* first = t == nullptr ? nullptr : t->first_child(parent_);
+    return {doc_, first == nullptr ? 0 : first->id};
+}
+
+}  // namespace detail
 
 }  // namespace webcpp::document
 

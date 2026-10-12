@@ -22,9 +22,11 @@
 #include <webcpp/document/kind.hpp>
 #include <webcpp/document/traits.hpp>
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 #include <string>
 #include <string_view>
@@ -108,7 +110,18 @@ public:
      @return The document; @ref errc::capacity when even an empty one does not fit `max_bytes`.
     */
     static result<basic_document> create(std::uint64_t max_bytes = default_max_bytes) noexcept
-        requires std::same_as<Storage, owned>;
+        requires std::same_as<Storage, owned>
+    {
+        auto made = detail::region::owned(std::min(first_bytes, max_bytes / 16 * 16), max_bytes);
+        if (!made.has_value()) {
+            return made.error();
+        }
+        if (const auto formatted = detail::tree<Traits>::format(made.unsafe_value());
+            !formatted.has_value()) {
+            return formatted.error();
+        }
+        return basic_document(std::move(made.unsafe_value()));
+    }
 
     /**
      Makes a new owned document, holding `null`, as @ref create does, throwing on failure; only
@@ -134,7 +147,10 @@ public:
 
      @param other The document.
     */
-    basic_document(basic_document&& other) noexcept;
+    basic_document(basic_document&& other) noexcept : region_(std::move(other.region_)) {
+        // The other tree stays bound to the other region, now empty: it reads as nothing.
+        tree_.rebind(region_);
+    }
 
     /**
      Takes the image of `other`, freeing this document's own; the handles of both become invalid.
@@ -142,7 +158,13 @@ public:
      @param other The document.
      @return This document.
     */
-    basic_document& operator=(basic_document&& other) noexcept;
+    basic_document& operator=(basic_document&& other) noexcept {
+        if (this != &other) {
+            region_ = std::move(other.region_);
+            tree_.rebind(region_);
+        }
+        return *this;
+    }
 
     /** A document is copied by @ref clone, or with exceptions by its copy constructor. */
     basic_document& operator=(const basic_document&) = delete;
@@ -155,7 +177,16 @@ public:
 
      @return The copy, equal and independent; @ref errc::capacity when it does not fit.
     */
-    [[nodiscard]] result<basic_document<Traits, owned>> clone() const noexcept;
+    [[nodiscard]] result<basic_document<Traits, owned>> clone() const noexcept {
+        if (region_.data() == nullptr) {
+            return errc::type;
+        }
+        // A copy keeps an owned image's limit; an external image's grows as a new document would.
+        const std::uint64_t limit = std::same_as<Storage, owned>
+                                        ? region_.max_bytes()
+                                        : std::max(default_max_bytes, region_.size());
+        return from_image<Traits>(image(), limit);
+    }
 
     /**
      The handle of the document's value.
@@ -208,7 +239,14 @@ public:
 
      @return Its bytes, valid until the document's next change.
     */
-    [[nodiscard]] std::span<const std::byte> image() const noexcept;
+    [[nodiscard]] std::span<const std::byte> image() const noexcept {
+        if (region_.data() == nullptr) {
+            return {};
+        }
+        std::uint64_t size = 0;
+        std::memcpy(&size, region_.data() + offsetof(image_header, size), sizeof size);
+        return {region_.data(), static_cast<std::size_t>(size)};
+    }
 
     /**
      Makes an owned image as small as its content, which is unchanged.
@@ -216,7 +254,10 @@ public:
      @return Success; @ref errc::capacity when the smaller buffer cannot be allocated.
     */
     result<void> shrink_to_fit() noexcept
-        requires std::same_as<Storage, owned>;
+        requires std::same_as<Storage, owned>
+    {
+        return tree_.shrink_to_fit();
+    }
 
     /**
      The document's value as `JSON.stringify(value, null, indent)` writes it.
@@ -250,8 +291,13 @@ private:
     friend class detail::handler;
     friend struct detail::access;
 
+    /** The size of a new owned document's first buffer, which grows as its content needs. */
+    static constexpr std::uint64_t first_bytes = 4096;
+
     /** The document of a region whose tree was formatted or attached, the tree rebound to it. */
-    explicit basic_document(detail::region r) noexcept;
+    explicit basic_document(detail::region r) noexcept : region_(std::move(r)) {
+        tree_.rebind(region_);
+    }
 
     detail::region region_;
     detail::tree<Traits> tree_;
@@ -259,6 +305,73 @@ private:
 
 /** A document of the default traits, owned: exact numbers, UTF-8, JavaScript's key order. */
 using document = basic_document<>;
+
+namespace detail {
+
+/**
+ The document of a region whose tree was formatted or attached, made by `access`, which
+ `value.hpp` defines after this header: `Access` defers its lookup to where a call is instantiated.
+*/
+template <class Traits, class Storage, class Access = access>
+basic_document<Traits, Storage> adopt(region r) noexcept {
+    return Access::template make_document<Traits, Storage>(std::move(r));
+}
+
+}  // namespace detail
+
+template <class Traits>
+result<basic_document<Traits, external>> format(std::span<std::byte> buffer) noexcept {
+    auto made = detail::region::external_empty(buffer);
+    if (!made.has_value()) {
+        return made.error();
+    }
+    if (const auto formatted = detail::tree<Traits>::format(made.unsafe_value());
+        !formatted.has_value()) {
+        return formatted.error();
+    }
+    return detail::adopt<Traits, external>(std::move(made.unsafe_value()));
+}
+
+template <class Traits>
+result<basic_document<Traits, external>> open(std::span<std::byte> buffer) noexcept {
+    if (reinterpret_cast<std::uintptr_t>(buffer.data()) % 16 != 0) {
+        return errc::not_a_document;
+    }
+    if (const auto checked = check_image(buffer, detail::layout_tag<Traits>());
+        !checked.has_value()) {
+        return checked.error();
+    }
+    image_header header{};
+    std::memcpy(&header, buffer.data(), sizeof header);
+    // The image is what its header states, which a larger buffer may hold.
+    detail::region r =
+        detail::region::external(buffer.first(static_cast<std::size_t>(header.size)));
+    if (const auto attached = detail::tree<Traits>::attach(r); !attached.has_value()) {
+        return attached.error();
+    }
+    return detail::adopt<Traits, external>(std::move(r));
+}
+
+template <class Traits>
+result<basic_document<Traits, owned>> from_image(std::span<const std::byte> bytes,
+                                                 std::uint64_t max_bytes) noexcept {
+    if (const auto checked = check_image(bytes, detail::layout_tag<Traits>());
+        !checked.has_value()) {
+        return checked.error();
+    }
+    image_header header{};
+    std::memcpy(&header, bytes.data(), sizeof header);
+    auto made =
+        detail::region::owned_copy(bytes.first(static_cast<std::size_t>(header.size)), max_bytes);
+    if (!made.has_value()) {
+        return made.error();
+    }
+    if (const auto attached = detail::tree<Traits>::attach(made.unsafe_value());
+        !attached.has_value()) {
+        return attached.error();
+    }
+    return detail::adopt<Traits, owned>(std::move(made.unsafe_value()));
+}
 
 }  // namespace webcpp::document
 

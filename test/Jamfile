@@ -44,3 +44,9 @@ webcpp.run tree : tree_test.cpp ;
 webcpp.run literal : literal_test.cpp ;
 # Every settable type into an item, and a node back into every readable type.
 webcpp.run convert : convert_test.cpp ;
+# The document and its handles: navigation, reading, writing, equality, iteration.
+webcpp.run value : value_test.cpp ;
+# Object keys in JavaScript's order through the handles, under each order policy.
+webcpp.run order : order_test.cpp ;
+# Images: moved, formatted, opened, refused, the same for the same operations.
+webcpp.run image : image_test.cpp ;
