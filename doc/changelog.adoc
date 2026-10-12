@@ -17,4 +17,5 @@ of every version are on webcpp's index page.
 
 // tag::unreleased[]
 * Added the library: a JSON document that behaves as JavaScript does.
+* Added traits that choose the stored types, dates and bytes included.
 // end::unreleased[]

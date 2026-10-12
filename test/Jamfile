@@ -33,3 +33,5 @@ webcpp.run errors_raise : errors_test.cpp
 
 # Exact numbers from JSON text, written as JavaScript writes them.
 webcpp.run number : number_test.cpp ;
+# The traits: scalar codecs, encodings, bytes, dates and policies.
+webcpp.run traits : traits_test.cpp ;
