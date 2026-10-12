@@ -422,8 +422,10 @@ public:
             reinterpret_cast<std::uintptr_t>(r.data()) % 16 != 0) {
             return errc::not_a_document;
         }
+        // A seal is checked by whoever opens the image, before it attaches.
         const std::span<const std::byte> bytes(r.data(), static_cast<std::size_t>(r.size()));
-        if (const auto checked = check_image(bytes, layout_tag<Traits>()); !checked.has_value()) {
+        if (const auto checked = check_image(bytes, layout_tag<Traits>(), verify::none);
+            !checked.has_value()) {
             return checked.error();
         }
         image_header header{};
@@ -663,6 +665,7 @@ public:
         erase_subtree(m->id);
         set_word(counts, key_count_at, word(counts, key_count_at) - 1);
         set_scalar(object, counts);
+        sync_header(read_header().next_id);
         return true;
     }
 
@@ -755,6 +758,7 @@ public:
                 n.ordinal = j;
             });
         }
+        sync_header(read_header().next_id);
         return {};
     }
 
@@ -795,7 +799,219 @@ public:
         return {};
     }
 
+    /**
+     Grows an owned region, in one step, to hold at least `bytes`, as a change that needs room
+     does: nothing when it already does, @ref errc::capacity when it cannot.
+    */
+    result<void> reserve(std::uint64_t bytes) noexcept {
+        if (nodes_of() == nullptr) {
+            return errc::type;
+        }
+        if (bytes <= region_->size()) {
+            return {};
+        }
+        if (!region_->grow(bytes)) {
+            return errc::capacity;
+        }
+        sync_header(read_header().next_id);
+        return {};
+    }
+
+    /**
+     The exact size of the image @ref compact_to builds from this tree: the header, the heap's own
+     bytes, the container's two blocks, and for each node its block and those of its key and text.
+
+     It reads every node and allocates nothing; 0 when the tree is attached to nothing.
+    */
+    [[nodiscard]] std::uint64_t compact_bytes() const noexcept {
+        const nodes_type* nodes = nodes_of();
+        if (nodes == nullptr) {
+            return 0;
+        }
+        const costs c = measure_costs();
+        std::uint64_t total = header_bytes + c.heap.overhead + c.container + c.header_node;
+        for (const node_type& n : nodes->template get<by_id>()) {
+            total = saturated_sum(total, c.node);
+            total = saturated_sum(total, c.heap.block(n.key.size));
+            total = saturated_sum(total, c.heap.block(n.text.size));
+        }
+        return total;
+    }
+
+    // The walk keeps its stack on the process heap, whose exhaustion ends the program, as the
+    // library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
+    /**
+     Builds into `to` a copy of `from` in document order: ids from the first, insertion numbers
+     from 0, and for each node its key, its text, then the node, each block right after the last.
+
+     `to` is a fresh region of exactly `bytes`, @ref compact_bytes of `from`, over a heap that holds
+     nothing, so that its blocks fill it, with no hole and no free block.
+
+     @return The tree over `to`; @ref errc::type when `from` is attached to nothing,
+     @ref errc::capacity when `to` is not of `bytes` bytes.
+    */
+    static result<tree> compact_to(region& to, const tree& from, std::uint64_t bytes) noexcept {
+        const nodes_type* source = from.nodes_of();
+        const node_type* root = source == nullptr ? nullptr : find_in(*source, root_id);
+        if (root == nullptr) {
+            return errc::type;
+        }
+        if (to.data() == nullptr || to.size() != bytes) {
+            return errc::capacity;
+        }
+        const costs c = measure_costs();
+        heap& h = heap_of(to);
+        // The blocks are taken one after another from the heap's one free block, and a block is
+        // taken only when it is there, whatever the sizes say: a wrong figure is an error value.
+        if (h.get_free_memory() < c.heap.slack + c.container + c.header_node) {
+            return errc::capacity;
+        }
+        void* block = h.allocate_aligned(sizeof(nodes_type), alignof(nodes_type));
+        BOOST_ASSERT(block != nullptr);
+        std::memset(block, 0, sizeof(nodes_type));
+        // The container is the heap's first block, where attach requires it.
+        BOOST_ASSERT(std::cmp_equal(static_cast<std::byte*>(block) - to.data(), container_offset));
+        auto* nodes = new (block) nodes_type(allocator<node_type>(&h));
+
+        std::uint64_t next_id = root_id;
+        const auto copy = [&](const node_type& original, std::uint64_t parent, std::uint8_t group,
+                              std::uint64_t ordinal) -> bool {
+            const std::uint64_t needed =
+                c.node + c.heap.block(original.key.size) + c.heap.block(original.text.size);
+            if (h.get_free_memory() < c.heap.slack + needed) {
+                return false;
+            }
+            const byte_string key = make_probed(h, original.key.view());
+            const byte_string text = make_probed(h, original.text.view());
+            scalar_type scalar = original.scalar;
+            if (original.kind == kind_t::object) {
+                // The counts follow the members as they are copied, not as they were once set.
+                std::uint64_t members = 0;
+                std::uint64_t inserted = 0;
+                for (const node_type* m = from.first_child(original.id); m != nullptr;
+                     m = from.next_sibling(*m)) {
+                    ++members;
+                    inserted += m->group == key_group ? 1 : 0;
+                }
+                scalar = {};
+                set_word(scalar, next_insertion_at, sorted_keys ? 0 : inserted);
+                set_word(scalar, key_count_at, members);
+            }
+            [[maybe_unused]] const bool placed =
+                nodes->emplace(next_id++, parent, group, ordinal, key, original.kind,
+                               original.number, scalar, text)
+                    .second;
+            BOOST_ASSERT(placed);
+            return true;
+        };
+
+        // What walks the source: the next child to copy, where it goes, and the number the next
+        // member that is not an index takes.
+        struct frame {
+            const node_type* child;
+            std::uint64_t parent;
+            std::uint64_t next_insertion;
+        };
+        std::vector<frame> stack;
+        if (!copy(*root, 0, index_group, 0)) {
+            return errc::capacity;
+        }
+        if (const node_type* first = from.first_child(root_id)) {
+            stack.push_back({first, root_id, 0});
+        }
+        while (!stack.empty()) {
+            frame& top = stack.back();
+            if (top.child == nullptr) {
+                stack.pop_back();
+                continue;
+            }
+            const node_type& child = *top.child;
+            top.child = from.next_sibling(child);
+            const std::uint64_t parent = top.parent;
+            const std::uint64_t id = next_id;
+            // An element and an array-index key keep the index they are; the other members are
+            // numbered as they come, and under `sorted` by their ids.
+            const bool indexed = child.group == index_group;
+            const std::uint64_t ordinal =
+                indexed ? child.ordinal : (sorted_keys ? id : top.next_insertion++);
+            if (!copy(child, parent, indexed ? index_group : key_group, ordinal)) {
+                return errc::capacity;
+            }
+            if (const node_type* first = from.first_child(child.id)) {
+                stack.push_back({first, id, 0});
+            }
+        }
+        BOOST_ASSERT(h.get_free_memory() == c.heap.slack);
+
+        image_header header{};
+        header.magic = image_magic;
+        header.version = format_version;
+        header.byte_order = byte_order_mark;
+        header.boost_version = BOOST_VERSION;
+        header.layout = layout_tag<Traits>();
+        header.size = to.size();
+        header.container = container_offset;
+        header.next_id = next_id;
+        std::memcpy(to.data(), &header, sizeof header);
+        tree t;
+        t.region_ = &to;
+        return t;
+    }
+
+    // NOLINTEND(bugprone-exception-escape)
+
+    /**
+     The container of the nodes, for what walks its indices itself, both ways or by a bound; null
+     when the tree is attached to nothing.
+    */
+    [[nodiscard]] const container<Traits>* nodes() const noexcept { return nodes_of(); }
+
 private:
+    /**
+     What a compact image's blocks take, measured once per call: the heap's, the container's, the
+     container's header node and a node.
+    */
+    struct costs {
+        /** The heap's own. */
+        heap_costs heap;
+
+        /** The block of the container itself. */
+        std::uint64_t container = 0;
+
+        /** The block of the container's header node, which its constructor takes. */
+        std::uint64_t header_node = 0;
+
+        /** The block of each node. */
+        std::uint64_t node = 0;
+    };
+
+    /**
+     Measures @ref costs in a scratch heap on the stack, by building in it what a tree does: a
+     container and a node. The block sizes of Boost.MultiIndex's nodes are not public, and this way
+     none is repeated here.
+    */
+    static costs measure_costs() noexcept {
+        constexpr std::size_t scratch_bytes = 2048;
+        alignas(16) std::array<std::byte, scratch_bytes> scratch{};
+        heap* h = new (scratch.data()) heap(scratch.size(), sizeof(heap));
+        costs c;
+        c.heap = measure_heap_costs();
+        std::uint64_t free_memory = h->get_free_memory();
+        void* block = h->allocate_aligned(sizeof(nodes_type), alignof(nodes_type));
+        BOOST_ASSERT(block != nullptr);
+        c.container = std::exchange(free_memory, h->get_free_memory()) - free_memory;
+        auto* nodes = new (block) nodes_type(allocator<node_type>(h));
+        c.header_node = std::exchange(free_memory, h->get_free_memory()) - free_memory;
+        const byte_string empty;
+        const scalar_type zero{};
+        nodes->emplace(root_id, std::uint64_t{0}, index_group, std::uint64_t{0}, empty,
+                       kind_t::null, repr::none, zero, empty);
+        c.node = std::exchange(free_memory, h->get_free_memory()) - free_memory;
+        nodes->~nodes_type();
+        return c;
+    }
+
     /** The node of this tree. */
     using node_type = node<Traits>;
 
@@ -1026,11 +1242,15 @@ private:
         return header;
     }
 
-    /** Writes the region's size and the next id into the header. */
+    /**
+     Writes the region's size and the next id into the header, and clears its seal: every change
+     to the tree ends here, so a changed image is never sealed.
+    */
     void sync_header(std::uint64_t next_id) noexcept {
         image_header header = read_header();
         header.size = region_->size();
         header.next_id = next_id;
+        header.seal = 0;
         std::memcpy(region_->data(), &header, sizeof header);
     }
 

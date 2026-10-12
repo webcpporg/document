@@ -6,8 +6,8 @@
 
 /**
  The declarations the public headers share before their definitions, with the default template
- arguments, given here once: the document, its handles, its parsers, and what reaches their
- insides.
+ arguments, given here once: the document, its handles, its parsers, the views of its containers,
+ and what reaches their insides.
 */
 
 #ifndef WEBCPP_DOCUMENT_DETAIL_FWD_HPP
@@ -40,6 +40,12 @@ class basic_parser;
 
 template <class Traits = default_traits>
 class basic_stream_parser;
+
+template <class Handle>
+class basic_object_ref;
+
+template <class Handle>
+class basic_array_ref;
 
 namespace detail {
 

@@ -70,6 +70,9 @@ enum class errc : int {
 
     /** An image of another format version, Boost version, layout, byte order or traits. */
     incompatible_document = 6,
+
+    /** A sealed image whose bytes do not match its seal: changed, torn or cut short. */
+    damaged_document = 7,
 };
 
 namespace detail {
@@ -84,6 +87,7 @@ inline const char* message_of(int value) noexcept {
         case errc::not_a_document: return "not a document's image";
         case errc::incompatible_document:
             return "an image of another format, Boost, layout, byte order or traits";
+        case errc::damaged_document: return "a sealed image whose bytes do not match its seal";
     }
     return "unknown webcpp.document error";
 }
@@ -234,7 +238,7 @@ public:
     using error::error;
 };
 
-/** Bytes that are not a document's image, or an image of another format. */
+/** Bytes that are not a document's image, an image of another format, or a damaged one. */
 class image_error : public error {
 public:
     /** Constructs the exception of a code, as @ref error does. */
@@ -257,7 +261,8 @@ namespace detail {
         case errc::range: boost::throw_exception(range_error(code));
         case errc::capacity: boost::throw_exception(capacity_error(code));
         case errc::not_a_document:
-        case errc::incompatible_document: boost::throw_exception(image_error(code));
+        case errc::incompatible_document:
+        case errc::damaged_document: boost::throw_exception(image_error(code));
     }
     boost::throw_exception(error(code));
 }

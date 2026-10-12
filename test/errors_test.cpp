@@ -29,6 +29,7 @@ void values_are_fixed() {
     BOOST_TEST_EQ(static_cast<int>(wd::errc::capacity), 4);
     BOOST_TEST_EQ(static_cast<int>(wd::errc::not_a_document), 5);
     BOOST_TEST_EQ(static_cast<int>(wd::errc::incompatible_document), 6);
+    BOOST_TEST_EQ(static_cast<int>(wd::errc::damaged_document), 7);
 }
 
 void the_category_is_webcpp_document() {
@@ -46,9 +47,11 @@ void the_category_is_webcpp_document() {
                   "not a document's image");
     BOOST_TEST_EQ(boost::system::error_code(wd::errc::incompatible_document).message(),
                   "an image of another format, Boost, layout, byte order or traits");
+    BOOST_TEST_EQ(boost::system::error_code(wd::errc::damaged_document).message(),
+                  "a sealed image whose bytes do not match its seal");
 
     BOOST_TEST_EQ(wd::error_category().message(0), "unknown webcpp.document error");
-    BOOST_TEST_EQ(wd::error_category().message(7), "unknown webcpp.document error");
+    BOOST_TEST_EQ(wd::error_category().message(8), "unknown webcpp.document error");
 }
 
 /**
@@ -129,6 +132,8 @@ void raise_throws_the_type_of_its_code() {
     BOOST_TEST_EQ(thrown(wd::errc::not_a_document), "image not a document's image");
     BOOST_TEST_EQ(thrown(wd::errc::incompatible_document),
                   "image an image of another format, Boost, layout, byte order or traits");
+    BOOST_TEST_EQ(thrown(wd::errc::damaged_document),
+                  "image a sealed image whose bytes do not match its seal");
 }
 #endif
 

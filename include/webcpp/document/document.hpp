@@ -67,29 +67,40 @@ result<basic_document<Traits, external>> format(std::span<std::byte> buffer) noe
 /**
  Opens the image already in a buffer, in place.
 
+ A sealed image is checked against its seal first, a pass over the image, unless `check` is
+ @ref verify::none.
+
  @tparam Traits The traits the image was written with.
  @param buffer The buffer, which the document uses in place and its user keeps alive.
+ @param check Whether a sealed image's bytes are checked against its seal.
  @return The document; @ref errc::not_a_document for bytes that are not an image or a buffer that
  is not 16-aligned, @ref errc::incompatible_document for an image of another format version,
- Boost version, layout, byte order or traits.
+ Boost version, layout, byte order or traits, @ref errc::damaged_document for a sealed image
+ whose bytes do not match its seal.
  @see "Images", in the guide.
 */
 template <class Traits = default_traits>
-result<basic_document<Traits, external>> open(std::span<std::byte> buffer) noexcept;
+result<basic_document<Traits, external>> open(std::span<std::byte> buffer,
+                                              verify check = verify::seal) noexcept;
 
 /**
  Copies an image into a new owned document.
 
+ A sealed image is checked against its seal first, as @ref open checks it; the copy keeps the
+ seal, its bytes being the image's.
+
  @tparam Traits The traits the image was written with.
  @param bytes The image, at any address.
  @param max_bytes The size the copy may grow to.
+ @param check Whether a sealed image's bytes are checked against its seal.
  @return The document; the errors of @ref open, and @ref errc::capacity when the image is larger
  than `max_bytes`.
  @see "Images", in the guide.
 */
 template <class Traits = default_traits>
-result<basic_document<Traits, owned>> from_image(
-    std::span<const std::byte> bytes, std::uint64_t max_bytes = default_max_bytes) noexcept;
+result<basic_document<Traits, owned>> from_image(std::span<const std::byte> bytes,
+                                                 std::uint64_t max_bytes = default_max_bytes,
+                                                 verify check = verify::seal) noexcept;
 
 /**
  A JSON document: one value, in one relocatable image.
@@ -185,6 +196,9 @@ public:
     /**
      Copies the image into a new owned document, as `structuredClone` would.
 
+     The copy keeps a seal, its bytes being the image's; the seal is not checked, the image being
+     this document's own.
+
      @return The copy, equal and independent; @ref errc::capacity when it does not fit, and
      @ref errc::type for a moved-from document, which has no image.
     */
@@ -196,7 +210,7 @@ public:
         const std::uint64_t limit = std::same_as<Storage, owned>
                                         ? region_.max_bytes()
                                         : std::max(default_max_bytes, region_.size());
-        return from_image<Traits>(image(), limit);
+        return from_image<Traits>(image(), limit, verify::none);
     }
 
     /**
@@ -260,11 +274,44 @@ public:
     }
 
     /**
+     Seals the image: writes into its header the CRC-32C of its bytes, which @ref open,
+     @ref from_image and the image reader then check, refusing an image whose bytes changed.
+
+     The seal holds until the document's next change, which clears it: the image is then simply
+     not sealed, never wrongly sealed. It catches bytes changed inside an image (a flipped bit on
+     a disk or a wire, a torn write, a stray write), not an old but valid image in reused memory,
+     which carries a valid seal of its own. It costs a pass over the image, Boost.CRC's table
+     a byte at a time: measured natively at -O2 on one core of an Apple M5 Max, 1.7 ms per MiB
+     (about 600 MB/s), and the check when an image is opened costs the same.
+
+     @return Success; @ref errc::type for a moved-from document, which has no image.
+     @see "Images", in the guide.
+    */
+    result<void> seal() noexcept {
+        if (region_.data() == nullptr) {
+            return errc::type;
+        }
+        const std::span<const std::byte> bytes = image();
+        detail::seal_image({region_.data(), bytes.size()});
+        return {};
+    }
+
+    /**
+     Whether the image carries a seal, which @ref seal wrote and no change has cleared since.
+
+     @return Whether it is sealed; false for a moved-from document. The seal is not checked here.
+    */
+    [[nodiscard]] bool sealed() const noexcept {
+        return region_.data() != nullptr && detail::is_sealed(image());
+    }
+
+    /**
      Shrinks an owned image to the end of its last block in use, its content unchanged.
 
      Blocks never move, so the free blocks before the last one in use stay in the image: a
      document that grew and then let most of its values go may stay nearly as large. A deep copy
-     into a new document, `packed.root().set(doc)`, packs the content.
+     into a new document, `packed.root().set(doc)`, packs the content, and @ref compact packs it
+     in one order whatever the document's history.
 
      @return Success; @ref errc::capacity when the smaller buffer cannot be allocated.
     */
@@ -272,6 +319,106 @@ public:
         requires std::same_as<Storage, owned>
     {
         return tree_.shrink_to_fit();
+    }
+
+    /**
+     Rebuilds an owned image as the compact image of its content: the nodes in document order,
+     ids numbered from the first, each block right after the last with no hole between, the image
+     exactly as large as they are.
+
+     Two documents of equal content, whatever edits made them, have byte-identical images after it,
+     and a compact image compacts to itself. The copy is built before it replaces the image, so a
+     failure changes nothing. As a vector's reallocation does, it invalidates every handle, every
+     `std::string_view` read from a value and every iterator, and, the bytes having changed, it
+     clears a seal: sealing after it is the caller's. The image's size is @ref compact_size
+     afterwards, which is also its @ref capacity, so the next change that needs room grows it.
+
+     @return Success; @ref errc::capacity when the new buffer cannot be allocated, and
+     @ref errc::type for a moved-from document.
+     @see "Images", in the guide.
+    */
+    result<void> compact() noexcept
+        requires std::same_as<Storage, owned>
+    {
+        if (region_.data() == nullptr) {
+            return errc::type;
+        }
+        const std::uint64_t bytes = tree_.compact_bytes();
+        auto made = detail::region::owned(bytes, region_.max_bytes());
+        if (!made.has_value()) {
+            return made.error();
+        }
+        if (const auto built = detail::tree<Traits>::compact_to(made.unsafe_value(), tree_, bytes);
+            !built.has_value()) {
+            return built.error();
+        }
+        region_ = std::move(made.unsafe_value());
+        tree_.rebind(region_);
+        return {};
+    }
+
+    /**
+     Writes the compact image of the document's content into a buffer, as @ref compact builds it,
+     and opens it there: for a document that cannot reallocate, such as one leased from a pool or
+     held in a shared block, or to send an image without waste.
+
+     The buffer is zeroed past the image. This document is not changed.
+
+     @param buffer The buffer, 16-aligned, of at least @ref compact_size bytes, which the returned
+     document uses in place and its user keeps alive; it must not overlap this document's image.
+     @return The document, over the buffer's first @ref compact_size bytes; @ref errc::capacity
+     when the buffer is smaller or is not 16-aligned, writing nothing; @ref errc::type for a
+     moved-from document and for a buffer that overlaps the image.
+     @see "Images", in the guide.
+    */
+    [[nodiscard]] result<basic_document<Traits, external>> compact_into(
+        std::span<std::byte> buffer) const noexcept;
+
+    /**
+     The size in bytes of the compact image of the document's content, which @ref compact and
+     @ref compact_into produce exactly: a program sizes a block with it.
+
+     It reads every node and allocates nothing, a fraction of the cost of the copy.
+
+     @return The size; 0 for a moved-from document.
+     @see "Images", in the guide.
+    */
+    [[nodiscard]] std::uint64_t compact_size() const noexcept {
+        return region_.data() == nullptr ? 0 : tree_.compact_bytes();
+    }
+
+    /**
+     The image's size in bytes, which the document's changes fill before an owned image grows and
+     moves, and before an external one fails.
+
+     @return The size, as @ref image gives it; 0 for a moved-from document.
+     @see "Images", in the guide.
+    */
+    [[nodiscard]] std::uint64_t capacity() const noexcept {
+        return region_.data() == nullptr ? 0 : region_.size();
+    }
+
+    /**
+     Makes the image hold at least `bytes`, as `std::vector::reserve`: an owned image grows in one
+     step, as a change that needs room grows it, to `bytes` or twice its size, the larger, at most
+     its `max_bytes`.
+
+     Growing moves the image, which invalidates every `std::string_view` read from a value but no
+     handle or iterator, and clears a seal; a reservation within the capacity changes nothing.
+     Building a large document after one reservation of its size moves the image once, not at
+     each doubling.
+
+     @param bytes The size the image must reach.
+     @return Success; @ref errc::capacity when `bytes` is past `max_bytes`, or past an external
+     image's size, which never grows, or the larger buffer cannot be allocated, each changing
+     nothing; @ref errc::type for a moved-from document.
+     @see "Images", in the guide.
+    */
+    [[nodiscard]] result<void> reserve(std::uint64_t bytes) noexcept {
+        if (region_.data() == nullptr) {
+            return errc::type;
+        }
+        return tree_.reserve(bytes);
     }
 
     /**
@@ -348,11 +495,11 @@ result<basic_document<Traits, external>> format(std::span<std::byte> buffer) noe
 }
 
 template <class Traits>
-result<basic_document<Traits, external>> open(std::span<std::byte> buffer) noexcept {
+result<basic_document<Traits, external>> open(std::span<std::byte> buffer, verify check) noexcept {
     if (reinterpret_cast<std::uintptr_t>(buffer.data()) % 16 != 0) {
         return errc::not_a_document;
     }
-    if (const auto checked = check_image(buffer, detail::layout_tag<Traits>());
+    if (const auto checked = check_image(buffer, detail::layout_tag<Traits>(), check);
         !checked.has_value()) {
         return checked.error();
     }
@@ -369,8 +516,8 @@ result<basic_document<Traits, external>> open(std::span<std::byte> buffer) noexc
 
 template <class Traits>
 result<basic_document<Traits, owned>> from_image(std::span<const std::byte> bytes,
-                                                 std::uint64_t max_bytes) noexcept {
-    if (const auto checked = check_image(bytes, detail::layout_tag<Traits>());
+                                                 std::uint64_t max_bytes, verify check) noexcept {
+    if (const auto checked = check_image(bytes, detail::layout_tag<Traits>(), check);
         !checked.has_value()) {
         return checked.error();
     }
@@ -386,6 +533,33 @@ result<basic_document<Traits, owned>> from_image(std::span<const std::byte> byte
         return attached.error();
     }
     return detail::adopt<Traits, owned>(std::move(made.unsafe_value()));
+}
+
+template <class Traits, class Storage>
+result<basic_document<Traits, external>> basic_document<Traits, Storage>::compact_into(
+    std::span<std::byte> buffer) const noexcept {
+    if (region_.data() == nullptr) {
+        return errc::type;
+    }
+    const auto first = reinterpret_cast<std::uintptr_t>(buffer.data());
+    const auto image_first = reinterpret_cast<std::uintptr_t>(region_.data());
+    if (first < image_first + region_.size() && image_first < first + buffer.size()) {
+        return errc::type;
+    }
+    const std::uint64_t bytes = tree_.compact_bytes();
+    if (bytes > buffer.size()) {
+        return errc::capacity;
+    }
+    auto made = detail::region::external_empty(buffer.first(static_cast<std::size_t>(bytes)));
+    if (!made.has_value()) {
+        return made.error();
+    }
+    if (const auto built = detail::tree<Traits>::compact_to(made.unsafe_value(), tree_, bytes);
+        !built.has_value()) {
+        return built.error();
+    }
+    std::memset(buffer.data() + bytes, 0, buffer.size() - static_cast<std::size_t>(bytes));
+    return detail::adopt<Traits, external>(std::move(made.unsafe_value()));
 }
 
 }  // namespace webcpp::document

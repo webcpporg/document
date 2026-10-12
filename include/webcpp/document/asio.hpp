@@ -6,8 +6,9 @@
 
 /**
  Streams of documents read from Boost.Asio's streams: `async_read_document`, which reads the next
- document of a stream with any completion token. The one header of document that includes
- Boost.Asio; it builds natively only.
+ document of a stream with any completion token, and the images of documents, `async_read_image`
+ and `async_write_image`, which move a document's image into and out of a pool's blocks. The one
+ header of document that includes Boost.Asio; it builds natively only.
 */
 
 #ifndef WEBCPP_DOCUMENT_ASIO_HPP
@@ -17,6 +18,7 @@
 
 #include <webcpp/document/detail/heap.hpp>
 #include <webcpp/document/document.hpp>
+#include <webcpp/document/image_stream.hpp>
 #include <webcpp/document/stream.hpp>
 #include <webcpp/document/value.hpp>
 
@@ -25,12 +27,16 @@
 #include <boost/asio/compose.hpp>       // lint-world: reads the stream its caller gives
 #include <boost/asio/error.hpp>         // lint-world: reads the stream its caller gives
 #include <boost/asio/immediate.hpp>     // lint-world: reads the stream its caller gives
+#include <boost/asio/read.hpp>          // lint-world: reads the stream its caller gives
+#include <boost/asio/write.hpp>         // lint-world: reads the stream its caller gives
+#include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string_view>
 #include <utility>
 
@@ -163,6 +169,182 @@ private:
     basic_document<Traits> document_ = nothing();
 };
 
+/**
+ The composed operation of @ref async_read_image: it asks the reader for the room the next bytes of
+ the image go into, reads exactly that room from the stream into the block, and commits what it
+ read, until the reader holds an image whole and takes it.
+*/
+template <class AsyncReadStream, class Traits>
+class read_image_op {
+public:
+    /** The operation on a stream, reading images into the blocks of a pool, which outlive it. */
+    read_image_op(AsyncReadStream& stream, image_pool& pool) noexcept
+        : stream_(&stream), reader_(pool) {}
+
+    /**
+     Runs a step: at the start, when a read completes, or when an immediate completion is
+     dispatched.
+    */
+    template <class Self>
+    void operator()(Self& self, boost::system::error_code ec = {}, std::size_t n = 0) {
+        if (step_ == step::completing) {
+            self.complete(code_, std::move(image_));
+            return;
+        }
+        if (step_ == step::reading) {
+            if (ec && ec != boost::asio::error::eof) {
+                return complete(self, ec);
+            }
+            const auto committed = reader_.commit(n);
+            if (!committed.has_value()) {
+                return complete(self, committed.error());
+            }
+            if (committed.unsafe_value() != 0) {
+                return take(self);
+            }
+            if (ec == boost::asio::error::eof) {
+                return end(self);
+            }
+        }
+        // The first step, or a read that does not complete the image: the room for its next bytes.
+        const auto room = reader_.prepare();
+        if (!room.has_value()) {
+            return complete(self, room.error());
+        }
+        const std::span<std::byte> bytes = room.unsafe_value();
+        step_ = step::reading;
+        boost::asio::async_read(*stream_, boost::asio::buffer(bytes.data(), bytes.size()),
+                                std::move(self));
+    }
+
+private:
+    /** Where the operation stands. */
+    enum class step : std::uint8_t {
+        /** Called by the initiating function: no read started yet. */
+        starting,
+
+        /** A read is in flight. */
+        reading,
+
+        /** An immediate completion is dispatched, its arguments held. */
+        completing,
+    };
+
+    /** Takes the image the reader completed: it holds it until it is taken. */
+    template <class Self>
+    void take(Self& self) {
+        auto taken = reader_.next();
+        if (!taken.has_value()) {
+            return complete(self, taken.error());
+        }
+        std::optional<leased_document<Traits>>& ready = taken.unsafe_value();
+        BOOST_ASSERT(ready.has_value());
+        complete(self, {}, std::move(*ready));
+    }
+
+    /** The stream ended: an image cut short is an error, the end between images is eof. */
+    template <class Self>
+    void end(Self& self) {
+        const auto finished = reader_.finish();
+        if (!finished.has_value()) {
+            return complete(self, finished.error());
+        }
+        complete(self, boost::asio::error::eof);
+    }
+
+    /**
+     Completes the operation, from the initiating function through the immediate completion its
+     handler asks for, never inside it. An error carries the empty lease.
+    */
+    template <class Self>
+    void complete(Self& self, boost::system::error_code code,
+                  leased_document<Traits>&& made = leased_document<Traits>()) {
+        if (step_ != step::starting) {
+            self.complete(code, std::move(made));
+            return;
+        }
+        step_ = step::completing;
+        code_ = code;
+        image_ = std::move(made);
+        const auto io = self.get_io_executor();
+        boost::asio::async_immediate(io, std::move(self));
+    }
+
+    AsyncReadStream* stream_;
+    basic_image_reader<Traits> reader_;
+    step step_ = step::starting;
+    boost::system::error_code code_;
+    leased_document<Traits> image_;
+};
+
+/**
+ The composed operation of @ref async_write_image: it seals the document, then writes its image as
+ one buffer, completing with the error of the seal or of the write.
+*/
+template <class AsyncWriteStream, class Traits, class Storage>
+class write_image_op {
+public:
+    /** The operation on a stream and a document, which outlive it. */
+    write_image_op(AsyncWriteStream& stream, basic_document<Traits, Storage>& document) noexcept
+        : stream_(&stream), document_(&document) {}
+
+    /**
+     Runs a step: at the start, when the write completes, or when an immediate completion is
+     dispatched.
+    */
+    template <class Self>
+    void operator()(Self& self, boost::system::error_code ec = {}, std::size_t = 0) {
+        if (step_ == step::completing) {
+            self.complete(code_);
+            return;
+        }
+        if (step_ == step::writing) {
+            self.complete(ec);
+            return;
+        }
+        // Sealed before the first byte goes out, so that the reader checks what it receives.
+        const auto sealed = document_->seal();
+        if (!sealed.has_value()) {
+            return complete(self, sealed.error());
+        }
+        const std::span<const std::byte> bytes = document_->image();
+        step_ = step::writing;
+        boost::asio::async_write(*stream_, boost::asio::buffer(bytes.data(), bytes.size()),
+                                 std::move(self));
+    }
+
+private:
+    /** Where the operation stands. */
+    enum class step : std::uint8_t {
+        /** Called by the initiating function: nothing written yet. */
+        starting,
+
+        /** A write is in flight. */
+        writing,
+
+        /** An immediate completion is dispatched, its error held. */
+        completing,
+    };
+
+    /** Completes the operation, as the read operation's completion does. */
+    template <class Self>
+    void complete(Self& self, boost::system::error_code code) {
+        if (step_ != step::starting) {
+            self.complete(code);
+            return;
+        }
+        step_ = step::completing;
+        code_ = code;
+        const auto io = self.get_io_executor();
+        boost::asio::async_immediate(io, std::move(self));
+    }
+
+    AsyncWriteStream* stream_;
+    basic_document<Traits, Storage>* document_;
+    step step_ = step::starting;
+    boost::system::error_code code_;
+};
+
 }  // namespace detail
 
 /**
@@ -206,6 +388,82 @@ auto async_read_document(
                                       void(boost::system::error_code, basic_document<Traits>)>(
         detail::read_document_op<AsyncReadStream, DynamicBuffer, Traits>(stream, buffer, parser),
         token, stream);
+}
+
+/**
+ Reads the next image of a stream into a block of a pool and opens it there, with no copy and no
+ allocation.
+
+ The image's header is read into the block and checked before the rest of the image follows into
+ the same block, which then holds the document. It reads exactly the bytes the reader asks for, so
+ the stream is left at the end of the image it completed.
+
+ It is a composed operation of Boost.Asio, which takes any completion token. Its signature is
+ `void(boost::system::error_code, leased_document<Traits>)`: on success the document, which gives
+ its block back when it goes; on error the empty lease (@ref leased_document::empty), with the
+ error: @ref errc::capacity when every block of the pool is leased, in which case the stream is
+ not read, @ref errc::not_a_document or @ref errc::damaged_document for an image the reader
+ refuses, or the error of a read. The end of the stream is `asio::error::eof`, and it too is
+ reported as @ref errc::capacity when every block is leased: the reader needs a block to learn
+ that the stream ended, so a pool that is full hides the end until a block is given back.
+
+ Images are trusted input: this path is for peers the program trusts.
+
+ @tparam AsyncReadStream A stream of Boost.Asio's `AsyncReadStream`: a socket, a pipe.
+ @tparam Traits The traits of the images.
+ @tparam CompletionToken The completion token.
+ @param stream The stream.
+ @param pool The pool whose blocks the image is read into; it outlives the operation and the
+ document.
+ @param token The completion token.
+ @return What the token makes of the operation.
+ @see "Images on the wire", in the guide.
+*/
+template <class AsyncReadStream, class Traits = default_traits,
+          boost::asio::completion_token_for<void(boost::system::error_code,
+                                                 leased_document<Traits>)>
+              CompletionToken =
+                  boost::asio::default_completion_token_t<typename AsyncReadStream::executor_type>>
+auto async_read_image(
+    AsyncReadStream& stream, image_pool& pool,
+    CompletionToken&& token =
+        boost::asio::default_completion_token_t<typename AsyncReadStream::executor_type>()) {
+    return boost::asio::async_compose<CompletionToken,
+                                      void(boost::system::error_code, leased_document<Traits>)>(
+        detail::read_image_op<AsyncReadStream, Traits>(stream, pool), token, stream);
+}
+
+/**
+ Writes a document's image to a stream as one buffer, after sealing the document.
+
+ The image carries a checksum of its bytes, which the reader checks, so a byte changed on the way
+ is refused with @ref errc::damaged_document. The document is changed by the seal, which is why it
+ is taken by non-const reference.
+
+ It is a composed operation of Boost.Asio, which takes any completion token. Its signature is
+ `void(boost::system::error_code)`: the error of the seal, which writes nothing, or of the write.
+ The caller keeps the document alive until the operation completes: the write reads its image.
+
+ @tparam AsyncWriteStream A stream of Boost.Asio's `AsyncWriteStream`: a socket, a pipe.
+ @tparam Traits The traits of the document.
+ @tparam Storage The storage of the document, owned or external.
+ @tparam CompletionToken The completion token.
+ @param stream The stream.
+ @param document The document to send, sealed by the operation.
+ @param token The completion token.
+ @return What the token makes of the operation.
+ @see "Sealed images", in the guide.
+*/
+template <class AsyncWriteStream, class Traits, class Storage,
+          boost::asio::completion_token_for<void(boost::system::error_code)> CompletionToken =
+              boost::asio::default_completion_token_t<typename AsyncWriteStream::executor_type>>
+auto async_write_image(
+    AsyncWriteStream& stream, basic_document<Traits, Storage>& document,
+    CompletionToken&& token =
+        boost::asio::default_completion_token_t<typename AsyncWriteStream::executor_type>()) {
+    return boost::asio::async_compose<CompletionToken, void(boost::system::error_code)>(
+        detail::write_image_op<AsyncWriteStream, Traits, Storage>(stream, document), token,
+        stream);
 }
 
 }  // namespace webcpp::document

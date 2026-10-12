@@ -102,3 +102,25 @@ webcpp.run oracle_cases : oracle_test.cpp
 webcpp.run bench : ../bench/bench.cpp
   : <define>WEBCPP_BENCH_SMOKE <library>/webcpp/third_party//nativejson-benchmark
     <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH=1 ;
+
+# A stream of images read into a pool's blocks and opened in place:
+# backpressure, refusals, leases, and no allocation while reading.
+webcpp.run image_stream : image_stream_test.cpp ;
+# Images read and written with Boost.Asio, straight into a pool's blocks.
+webcpp.run image_asio : image_asio_test.cpp : : native ;
+# The containers' interface: typed views, iterators, ranges, keys in order.
+webcpp.run containers : containers_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+# Sealed images: the seal, its check, changes that clear it, the reader.
+webcpp.run seal : seal_test.cpp ;
+# Shared documents: counts, the last holder, copy on write; threads natively.
+webcpp.run shared : shared_test.cpp ;
+# Two processes share a pool in Boost.Interprocess's shared memory, which
+# needs exceptions; the test runs itself again as the second process.
+webcpp.run shared_interprocess : shared_test.cpp
+  : <exception-handling>on <define>WEBCPP_TEST_DOCUMENT_INTERPROCESS : native ;
+
+# The JavaScript API, built by Emscripten and tested by Node (js/Jamfile): its targets js-tests
+# and js-chrome, which need the emscripten toolset.
+build-project ../js ;
+# Compact images: equal content gives equal bytes, the exact size, a caller's buffer.
+webcpp.run compact : compact_test.cpp ;

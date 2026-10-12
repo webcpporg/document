@@ -10,8 +10,9 @@
  array methods and iteration.
 
  This header declares every member of the handles. It defines reading and writing; the array
- methods are defined in `detail/value_array.hpp`, the sugar that throws in `detail/value_sugar.hpp`
- and `stringify` in `stringify.hpp`, each included at its end.
+ methods are defined in `detail/value_array.hpp`, the views `as_object` and `as_array` make in
+ `containers.hpp`, the sugar that throws in `detail/value_sugar.hpp` and `stringify` in
+ `stringify.hpp`, each included at its end.
 */
 
 #ifndef WEBCPP_DOCUMENT_VALUE_HPP
@@ -221,6 +222,12 @@ struct access {
     static basic_const_value<Traits, Storage> handle_of(basic_document<Traits, Storage>& d,
                                                         std::uint64_t id) noexcept {
         return basic_const_value<Traits, Storage>(&d, place::node, id, 0, {});
+    }
+
+    /** The handle, of type `Handle`, of the node `id` of `d`; one that names nothing when null. */
+    template <class Handle, class Traits, class Storage>
+    static Handle handle_at(basic_document<Traits, Storage>* d, std::uint64_t id) noexcept {
+        return Handle(d, place::node, id, 0, {});
     }
 
     /** The document of a region whose tree was formatted or attached, the tree rebound to it. */
@@ -507,6 +514,24 @@ public:
     }
 
     /**
+     The object as a sorted-map-like container that reads: `find`, bounds by key, and iterators
+     that `<algorithm>` and `<ranges>` take.
+
+     @return The view, defined in `containers.hpp`; @ref errc::type for any other kind.
+     @see "Key order", in the guide.
+    */
+    [[nodiscard]] result<basic_object_ref<basic_const_value>> as_object() const noexcept;
+
+    /**
+     The array as a vector-like container that reads: `front`, `back`, `at`, and iterators that
+     `<algorithm>` and `<ranges>` take.
+
+     @return The view, defined in `containers.hpp`; @ref errc::type for any other kind.
+     @see "Arrays", in the guide.
+    */
+    [[nodiscard]] result<basic_array_ref<basic_const_value>> as_array() const noexcept;
+
+    /**
      The first element of an array, for `for (auto v : arr)`.
 
      @return The iterator; the end for any other kind.
@@ -768,6 +793,30 @@ public:
 
     /** The read-only `at` of a read-only handle, for a `const` one. */
     using basic_const_value<Traits, Storage>::at;
+
+    /** The read-only view of an object, for a `const` handle. */
+    using basic_const_value<Traits, Storage>::as_object;
+
+    /** The read-only view of an array, for a `const` handle. */
+    using basic_const_value<Traits, Storage>::as_array;
+
+    /**
+     The object as a sorted-map-like container that reads and writes: `find`, `insert`, `erase`,
+     bounds by key, and iterators that `<algorithm>` and `<ranges>` take.
+
+     @return The view, defined in `containers.hpp`; @ref errc::type for any other kind.
+     @see "Key order", in the guide.
+    */
+    [[nodiscard]] result<basic_object_ref<basic_value>> as_object() noexcept;
+
+    /**
+     The array as a vector-like container that reads and writes: `push_back`, `insert`, `erase`,
+     `resize`, and iterators that `<algorithm>` and `<ranges>` take.
+
+     @return The view, defined in `containers.hpp`; @ref errc::type for any other kind.
+     @see "Arrays", in the guide.
+    */
+    [[nodiscard]] result<basic_array_ref<basic_value>> as_array() noexcept;
 
     /**
      The member `key`, `v.key`, which never fails.
@@ -1234,6 +1283,7 @@ children_iterator<Traits, Storage, Kind> children<Traits, Storage, Kind>::begin(
 
 }  // namespace webcpp::document
 
+#include <webcpp/document/containers.hpp>
 #include <webcpp/document/detail/value_array.hpp>
 #include <webcpp/document/detail/value_sugar.hpp>
 #include <webcpp/document/stringify.hpp>

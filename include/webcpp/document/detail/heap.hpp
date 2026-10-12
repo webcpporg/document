@@ -27,6 +27,7 @@
 #include <boost/throw_exception.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -66,7 +67,8 @@ inline constexpr std::uint64_t header_bytes = 64;
 */
 inline constexpr std::uint64_t first_block_offset =
     header_bytes +
-    (((2 * sizeof(heap)) + heap::Alignment - 1) / heap::Alignment * heap::Alignment) +
+    (((std::uint64_t{2} * sizeof(heap)) + heap::Alignment - 1) / heap::Alignment *
+     heap::Alignment) +
     heap::PayloadPerAllocation + sizeof(heap::size_type);
 
 /**
@@ -249,6 +251,76 @@ inline bool probe(heap& h, std::span<const std::uint64_t> sizes) noexcept {
         last = previous;
     }
     return fits;
+}
+
+/**
+ What a heap takes for its blocks, measured in a scratch heap rather than repeated from
+ `rbtree_best_fit`: how many bytes an empty heap keeps for itself, and the smallest block; the
+ size of any other block follows from them and the heap's public constants.
+
+ A heap whose blocks are allocated one after another, with nothing freed in between, is exactly
+ `overhead` plus the sum of its blocks' sizes, so that the size of the image holding a given set of
+ blocks is known before the first is allocated.
+*/
+struct heap_costs {
+    /** The bytes of a heap, whatever its size, that no block can use: its own data and its end. */
+    std::uint64_t overhead = 0;
+
+    /**
+     The bytes `get_free_memory` counts that no block can use: a heap with `get_free_memory() >=
+     bytes + slack` free can allocate a block of `bytes`.
+    */
+    std::uint64_t slack = 0;
+
+    /** The bytes of the smallest block, which a payload of one byte takes. */
+    std::uint64_t min_block = 0;
+
+    /**
+     The bytes of the block `h.allocate(payload)` takes: the payload past the bytes the control
+     data lends it, rounded up to the alignment, and the control bytes, but not below the smallest.
+
+     @param payload The bytes asked for; 0 is a string that is not allocated at all.
+     @return The block's bytes; 0 for a payload of 0.
+    */
+    [[nodiscard]] std::uint64_t block(std::uint64_t payload) const noexcept {
+        if (payload == 0) {
+            return 0;
+        }
+        constexpr std::uint64_t lent = sizeof(heap::size_type);
+        constexpr std::uint64_t alignment = heap::Alignment;
+        const std::uint64_t beyond = payload > lent ? payload - lent : 0;
+        const std::uint64_t rounded = (beyond + alignment - 1) / alignment * alignment;
+        return std::max(min_block, rounded + heap::PayloadPerAllocation + lent);
+    }
+};
+
+/**
+ Measures a heap's @ref heap_costs in a heap of a scratch buffer on the stack: the smallest block
+ by allocating one, the bytes no block can use by asking for the largest block it holds.
+
+ Tip: the numbers follow the Boost version of the build, which an image pins in its header, and a
+ test compares the sizes they predict with the heap's own.
+*/
+inline heap_costs measure_heap_costs() noexcept {
+    constexpr std::size_t scratch_bytes = 512;
+    alignas(16) std::array<std::byte, scratch_bytes> scratch{};
+    heap* h = new (scratch.data()) heap(scratch.size(), sizeof(heap));
+    heap_costs costs;
+    const std::uint64_t free_at_start = h->get_free_memory();
+    void* smallest = h->allocate(1);
+    costs.min_block = free_at_start - h->get_free_memory();
+    h->deallocate(smallest);
+    // The largest request the heap accepts takes its one block whole.
+    for (std::uint64_t payload = free_at_start; payload != 0; --payload) {
+        void* largest = h->allocate(payload);
+        if (largest != nullptr) {
+            const std::uint64_t usable = free_at_start - h->get_free_memory();
+            costs.overhead = scratch_bytes - usable;
+            costs.slack = free_at_start - usable;
+            break;
+        }
+    }
+    return costs;
 }
 
 /**

@@ -1,0 +1,366 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+// Images read and written with Boost.Asio over a loopback TCP connection: a writer sends several
+// documents' images with async_write_image, each sealed before it is written, and the reader
+// receives each into a pool's block, with a callback and, with exceptions, in a coroutine with
+// use_awaitable; each equals its source. A pool of two blocks with two leases held refuses the
+// third read with errc::capacity, without reading the stream, and reads the third image once a
+// block is given back. An image cut short by the end of the stream is refused, and the end of a
+// stream is eof, every time.
+
+#include <webcpp/document/asio.hpp>
+#include <webcpp/document/image_stream.hpp>
+#include <webcpp/document/parse.hpp>
+#include <webcpp/document/stringify.hpp>
+
+#include <boost/asio/buffer.hpp>
+#include <boost/asio/io_context.hpp>
+#include <boost/asio/ip/tcp.hpp>
+#include <boost/asio/post.hpp>
+#include <boost/asio/write.hpp>
+#include <boost/core/lightweight_test.hpp>
+
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+#include <boost/asio/as_tuple.hpp>
+#include <boost/asio/awaitable.hpp>
+#include <boost/asio/co_spawn.hpp>
+#include <boost/asio/detached.hpp>
+#include <boost/asio/use_awaitable.hpp>
+#endif
+
+#include "require.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cstddef>
+#include <functional>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+namespace asio = boost::asio;
+namespace wd = webcpp::document;
+using asio::ip::tcp;
+
+namespace {
+
+using outcomes = std::vector<std::string>;
+using leased = wd::leased_document<>;
+
+// A connected pair of loopback TCP sockets: the writer's end and the reader's.
+struct connection {
+    explicit connection(asio::io_context& io) : writer(io), reader(io) {
+        tcp::acceptor acceptor(io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
+        reader.connect(acceptor.local_endpoint());
+        acceptor.accept(writer);
+    }
+
+    tcp::socket writer;
+    tcp::socket reader;
+};
+
+// Drains the context with poll until `done` holds, or fails after ten seconds: the bytes a write
+// sent reach the reader's socket through the system, so a poll may find them only on a later turn.
+void drain_until(asio::io_context& io, const std::function<bool()>& done) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (!done() && std::chrono::steady_clock::now() < deadline) {
+        if (io.stopped()) {
+            io.restart();
+        }
+        io.poll();
+    }
+    webcpp::test::require(BOOST_TEST(done()));
+}
+
+// A JSON array of thirty strings of sixty bytes: an image of about two kilobytes.
+std::string wide_array() {
+    std::string text = "[";
+    for (int i = 0; i < 30; ++i) {
+        text += (i == 0 ? "\"" : ",\"") + std::string(60, 'v') + "\"";
+    }
+    return text + "]";
+}
+
+// The size of each block of a test's pool: the largest image of `sources`, which is about 9 KB,
+// fits one.
+constexpr std::size_t block_bytes = 16384;
+
+// The documents the writer sends, each parsed from JSON text and shrunk to its size.
+std::vector<wd::document> sources() {
+    const std::vector<std::string> texts{R"({"id":1})", R"({"tags":["a","b"],"name":"\u00e9"})",
+                                         wide_array()};
+    std::vector<wd::document> documents;
+    for (const std::string& text : texts) {
+        auto parsed = wd::parse(text);
+        webcpp::test::require(BOOST_TEST(parsed.has_value()));
+        webcpp::test::require(BOOST_TEST(parsed->shrink_to_fit().has_value()));
+        documents.push_back(std::move(*parsed));
+    }
+    return documents;
+}
+
+// A pool of `blocks` blocks of `block_bytes`.
+wd::image_pool make_pool(std::size_t blocks) {
+    auto made = wd::image_pool::create(block_bytes, blocks);
+    webcpp::test::require(BOOST_TEST(made.has_value()));
+    return std::move(*made);
+}
+
+// Whether a leased document is sealed and equals its source, byte for byte and as a document.
+bool same(const leased& got, const wd::document& source) {
+    const auto got_image = got.image();
+    const auto source_image = source.image();
+    return got.sealed() &&
+           std::equal(got_image.begin(), got_image.end(), source_image.begin(), source_image.end()) &&
+           wd::stringify(got.get()) == wd::stringify(source);
+}
+
+// What one read completed with, as a test records it.
+std::string outcome(const boost::system::error_code& ec, const leased& image,
+                    const wd::document& source) {
+    if (ec) {
+        return "error " + ec.message();
+    }
+    if (image.empty()) {
+        return "no document";
+    }
+    return same(image, source) ? "same" : "different";
+}
+
+// A writer that sends each document with async_write_image, the next one started after the last
+// one completed, and shuts its end down after the last.
+class callback_writer {
+public:
+    callback_writer(tcp::socket& socket, std::vector<wd::document>& documents)
+        : socket_(socket), documents_(documents) {}
+
+    void start() { write_next(); }
+
+    std::size_t sent = 0;
+    boost::system::error_code error;
+
+private:
+    void write_next() {
+        if (sent == documents_.size()) {
+            socket_.shutdown(tcp::socket::shutdown_send);
+            return;
+        }
+        wd::async_write_image(socket_, documents_[sent], [this](boost::system::error_code ec) {
+            if (ec) {
+                error = ec;
+                return;
+            }
+            ++sent;
+            // Posted rather than called, so that no function of the writer calls itself.
+            asio::post(socket_.get_executor(), [this] { write_next(); });
+        });
+    }
+
+    tcp::socket& socket_;
+    std::vector<wd::document>& documents_;
+};
+
+// A reader that reads each image with a callback into the pool, the next read started after the
+// last one completed, until eof, which it records as "eof", or a hundred outcomes.
+class callback_reader {
+public:
+    callback_reader(tcp::socket& socket, wd::image_pool& pool,
+                    const std::vector<wd::document>& sources)
+        : socket_(socket), pool_(pool), sources_(sources) {}
+
+    void start() { read_next(); }
+
+    outcomes read;
+
+private:
+    void read_next() {
+        wd::async_read_image(socket_, pool_,
+                             [this](boost::system::error_code ec, leased image) {
+                                 if (ec == asio::error::eof) {
+                                     read.emplace_back("eof");
+                                     return;
+                                 }
+                                 if (index_ == sources_.size()) {
+                                     read.emplace_back("more than the sources");
+                                     return;
+                                 }
+                                 read.push_back(outcome(ec, image, sources_[index_++]));
+                                 // The lease goes back when `image` is destroyed, at the return.
+                                 if (read.size() < 100) {
+                                     asio::post(socket_.get_executor(), [this] { read_next(); });
+                                 }
+                             });
+    }
+
+    tcp::socket& socket_;
+    wd::image_pool& pool_;
+    const std::vector<wd::document>& sources_;
+    std::size_t index_ = 0;
+};
+
+// The outcome of one read, its error and its document, held until the test looks at it.
+struct completion {
+    boost::system::error_code ec;
+    leased image;
+};
+
+// Starts one read and drains the context until it completes.
+completion read_once(asio::io_context& io, tcp::socket& socket, wd::image_pool& pool) {
+    std::optional<completion> done;
+    wd::async_read_image(socket, pool,
+                         [&done](boost::system::error_code ec, leased image) {
+                             done.emplace(completion{ec, std::move(image)});
+                         });
+    drain_until(io, [&done] { return done.has_value(); });
+    return std::move(*done);
+}
+
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+// The writer in a coroutine, awaiting each async_write_image with use_awaitable.
+asio::awaitable<void> write_in_coroutine(tcp::socket& socket,
+                                         std::vector<wd::document>& documents) {
+    for (wd::document& document : documents) {
+        co_await wd::async_write_image(socket, document, asio::use_awaitable);
+    }
+    socket.shutdown(tcp::socket::shutdown_send);
+}
+
+// The reader in a coroutine: each image awaited with as_tuple(use_awaitable), then eof.
+asio::awaitable<void> read_in_coroutine(tcp::socket& socket, wd::image_pool& pool,
+                                        const std::vector<wd::document>& sources,
+                                        outcomes& read) {
+    for (const wd::document& source : sources) {
+        auto [ec, image] =
+            co_await wd::async_read_image(socket, pool, asio::as_tuple(asio::use_awaitable));
+        read.push_back(outcome(ec, image, source));
+    }
+    auto [ec, image] =
+        co_await wd::async_read_image(socket, pool, asio::as_tuple(asio::use_awaitable));
+    read.push_back(ec == asio::error::eof ? "eof" : "more than the sources");
+}
+#endif
+
+// Images sent by async_write_image are read by a callback into a pool of four blocks, each equal
+// to its source and sealed; the end of the stream is eof, and every block is given back.
+void a_callback_reads_images() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    callback_writer writer(c.writer, documents);
+    wd::image_pool pool = make_pool(4);
+    callback_reader reader(c.reader, pool, documents);
+    writer.start();
+    reader.start();
+    drain_until(io,
+                [&reader] { return !reader.read.empty() && reader.read.back() == "eof"; });
+    BOOST_TEST((reader.read == outcomes{"same", "same", "same", "eof"}));
+    BOOST_TEST_EQ(writer.sent, documents.size());
+    BOOST_TEST(!writer.error);
+    BOOST_TEST_EQ(pool.available(), 4U);
+}
+
+// A pool of two blocks with two leases held refuses the third read with errc::capacity, which
+// leaves the stream unread: once a block is given back, the third image is the next one read.
+void backpressure() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    for (wd::document& document : documents) {
+        webcpp::test::require(BOOST_TEST(document.seal().has_value()));
+        const auto image = document.image();
+        asio::write(c.writer, asio::buffer(image.data(), image.size()));
+    }
+    wd::image_pool pool = make_pool(2);
+
+    completion first = read_once(io, c.reader, pool);
+    completion second = read_once(io, c.reader, pool);
+    webcpp::test::require(BOOST_TEST(!first.ec && !second.ec));
+    BOOST_TEST(same(first.image, documents[0]));
+    BOOST_TEST(same(second.image, documents[1]));
+    BOOST_TEST_EQ(pool.available(), 0U);
+
+    completion refused = read_once(io, c.reader, pool);
+    BOOST_TEST(refused.ec == wd::errc::capacity);
+    BOOST_TEST(refused.image.empty());
+
+    first.image = wd::leased_document<>();
+    BOOST_TEST_EQ(pool.available(), 1U);
+    completion third = read_once(io, c.reader, pool);
+    webcpp::test::require(BOOST_TEST(!third.ec && !third.image.empty()));
+    BOOST_TEST(same(third.image, documents[2]));
+
+    second.image = wd::leased_document<>();
+    third.image = wd::leased_document<>();
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    completion end = read_once(io, c.reader, pool);
+    BOOST_TEST(end.ec == asio::error::eof);
+    BOOST_TEST(end.image.empty());
+    BOOST_TEST_EQ(pool.available(), 2U);
+}
+
+// A sealed image with one byte flipped on the way is refused with errc::damaged_document, and no
+// document is delivered for it.
+void flipped_in_transit() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    webcpp::test::require(BOOST_TEST(documents[0].seal().has_value()));
+    const auto image = documents[0].image();
+    std::vector<std::byte> sent(image.begin(), image.end());
+    sent.back() ^= std::byte{0x01};
+    asio::write(c.writer, asio::buffer(sent.data(), sent.size()));
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    wd::image_pool pool = make_pool(2);
+    completion damaged = read_once(io, c.reader, pool);
+    BOOST_TEST(damaged.ec == wd::errc::damaged_document);
+    BOOST_TEST(damaged.image.empty());
+    BOOST_TEST_EQ(pool.available(), 2U);
+}
+
+// An image the stream ends in the middle of is refused with errc::not_a_document.
+void cut_short() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    const auto image = documents[1].image();
+    asio::write(c.writer, asio::buffer(image.data(), image.size() - 10));
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    wd::image_pool pool = make_pool(2);
+    completion cut = read_once(io, c.reader, pool);
+    BOOST_TEST(cut.ec == wd::errc::not_a_document);
+    BOOST_TEST(cut.image.empty());
+}
+
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+// The same images, written and read in coroutines with use_awaitable and as_tuple.
+void coroutines() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    wd::image_pool pool = make_pool(4);
+    outcomes read;
+    asio::co_spawn(io, write_in_coroutine(c.writer, documents), asio::detached);
+    asio::co_spawn(io, read_in_coroutine(c.reader, pool, documents, read), asio::detached);
+    drain_until(io, [&read] { return !read.empty() && read.back() == "eof"; });
+    BOOST_TEST((read == outcomes{"same", "same", "same", "eof"}));
+    BOOST_TEST_EQ(pool.available(), 4U);
+}
+#endif
+
+}  // namespace
+
+int main() {
+    a_callback_reads_images();
+    backpressure();
+    flipped_in_transit();
+    cut_short();
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+    coroutines();
+#endif
+    return boost::report_errors();
+}
