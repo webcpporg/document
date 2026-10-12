@@ -1,0 +1,93 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# document's JavaScript API (webcpp-document.mjs), built by Emscripten and tested by Node, which
+# runs the tests from a package directory of the build: the Emscripten module, the wrapper that
+# imports it, the tests and the oracle's cases they replay, copied beside one another.
+#
+#   b2 toolset=emscripten libs/document/js//js-tests   builds the package and runs its tests
+#   b2 toolset=emscripten libs/document/js//package    builds the package only
+#
+# Every target here is explicit: no default build and no lane runs them.
+
+project : requirements <library>/webcpp/document//document ;
+
+import common ;
+import notfile ;
+import webcpp ;
+
+webcpp.targets emscripten ;
+
+# Node runs the tests and the driver of the example; package.json and package-lock.json pin
+# Playwright, which drives headless Chromium, and node-modules installs them.
+webcpp.original node ;
+
+path-constant HERE : . ;
+path-constant PACKAGE : package ;
+
+# The module: wasm32 with embind, as an ES module that the wrapper imports beside it. It exports
+# the classes that binding.cpp declares, which webcpp-document.mjs wraps.
+exe webcpp-document-core : binding.cpp
+  : <location>package
+    <toolset>emscripten:<linkflags>"--bind"
+    <toolset>emscripten:<linkflags>"-sMODULARIZE=1"
+    <toolset>emscripten:<linkflags>"-sEXPORT_ES6=1"
+    <toolset>emscripten:<linkflags>"-sENVIRONMENT=web,worker,node"
+    <toolset>emscripten:<linkflags>"-sINVOKE_RUN=0"
+    <toolset>emscripten:<linkflags>"--no-entry"
+    <toolset>emscripten:<linkflags>"-sALLOW_MEMORY_GROWTH=1"
+    <toolset>emscripten:<linkflags>"-sMAXIMUM_MEMORY=4GB"
+    <toolset>emscripten:<linkflags>"-sFILESYSTEM=0"
+  ;
+explicit webcpp-document-core ;
+
+# The files beside the module: its wrapper, and the package.json that makes the package an ES
+# module, as the wrapper's import of the module needs.
+explicit package-files ;
+install package-files : webcpp-document.mjs package.json : <location>package ;
+
+# The tests, and the oracle's cases and expected results they replay, from the tree.
+explicit package-tests ;
+install package-tests : [ glob test/*.mjs ] : <location>package/test ;
+
+explicit package-cases ;
+install package-cases : [ glob ../test/fixtures/cases/*.json ] : <location>package/fixtures/cases ;
+explicit package-expected ;
+install package-expected : [ glob ../test/fixtures/expected/*.json ]
+  : <location>package/fixtures/expected ;
+
+# The example page, its worker and the module they import, beside the package's own copy.
+explicit package-example ;
+install package-example : [ glob example/image-worker.html example/page.mjs example/worker.mjs ]
+  : <location>package/example ;
+
+alias package : webcpp-document-core package-files package-tests package-cases package-expected
+  package-example ;
+explicit package ;
+
+# Runs every test file of the package with node, which reports each failing test and fails.
+# Always run again: a test is never up to date.
+notfile js-tests : @run-tests : package-tests : <dependency>package ;
+always js-tests ;
+explicit js-tests ;
+
+actions run-tests
+{
+    set -e
+    node --expose-gc --test "$(>)"
+}
+
+# Loads the example page in headless Chromium, cross-origin isolated as the benchmarks are, and
+# checks what the worker answered. Always run again.
+notfile js-chrome : @run-chrome : : <dependency>package-example <dependency>node-modules ;
+always js-chrome ;
+explicit js-chrome ;
+
+actions run-chrome
+{
+    set -e
+    node "$(HERE)/example/run.mjs" "$(PACKAGE)"
+}

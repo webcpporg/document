@@ -1,0 +1,10 @@
+{
+  "name": "webcpp-document-js",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "webcpp::document's JavaScript API: the tests run by Node, and the example that drives headless Chrome through Playwright, pinned as the benchmarks pin it.",
+  "devDependencies": {
+    "playwright": "1.59.0"
+  }
+}
