@@ -35,7 +35,6 @@
 
 #include <algorithm>
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -64,15 +63,21 @@ struct connection {
     tcp::socket reader;
 };
 
-// Drains the context with poll until `done` holds, or fails after ten seconds: the bytes a write
-// sent reach the reader's socket through the system, so a poll may find them only on a later turn.
+// Drains the context with poll until `done` holds, or fails when the context has no work left, or
+// after a hundred thousand turns in a row that ran no handler, a count and not a time: the bytes a
+// write sent reach the reader's socket through the system, so a poll may find them only on a later
+// turn.
 void drain_until(asio::io_context& io, const std::function<bool()>& done) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!done() && std::chrono::steady_clock::now() < deadline) {
+    constexpr std::size_t max_idle = 100'000;
+    for (std::size_t idle = 0; !done();) {
         if (io.stopped()) {
             io.restart();
         }
-        io.poll();
+        const std::size_t ran = io.poll();
+        idle = ran == 0 ? idle + 1 : 0;
+        if ((ran == 0 && io.stopped()) || idle == max_idle) {
+            break;
+        }
     }
     webcpp::test::require(BOOST_TEST(done()));
 }

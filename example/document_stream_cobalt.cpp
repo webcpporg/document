@@ -28,6 +28,13 @@
 #include <string>
 #include <string_view>
 
+// GCC 14 warns that Cobalt's task, a coroutine, deletes its frame with an operator delete that
+// does not pair with the operator new that made it (-Wmismatched-new-delete); the pair is Cobalt's
+// own, from its promise_memory_resource_base, and GCC 15 does not warn.
+#if defined(__GNUC__) && !defined(__clang__) && __GNUC__ == 14
+#pragma GCC diagnostic ignored "-Wmismatched-new-delete"
+#endif
+
 namespace asio = boost::asio;
 namespace cobalt = boost::cobalt;
 namespace wd = webcpp::document;
@@ -36,7 +43,7 @@ using asio::ip::tcp;
 namespace {
 
 // The bytes are the point: one document a line, and the line is the framing.
-constexpr std::string_view stream = R"({"name":"Ada","tags":["math"],"n":1.5e3}
+constexpr std::string_view ndjson = R"({"name":"Ada","tags":["math"],"n":1.5e3}
 [1, 2.5, null, true, "x"]
 
 "plain text"
@@ -97,7 +104,7 @@ cobalt::main co_main(int /*argc*/, char** /*argv*/) {
     tcp::socket reader(executor);
     reader.connect(acceptor.local_endpoint());
     acceptor.accept(writer);
-    co_await cobalt::join(send(writer, stream), read(reader));
+    co_await cobalt::join(send(writer, ndjson), read(reader));
     co_return 0;
 }
 

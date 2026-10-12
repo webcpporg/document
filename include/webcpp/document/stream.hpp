@@ -313,6 +313,16 @@ public:
     [[nodiscard]] std::uint64_t offset() const noexcept { return offset_; }
 
     /**
+     Whether @ref finish ended the stream, until @ref reset.
+
+     Tip: `async_read_document` completes with `eof` without reading once it holds, for a socket
+     reports its end to one read only on Linux's epoll.
+
+     @return `true` after `finish`.
+    */
+    [[nodiscard]] bool finished() const noexcept { return phase_ == phase::finished; }
+
+    /**
      How many documents were delivered, by @ref next or to a callback.
 
      @return The count.

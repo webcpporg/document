@@ -171,7 +171,9 @@ public:
         if (std::optional<basic_document<Traits>>& ready = *taken; ready.has_value()) {
             return complete(self, {}, std::move(*ready));
         }
-        if (ended) {
+        // A stream already ended completes with eof without a read: a socket reports its end to
+        // one read only, and Asio's epoll reactor does not try a read again after it.
+        if (ended || parser_->finished()) {
             return complete(self, boost::asio::error::eof, nothing());
         }
         if (read_failure_) {

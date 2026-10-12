@@ -27,7 +27,6 @@
 #include <boost/beast/http.hpp>
 
 #include <array>
-#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <iostream>
@@ -63,20 +62,22 @@ struct connection {
 /**
  Runs the context's ready handlers, polling until `done` holds. The bytes a write sent reach the
  client's socket through the system, so a poll may find them only on a later turn; the loop gives up
- after ten seconds.
+ when the context has no work left, or after a hundred thousand turns in a row that ran no handler,
+ a count and not a time.
 */
 template <class Done>
 bool drain_until(asio::io_context& io, Done done) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
-    while (!done()) {
-        if (std::chrono::steady_clock::now() >= deadline) {
-            std::cerr << "error: the exchange did not finish\n";
-            return false;
-        }
+    constexpr std::size_t max_idle = 100'000;
+    for (std::size_t idle = 0; !done();) {
         if (io.stopped()) {
             io.restart();
         }
-        io.poll();
+        const std::size_t ran = io.poll();
+        idle = ran == 0 ? idle + 1 : 0;
+        if ((ran == 0 && io.stopped()) || idle == max_idle) {
+            std::cerr << "error: the exchange did not finish\n";
+            return false;
+        }
     }
     return true;
 }
