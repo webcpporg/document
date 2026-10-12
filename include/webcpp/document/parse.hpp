@@ -24,6 +24,7 @@
 #include <limits>
 #include <span>
 #include <string_view>
+#include <utility>
 
 namespace webcpp::document {
 
@@ -60,8 +61,17 @@ struct parse_options {
  traits' `number` refuses, @ref errc::capacity past a limit.
 */
 template <class Traits = default_traits>
+// The parser ends the program where the process heap, which holds its frames and pending text,
+// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 result<basic_document<Traits, owned>> parse(std::string_view text,
-                                            const parse_options& o = {}) noexcept;
+                                            const parse_options& o = {}) noexcept {
+    basic_parser<Traits, owned> p(o);
+    if (const result<void> written = p.write(text); !written.has_value()) {
+        return written.error();
+    }
+    return p.finish();
+}
 
 /**
  Reads JSON text into a new document in a buffer its user owns, as @ref parse does.
@@ -73,9 +83,18 @@ result<basic_document<Traits, owned>> parse(std::string_view text,
  @return The document; the errors of @ref parse, and @ref errc::capacity when the buffer is full.
 */
 template <class Traits = default_traits>
+// The parser ends the program where the process heap, which holds its frames and pending text,
+// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// NOLINTNEXTLINE(bugprone-exception-escape)
 result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
                                                     std::string_view text,
-                                                    const parse_options& o = {}) noexcept;
+                                                    const parse_options& o = {}) noexcept {
+    basic_parser<Traits, external> p(buffer, o);
+    if (const result<void> written = p.write(text); !written.has_value()) {
+        return written.error();
+    }
+    return p.finish();
+}
 
 /**
  `JSON.parse(text)`, throwing on failure as JavaScript does; only with exceptions.
@@ -91,6 +110,24 @@ result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
 template <class Traits = default_traits>
     requires detail::exceptions_enabled<Traits>
 basic_document<Traits, owned> parse_or_throw(std::string_view text, const parse_options& o = {});
+
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+
+template <class Traits>
+    requires detail::exceptions_enabled<Traits>
+basic_document<Traits, owned> parse_or_throw(std::string_view text, const parse_options& o) {
+    basic_parser<Traits, owned> p(o);
+    if (const result<void> written = p.write(text); !written.has_value()) {
+        detail::raise(written.error(), p.offset());
+    }
+    result<basic_document<Traits, owned>> made = p.finish();
+    if (!made.has_value()) {
+        detail::raise(made.error(), p.offset());
+    }
+    return std::move(made).unsafe_value();
+}
+
+#endif  // WEBCPP_DOCUMENT_NO_EXCEPTIONS
 
 }  // namespace webcpp::document
 

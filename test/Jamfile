@@ -54,6 +54,14 @@ webcpp.run image : image_test.cpp ;
 # levels deep outgrows Emscripten's initial 16 MB, so its memory may grow there.
 webcpp.run stringify : stringify_test.cpp
   : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+# parse, whole or in chunks, as JSON.parse reads; and the parse that throws. A 64 MB string
+# and an object of 100,000 keys outgrow Emscripten's initial 16 MB, so its memory may grow.
+webcpp.run parse : parse_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+webcpp.run parse_sugar : parse_test.cpp : <exception-handling>on <define>WEBCPP_TEST_DOCUMENT_SUGAR
+  <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+webcpp.run streaming : streaming_test.cpp ;
+# Selectors: values delivered as they complete.
+webcpp.run selector : selector_test.cpp ;
 # JavaScript's array methods.
 webcpp.run array : array_test.cpp ;
 # The sugar that throws, and its refusal in a build without exceptions.

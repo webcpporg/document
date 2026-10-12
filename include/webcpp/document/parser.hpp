@@ -22,18 +22,26 @@
 #include <webcpp/document/value.hpp>
 
 #include <boost/json/basic_parser_impl.hpp>
+#include <boost/json/error.hpp>
 #include <boost/system/error_code.hpp>
 
+#include <algorithm>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
+
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+#include <exception>
+#endif
 
 namespace webcpp::document {
 
@@ -53,14 +61,14 @@ public:
 
      @param steps The steps, from the root.
     */
-    explicit path_view(std::span<const detail::path_step> steps) noexcept;
+    explicit path_view(std::span<const detail::path_step> steps) noexcept : steps_(steps) {}
 
     /**
      How many steps the path has.
 
      @return The count; 0 for the root.
     */
-    [[nodiscard]] std::size_t size() const noexcept;
+    [[nodiscard]] std::size_t size() const noexcept { return steps_.size(); }
 
     /**
      Whether a step is an element's.
@@ -68,7 +76,7 @@ public:
      @param i The step, below @ref size.
      @return Whether it is an index rather than a key.
     */
-    [[nodiscard]] bool is_index(std::size_t i) const noexcept;
+    [[nodiscard]] bool is_index(std::size_t i) const noexcept { return steps_[i].is_index; }
 
     /**
      A member's key.
@@ -76,7 +84,7 @@ public:
      @param i The step, below @ref size, a key's.
      @return The key, in UTF-8.
     */
-    [[nodiscard]] std::string_view key(std::size_t i) const noexcept;
+    [[nodiscard]] std::string_view key(std::size_t i) const noexcept { return steps_[i].key; }
 
     /**
      An element's index in the text.
@@ -84,14 +92,34 @@ public:
      @param i The step, below @ref size, an index's.
      @return The index.
     */
-    [[nodiscard]] std::uint64_t index(std::size_t i) const noexcept;
+    [[nodiscard]] std::uint64_t index(std::size_t i) const noexcept { return steps_[i].index; }
 
     /**
      The path as normalised JSONPath: `$['items'][3]`, a key's `'` and `\` escaped.
 
      @return The text.
     */
-    [[nodiscard]] std::string to_string() const;
+    [[nodiscard]] std::string to_string() const {
+        std::string out = "$";
+        for (const detail::path_step& step : steps_) {
+            if (step.is_index) {
+                out += '[';
+                out += std::to_string(step.index);
+                out += ']';
+                continue;
+            }
+            // The two escapes the selectors read, so that the text is a selector of this place.
+            out += "['";
+            for (const char c : step.key) {
+                if (c == '\'' || c == '\\') {
+                    out += '\\';
+                }
+                out += c;
+            }
+            out += "']";
+        }
+        return out;
+    }
 
 private:
     std::span<const detail::path_step> steps_;
@@ -134,7 +162,7 @@ struct subscription {
  by ids, so that the document may grow and move between chunks. A failed `write` leaves the parser
  failed: every later call returns the same error, until @ref reset. The parser raises nothing of
  its own, since its input is the network's; an exception a callback throws propagates from `write`
- or `finish`, and leaves the parser failed.
+ or `finish`, and leaves the parser failed: every later call throws it again, until @ref reset.
 
  @tparam Traits The traits of the document.
  @tparam Storage @ref owned, or @ref external to build it in a buffer of its user's.
@@ -148,7 +176,8 @@ public:
      @param o The limits and the revivers.
     */
     explicit basic_parser(const parse_options& o = {}) noexcept
-        requires std::same_as<Storage, owned>;
+        requires std::same_as<Storage, owned>
+        : options_(o), json_(json_options(o), *this) {}
 
     /**
      A parser of a document in a buffer its user owns, formatted when the text begins.
@@ -157,7 +186,8 @@ public:
      @param o The limits and the revivers.
     */
     explicit basic_parser(std::span<std::byte> buffer, const parse_options& o = {}) noexcept
-        requires std::same_as<Storage, external>;
+        requires std::same_as<Storage, external>
+        : options_(o), buffer_(buffer), json_(json_options(o), *this) {}
 
     /** A parser is not copied: its handler and its document refer to it. */
     basic_parser(const basic_parser&) = delete;
@@ -181,32 +211,81 @@ public:
      @return Success; @ref errc::syntax for malformed text, @ref errc::range for a number the
      traits refuse, @ref errc::capacity past a limit, or the error a callback returned.
     */
-    result<void> write(std::string_view chunk);
+    result<void> write(std::string_view chunk) {
+        if (!failure_.has_value()) {
+            return failed();
+        }
+        if (ended_) {
+            return end_again();
+        }
+        if (chunk.size() > options_.max_bytes - consumed_) {
+            failure_ = errc::capacity;
+            return failure_;
+        }
+        if (chunk.empty()) {
+            return {};
+        }
+        boost::system::error_code ec;
+        const std::size_t used = json_.write_some(true, chunk.data(), chunk.size(), ec);
+        return settle(ec, used);
+    }
 
     /**
      Ends the text and returns the document, without the values `on` took.
 
+     After it the parser takes no more text, which is @ref errc::syntax, until @ref reset.
+
      @return The document; the errors of @ref write, and @ref errc::syntax for text that ends
      early.
     */
-    result<basic_document<Traits, Storage>> finish();
+    result<basic_document<Traits, Storage>> finish() {
+        if (!failure_.has_value()) {
+            return failed().error();
+        }
+        if (ended_) {
+            return end_again().error();
+        }
+        // No more text, as Boost.JSON's own stream_parser ends one.
+        boost::system::error_code ec;
+        static_cast<void>(json_.write_some(false, nullptr, 0, ec));
+        if (const result<void> settled = settle(ec, 0); !settled.has_value()) {
+            return settled.error();
+        }
+        ended_ = true;
+        // The text began, so on_document_begin made the document, or the text failed.
+        result<basic_document<Traits, Storage>> made(
+            std::move(*document_));  // NOLINT(bugprone-unchecked-optional-access)
+        document_.reset();
+        return made;
+    }
 
     /** Makes the parser ready for another text, its selectors kept. */
-    void reset() noexcept;
+    void reset() noexcept {
+        json_.reset();
+        json_.handler().reset();
+        document_.reset();
+        failure_ = {};
+        cause_ = {};
+        consumed_ = 0;
+        ended_ = false;
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+        thrown_ = nullptr;
+#endif
+    }
 
     /**
      How many bytes of the text were consumed.
 
      @return The count; after an @ref errc::syntax, the offset where the error was found.
     */
-    [[nodiscard]] std::uint64_t offset() const noexcept;
+    [[nodiscard]] std::uint64_t offset() const noexcept { return consumed_; }
 
     /**
      The code of Boost.JSON behind an @ref errc::syntax.
 
      @return The code, or none.
     */
-    [[nodiscard]] boost::system::error_code cause() const noexcept;
+    [[nodiscard]] boost::system::error_code cause() const noexcept { return cause_; }
 
     /**
      Delivers each value whose path matches `selector` once it completes, then removes it from the
@@ -224,7 +303,10 @@ public:
     */
     template <class F>
     result<void> on(std::string_view selector, F&& f)
-        requires detail::selector_callback<std::remove_cvref_t<F>, Traits, Storage>;
+        requires detail::selector_callback<std::remove_cvref_t<F>, Traits, Storage>
+    {
+        return subscribe(selector, std::forward<F>(f), true);
+    }
 
     /**
      Delivers each value whose path matches `selector` once it completes, and keeps it.
@@ -237,11 +319,92 @@ public:
     */
     template <class F>
     result<void> observe(std::string_view selector, F&& f)
-        requires detail::selector_callback<std::remove_cvref_t<F>, Traits, Storage>;
+        requires detail::selector_callback<std::remove_cvref_t<F>, Traits, Storage>
+    {
+        return subscribe(selector, std::forward<F>(f), false);
+    }
 
 private:
     template <class, class>
     friend class detail::handler;
+
+    /** Boost.JSON's options: numbers left as text, and the depth limit. */
+    static boost::json::parse_options json_options(const parse_options& o) noexcept {
+        boost::json::parse_options made;
+        made.numbers = boost::json::number_precision::none;
+        made.max_depth = static_cast<std::size_t>(
+            std::min<std::uint64_t>(o.max_depth, std::numeric_limits<std::size_t>::max()));
+        return made;
+    }
+
+    /** The error a failed parser returns again, or, with exceptions, the exception it rethrows. */
+    [[nodiscard]] result<void> failed() const {
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+        if (thrown_) {
+            std::rethrow_exception(thrown_);
+        }
+#endif
+        return failure_;
+    }
+
+    /** Text after the end of the text, which fails the parser. */
+    result<void> end_again() noexcept {
+        failure_ = errc::syntax;
+        cause_ = boost::json::error::extra_data;
+        return failure_;
+    }
+
+    /**
+     Counts what Boost.JSON consumed and turns its error into the parser's: the one the handler
+     recorded (a tree's, a callback's, or a callback's exception, rethrown), else `too_deep` as
+     @ref errc::capacity, `exponent_overflow` as @ref errc::range, and any other as
+     @ref errc::syntax, its code kept as the cause.
+    */
+    result<void> settle(boost::system::error_code ec, std::size_t used) {
+        consumed_ += used;
+        if (!ec) {
+            return {};
+        }
+        if (!failure_.has_value()) {
+            return failed();
+        }
+        if (ec == boost::json::error::too_deep) {
+            failure_ = errc::capacity;
+        } else if (ec == boost::json::error::exponent_overflow) {
+            failure_ = errc::range;
+        } else {
+            failure_ = errc::syntax;
+        }
+        cause_ = ec;
+        return failure_;
+    }
+
+    /** Adds a subscription, its callback's `void` made success. */
+    template <class F>
+    result<void> subscribe(std::string_view text, F&& f, bool take) {
+        result<detail::selector> parsed = detail::selector::parse(text);
+        if (!parsed.has_value()) {
+            return parsed.error();
+        }
+        using callback = std::remove_cvref_t<F>;
+        detail::subscription<Traits, Storage> added;
+        added.where = std::move(parsed).unsafe_value();
+        added.take = take;
+        if constexpr (std::same_as<std::invoke_result_t<
+                                       callback&, basic_const_value<Traits, Storage>, path_view>,
+                                   void>) {
+            added.deliver = [g = callback(std::forward<F>(f))](
+                                const basic_const_value<Traits, Storage>& v,
+                                path_view where) mutable -> result<void> {
+                g(v, where);
+                return {};
+            };
+        } else {
+            added.deliver = callback(std::forward<F>(f));
+        }
+        subscriptions_.push_back(std::move(added));
+        return {};
+    }
 
     parse_options options_;
     std::span<std::byte> buffer_;
@@ -249,7 +412,12 @@ private:
     std::vector<detail::subscription<Traits, Storage>> subscriptions_;
     boost::json::basic_parser<detail::handler<Traits, Storage>> json_;
     result<void> failure_;
+    boost::system::error_code cause_;
     std::uint64_t consumed_ = 0;
+    bool ended_ = false;
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+    std::exception_ptr thrown_;
+#endif
 };
 
 /** The streaming parser of a @ref document. */
