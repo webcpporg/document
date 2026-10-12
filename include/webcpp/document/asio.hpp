@@ -6,8 +6,9 @@
 
 /**
  Streams of documents read from Boost.Asio's streams: `async_read_document`, which reads the next
- document of a stream with any completion token, and the images of documents, `async_read_image`
- and `async_write_image`, which move a document's image into and out of a pool's blocks. The one
+ document of a stream with any completion token, and the images of documents, `async_read_image`,
+ which moves an image into a pool's blocks, and `async_write_image` and `async_write_images`, which
+ write one document's image or a range's, in one gather write. The one
  header of document that includes Boost.Asio; it builds natively only.
 */
 
@@ -33,28 +34,91 @@
 #include <boost/system/error_code.hpp>
 
 #include <algorithm>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <ranges>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <utility>
+#include <vector>
 
 namespace webcpp::document {
 
 namespace detail {
 
 /**
+ A dynamic buffer of Boost.Asio's first model, `DynamicBuffer_v1`, held by reference, with the
+ members @ref read_document_op calls.
+*/
+template <class DynamicBuffer>
+class buffer_v1_ref {
+public:
+    /** The adapter of a buffer the caller keeps alive. */
+    explicit buffer_v1_ref(DynamicBuffer& buffer) noexcept : buffer_(&buffer) {}
+
+    [[nodiscard]] std::size_t size() const noexcept { return buffer_->size(); }
+    [[nodiscard]] std::size_t max_size() const noexcept { return buffer_->max_size(); }
+    [[nodiscard]] std::size_t capacity() const noexcept { return buffer_->capacity(); }
+    [[nodiscard]] auto data() const noexcept { return buffer_->data(); }
+    auto prepare(std::size_t n) { return buffer_->prepare(n); }
+    void commit(std::size_t n) { buffer_->commit(n); }
+    void consume(std::size_t n) { buffer_->consume(n); }
+
+private:
+    DynamicBuffer* buffer_;
+};
+
+/**
+ A dynamic buffer of Boost.Asio's second model, `DynamicBuffer_v2`, held by value as Boost.Asio's
+ own reads hold it, with the first model's members made of it: `prepare` grows the buffer by the
+ room it returns, and `commit` shrinks it back to the bytes a read gave.
+*/
+template <class DynamicBuffer>
+class buffer_v2_copy {
+public:
+    /** The adapter of a copy, which names the storage the caller keeps alive. */
+    explicit buffer_v2_copy(DynamicBuffer buffer) : buffer_(std::move(buffer)) {}
+
+    [[nodiscard]] std::size_t size() const noexcept { return buffer_.size(); }
+    [[nodiscard]] std::size_t max_size() const noexcept { return buffer_.max_size(); }
+    [[nodiscard]] std::size_t capacity() const noexcept { return buffer_.capacity(); }
+    [[nodiscard]] auto data() const noexcept { return buffer_.data(0, buffer_.size()); }
+
+    auto prepare(std::size_t n) {
+        const std::size_t first = buffer_.size();
+        buffer_.grow(n);
+        prepared_ = n;
+        return buffer_.data(first, n);
+    }
+
+    void commit(std::size_t n) {
+        buffer_.shrink(prepared_ - std::min(n, prepared_));
+        prepared_ = 0;
+    }
+
+    void consume(std::size_t n) { buffer_.consume(n); }
+
+private:
+    DynamicBuffer buffer_;
+    std::size_t prepared_ = 0;
+};
+
+/**
  The composed operation of @ref async_read_document, which takes the parser's next document, and
  reads the stream into the buffer, and the buffer into the parser, only while there is none.
 */
-template <class AsyncReadStream, class DynamicBuffer, class Traits>
+template <class AsyncReadStream, class Buffer, class Traits>
 class read_document_op {
 public:
-    /** The operation on a stream, its buffer and its parser, which outlive it. */
-    read_document_op(AsyncReadStream& stream, DynamicBuffer& buffer,
-                     basic_stream_parser<Traits>& parser) noexcept
-        : stream_(&stream), buffer_(&buffer), parser_(&parser) {}
+    /**
+     The operation on a stream, its buffer (an adapter of either model) and its parser; the stream
+     and the parser outlive it.
+    */
+    read_document_op(AsyncReadStream& stream, Buffer buffer, basic_stream_parser<Traits>& parser)
+        : stream_(&stream), buffer_(std::move(buffer)), parser_(&parser) {}
 
     /**
      Runs a step: at the start, when a read completes, or when an immediate completion is
@@ -68,7 +132,7 @@ public:
         }
         bool ended = false;
         if (step_ == step::reading) {
-            buffer_->commit(n);
+            buffer_.commit(n);
             ended = ec == boost::asio::error::eof;
             if (ec && !ended) {
                 read_failure_ = ec;
@@ -97,7 +161,7 @@ public:
             return complete(self, boost::asio::error::no_buffer_space, nothing());
         }
         step_ = step::reading;
-        stream_->async_read_some(buffer_->prepare(room), std::move(self));
+        stream_->async_read_some(buffer_.prepare(room), std::move(self));
     }
 
 private:
@@ -118,14 +182,14 @@ private:
      buffer holds room for, at least 512 and at most 65536, within its `max_size`.
     */
     [[nodiscard]] std::size_t read_size() const noexcept {
-        const std::size_t size = buffer_->size();
-        const std::size_t wanted = std::max<std::size_t>(512, buffer_->capacity() - size);
-        return std::min(wanted, std::min<std::size_t>(65536, buffer_->max_size() - size));
+        const std::size_t size = buffer_.size();
+        const std::size_t wanted = std::max<std::size_t>(512, buffer_.capacity() - size);
+        return std::min(wanted, std::min<std::size_t>(65536, buffer_.max_size() - size));
     }
 
     /** Writes every byte the buffer holds into the parser, which keeps any failure for next(). */
     void feed() {
-        const auto data = buffer_->data();
+        const auto data = buffer_.data();
         for (auto it = boost::asio::buffer_sequence_begin(data);
              it != boost::asio::buffer_sequence_end(data); ++it) {
             const boost::asio::const_buffer bytes(*it);
@@ -135,7 +199,7 @@ private:
             static_cast<void>(parser_->write(
                 std::string_view(static_cast<const char*>(bytes.data()), bytes.size())));
         }
-        buffer_->consume(buffer_->size());
+        buffer_.consume(buffer_.size());
     }
 
     /** The empty document an error completes with. */
@@ -161,7 +225,7 @@ private:
     }
 
     AsyncReadStream* stream_;
-    DynamicBuffer* buffer_;
+    Buffer buffer_;
     basic_stream_parser<Traits>* parser_;
     step step_ = step::starting;
     boost::system::error_code read_failure_;
@@ -345,6 +409,126 @@ private:
     boost::system::error_code code_;
 };
 
+/**
+ A range of documents that async_write_images writes: its elements are lvalues, each of which seals
+ its image and shows the bytes of it, as a document, a leased document and a shared document do.
+*/
+template <class Range>
+concept image_range =
+    std::ranges::forward_range<Range> && std::ranges::sized_range<Range> &&
+    std::is_lvalue_reference_v<std::ranges::range_reference_t<Range>> &&
+    requires(std::ranges::range_reference_t<Range> element) {
+        { element.seal() } -> std::same_as<result<void>>;
+        { element.image() } -> std::convertible_to<std::span<const std::byte>>;
+    };
+
+/**
+ Seals every document of a range, in order, and points a buffer at each image. The first document
+ that fails to seal stops the gathering with its error, and no buffer is made for any image: every
+ seal comes before the reserve and the buffers, so a failure allocates nothing.
+
+ The buffers hold no copy of the bytes; they are valid while the documents are kept unchanged.
+*/
+template <image_range Range>
+boost::system::error_code gather_images(Range& documents,
+                                        std::vector<boost::asio::const_buffer>& buffers) {
+    for (auto& element : documents) {
+        if (const result<void> sealed = element.seal(); !sealed.has_value()) {
+            return sealed.error();
+        }
+    }
+    buffers.reserve(std::ranges::size(documents));
+    for (const auto& element : documents) {
+        const std::span<const std::byte> bytes = element.image();
+        buffers.emplace_back(bytes.data(), bytes.size());
+    }
+    return {};
+}
+
+/**
+ The composed operation of @ref async_write_images: it writes the buffers of a range's images in
+ one gather write, which Boost.Asio sends with writev and continues over partial writes. A gathering
+ that failed, or a range with no image, completes at once, writing nothing.
+*/
+template <class AsyncWriteStream>
+class write_images_op {
+public:
+    /**
+     The operation on a stream, with the buffers its gathering made and the error that stopped
+     it, if any. The buffers point into images the caller keeps alive until the operation completes.
+    */
+    write_images_op(AsyncWriteStream& stream, boost::system::error_code failure,
+                    std::vector<boost::asio::const_buffer>&& buffers) noexcept
+        : stream_(&stream), buffers_(std::move(buffers)), failure_(failure) {}
+
+    /**
+     Runs a step: at the start, when the write completes, or when an immediate completion is
+     dispatched.
+    */
+    template <class Self>
+    void operator()(Self& self, boost::system::error_code ec = {}, std::size_t n = 0) {
+        if (step_ == step::completing) {
+            self.complete(code_, written_);
+            return;
+        }
+        if (step_ == step::writing) {
+            self.complete(ec, n);
+            return;
+        }
+        if (failure_) {
+            return complete(self, failure_, 0);
+        }
+        if (buffers_.empty()) {
+            return complete(self, {}, 0);
+        }
+        step_ = step::writing;
+        boost::asio::async_write(*stream_, buffers_, std::move(self));
+    }
+
+private:
+    /** Where the operation stands. */
+    enum class step : std::uint8_t {
+        /** Called by the initiating function: nothing written yet. */
+        starting,
+
+        /** A write is in flight. */
+        writing,
+
+        /** An immediate completion is dispatched, its arguments held. */
+        completing,
+    };
+
+    /** Completes the operation from the initiating function, through an immediate completion. */
+    template <class Self>
+    void complete(Self& self, boost::system::error_code code, std::size_t bytes) {
+        step_ = step::completing;
+        code_ = code;
+        written_ = bytes;
+        const auto io = self.get_io_executor();
+        boost::asio::async_immediate(io, std::move(self));
+    }
+
+    AsyncWriteStream* stream_;
+    std::vector<boost::asio::const_buffer> buffers_;
+    boost::system::error_code failure_;
+    step step_ = step::starting;
+    boost::system::error_code code_;
+    std::size_t written_ = 0;
+};
+
+/**
+ Starts the composed operation of @ref async_read_document on a buffer already adapted to the
+ members it calls, so that both models share one operation.
+*/
+template <class AsyncReadStream, class Buffer, class Traits, class CompletionToken>
+auto start_read_document(AsyncReadStream& stream, Buffer buffer,
+                         basic_stream_parser<Traits>& parser, CompletionToken&& token) {
+    return boost::asio::async_compose<CompletionToken,
+                                      void(boost::system::error_code, basic_document<Traits>)>(
+        read_document_op<AsyncReadStream, Buffer, Traits>(stream, std::move(buffer), parser),
+        token, stream);
+}
+
 }  // namespace detail
 
 /**
@@ -361,11 +545,21 @@ private:
  called inside this function: one that needs no read is dispatched to the handler's immediate
  executor, else posted to the stream's.
 
- One operation at a time reads a stream, its buffer and its parser, which outlive it.
+ The buffer is a dynamic buffer of either of Boost.Asio's models, and the bytes it already holds,
+ left by an earlier read of the same stream, are the parser's before any read. A buffer of the
+ first model, `DynamicBuffer_v1` (`asio::streambuf`, Beast's `multi_buffer`, whatever the pieces
+ of its `data`), is taken by reference and used through it: the caller keeps it alive until the
+ operation completes. A buffer of the second model, `DynamicBuffer_v2` (`grow`, `shrink`,
+ `data(pos, n)`: what `asio::dynamic_buffer` makes of a string, or a vector, also when
+ `BOOST_ASIO_NO_DYNAMIC_BUFFER_V1` leaves out the first model) is taken by value, as Boost.Asio's
+ own reads take it, and the operation keeps its copy: the caller keeps alive the storage it names,
+ the string, and the function never needs the original. A buffer of both models is a buffer of
+ the second, as in Boost.Asio. One operation at a time reads a stream, its buffer and its parser,
+ which outlive it.
 
  @tparam AsyncReadStream A stream of Boost.Asio's `AsyncReadStream`: a socket, a pipe.
- @tparam DynamicBuffer A dynamic buffer of Boost.Asio's first version, `DynamicBuffer_v1`: what
- `asio::dynamic_buffer` makes of a string, or `asio::streambuf`.
+ @tparam DynamicBuffer A dynamic buffer of Boost.Asio's first model, `DynamicBuffer_v1`, and not
+ of the second.
  @tparam Traits The traits of the documents.
  @tparam CompletionToken The completion token.
  @param stream The stream.
@@ -375,19 +569,44 @@ private:
  @return What the token makes of the operation.
  @see "Streams of documents", in the guide.
 */
+#if !defined(BOOST_ASIO_NO_DYNAMIC_BUFFER_V1)
 template <class AsyncReadStream, class DynamicBuffer, class Traits,
           boost::asio::completion_token_for<void(boost::system::error_code, basic_document<Traits>)>
               CompletionToken =
                   boost::asio::default_completion_token_t<typename AsyncReadStream::executor_type>>
-    requires boost::asio::is_dynamic_buffer_v1<DynamicBuffer>::value
+    requires(boost::asio::is_dynamic_buffer_v1<DynamicBuffer>::value &&
+             !boost::asio::is_dynamic_buffer_v2<DynamicBuffer>::value)
 auto async_read_document(
     AsyncReadStream& stream, DynamicBuffer& buffer, basic_stream_parser<Traits>& parser,
     CompletionToken&& token =
         boost::asio::default_completion_token_t<typename AsyncReadStream::executor_type>()) {
-    return boost::asio::async_compose<CompletionToken,
-                                      void(boost::system::error_code, basic_document<Traits>)>(
-        detail::read_document_op<AsyncReadStream, DynamicBuffer, Traits>(stream, buffer, parser),
-        token, stream);
+    return detail::start_read_document(stream, detail::buffer_v1_ref<DynamicBuffer>(buffer),
+                                       parser, std::forward<CompletionToken>(token));
+}
+#endif  // !defined(BOOST_ASIO_NO_DYNAMIC_BUFFER_V1)
+
+/**
+ Reads the next document of a stream into a buffer of Boost.Asio's second model, taken by value:
+ the overload of @ref async_read_document for `DynamicBuffer_v2`.
+
+ @tparam DynamicBuffer A dynamic buffer of Boost.Asio's second model, `DynamicBuffer_v2`; a
+ buffer of both models is one of the second.
+ @param buffer A copy of the buffer, which the operation keeps; the storage it names outlives the
+ operation.
+ @see "Streams of documents", in the guide.
+*/
+template <class AsyncReadStream, class DynamicBuffer, class Traits,
+          boost::asio::completion_token_for<void(boost::system::error_code, basic_document<Traits>)>
+              CompletionToken =
+                  boost::asio::default_completion_token_t<typename AsyncReadStream::executor_type>>
+    requires boost::asio::is_dynamic_buffer_v2<DynamicBuffer>::value
+auto async_read_document(
+    AsyncReadStream& stream, DynamicBuffer buffer, basic_stream_parser<Traits>& parser,
+    CompletionToken&& token =
+        boost::asio::default_completion_token_t<typename AsyncReadStream::executor_type>()) {
+    return detail::start_read_document(
+        stream, detail::buffer_v2_copy<DynamicBuffer>(std::move(buffer)), parser,
+        std::forward<CompletionToken>(token));
 }
 
 /**
@@ -463,6 +682,49 @@ auto async_write_image(
         boost::asio::default_completion_token_t<typename AsyncWriteStream::executor_type>()) {
     return boost::asio::async_compose<CompletionToken, void(boost::system::error_code)>(
         detail::write_image_op<AsyncWriteStream, Traits, Storage>(stream, document), token,
+        stream);
+}
+
+/**
+ Writes the images of a range of documents to a stream in one gather write, after sealing every
+ document of the range.
+
+ The seals come first: the first document that fails to seal completes the operation with its
+ error, having written nothing. Otherwise the images are written as one gather write, which
+ Boost.Asio sends with writev and continues over partial writes, with no copy of their bytes. The
+ bytes are read in place, so the documents must not change until the operation completes.
+
+ It is a composed operation of Boost.Asio, which takes any completion token. Its signature is
+ `void(boost::system::error_code, std::size_t)`: the bytes written, the sum of the images' sizes on
+ success. On an error it is the bytes that reached the stream, which may end inside an image: the
+ whole documents sent are the leading ones whose image sizes, added in order, do not exceed it. An
+ empty range completes with 0 and writes nothing.
+
+ @tparam AsyncWriteStream A stream of Boost.Asio's `AsyncWriteStream`: a socket, a pipe.
+ @tparam Range The range of documents: its elements are lvalues of documents, or of any type that
+ seals its image and shows its bytes, such as a leased or a shared document.
+ @tparam CompletionToken The completion token.
+ @param stream The stream.
+ @param documents The range, read by this call only: the operation seals its documents, and the
+ caller keeps them alive until it completes. A temporary range is refused.
+ @param token The completion token.
+ @return What the token makes of the operation.
+ @see "Images on the wire", in the guide.
+*/
+template <class AsyncWriteStream, detail::image_range Range,
+          boost::asio::completion_token_for<void(boost::system::error_code, std::size_t)>
+              CompletionToken =
+                  boost::asio::default_completion_token_t<typename AsyncWriteStream::executor_type>>
+auto async_write_images(
+    AsyncWriteStream& stream, Range& documents,
+    CompletionToken&& token =
+        boost::asio::default_completion_token_t<typename AsyncWriteStream::executor_type>()) {
+    // The guards come first: the gathering seals every document, and a failure completes below.
+    std::vector<boost::asio::const_buffer> buffers;
+    const boost::system::error_code failure = detail::gather_images(documents, buffers);
+    return boost::asio::async_compose<CompletionToken,
+                                      void(boost::system::error_code, std::size_t)>(
+        detail::write_images_op<AsyncWriteStream>(stream, failure, std::move(buffers)), token,
         stream);
 }
 

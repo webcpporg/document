@@ -8,7 +8,9 @@
 // in odd-sized pieces, the reader catching up between them; the reader reads with a callback and,
 // with exceptions, in a coroutine with use_awaitable; a skipped line is reported with its line and
 // the stream goes on; the end of the stream is eof, after the last document, every time; a
-// document the parser already holds completes without a read, never inside the call.
+// document the parser already holds completes without a read, never inside the call; a buffer of
+// several pieces (Beast's multi_buffer) or of Boost.Asio's second model (a string, a buffer with
+// only that model's members) is read like a string, its held bytes before any read.
 
 #include <webcpp/document/asio.hpp>
 #include <webcpp/document/stringify.hpp>
@@ -18,6 +20,7 @@
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/post.hpp>
 #include <boost/asio/write.hpp>
+#include <boost/beast/core/multi_buffer.hpp>
 #include <boost/core/lightweight_test.hpp>
 
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
@@ -30,11 +33,13 @@
 
 #include "require.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -280,6 +285,266 @@ void completions() {
     BOOST_TEST(failed == outcomes(2, "error malformed JSON text at line 1"));
 }
 
+// The documents the buffer tests read: strings and numbers a piece boundary falls inside of.
+constexpr std::string_view split_text =
+    R"({"name":"a string cut anywhere","n":12345.678e1} [10203040,"x y z"] {"k":[1,22,333]})";
+
+outcomes split_read() {
+    return {
+        R"({"name":"a string cut anywhere","n":123456.78})",
+        R"([10203040,"x y z"])",
+        R"({"k":[1,22,333]})",
+    };
+}
+
+// Puts `text` into `buffer` in pieces of `step` bytes, each its own prepare and commit, which
+// gives Beast's multi_buffer one element for each once the spare room of the last is returned.
+// Tip: the first element is never shrunk, so 512 spaces, JSON whitespace, fill it first.
+void fill_in_pieces(boost::beast::multi_buffer& buffer, std::string_view text, std::size_t step) {
+    const std::string blank(512, ' ');
+    buffer.commit(asio::buffer_copy(buffer.prepare(blank.size()), asio::buffer(blank)));
+    while (!text.empty()) {
+        const std::string_view piece = text.substr(0, step);
+        buffer.commit(asio::buffer_copy(buffer.prepare(piece.size()),
+                                        asio::buffer(piece.data(), piece.size())));
+        buffer.shrink_to_fit();
+        text.remove_prefix(piece.size());
+    }
+}
+
+std::size_t pieces_of(const boost::beast::multi_buffer& buffer) {
+    const auto data = buffer.data();
+    return static_cast<std::size_t>(
+        std::distance(asio::buffer_sequence_begin(data), asio::buffer_sequence_end(data)));
+}
+
+// Starts `count` reads of one buffer, each after the last one's completion, and records them.
+template <class Buffer>
+void read_all(asio::io_context& io, tcp::socket& socket, Buffer& buffer, wd::stream_parser& parser,
+              outcomes& read, std::size_t count) {
+    for (std::size_t i = 0; i < count; ++i) {
+        const std::size_t before = read.size();
+        wd::async_read_document(
+            socket, buffer, parser,
+            [&read, &parser](boost::system::error_code ec, const wd::document& d) {
+                read.push_back(ec == asio::error::eof ? "eof" : outcome(ec, d, parser));
+            });
+        drain_until(io, [&read, before] { return read.size() == before + 1; });
+    }
+}
+
+// A multi_buffer whose pieces are small: each read asks for at most five bytes, so the documents
+// arrive cut inside a string and a number.
+void a_multi_buffer_with_small_blocks() {
+    asio::io_context io;
+    connection c(io);
+    wd::stream_parser parser;
+    boost::beast::multi_buffer buffer(5);
+    asio::write(c.writer, asio::buffer(split_text.data(), split_text.size()));
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    outcomes read;
+    read_all(io, c.reader, buffer, parser, read, 4);
+    BOOST_TEST((read == outcomes{split_read()[0], split_read()[1], split_read()[2], "eof"}));
+    BOOST_TEST_EQ(buffer.size(), 0U);
+}
+
+// Bytes a multi_buffer holds in several pieces, left by an earlier protocol read, are the parser's
+// before any read: the stream sends nothing, and the documents still come.
+void a_multi_buffer_holds_bytes() {
+    asio::io_context io;
+    connection c(io);
+    wd::stream_parser parser;
+    boost::beast::multi_buffer buffer;
+    fill_in_pieces(buffer, split_text, 3);
+    BOOST_TEST_GT(pieces_of(buffer), 10U);
+    outcomes read;
+    read_all(io, c.reader, buffer, parser, read, 3);
+    BOOST_TEST(read == split_read());
+    BOOST_TEST_EQ(buffer.size(), 0U);
+}
+
+// A document that begins in the held pieces and ends in the stream.
+void a_multi_buffer_holds_the_start() {
+    asio::io_context io;
+    connection c(io);
+    wd::stream_parser parser;
+    boost::beast::multi_buffer buffer;
+    const std::size_t cut = split_text.find("cut") + 1;
+    fill_in_pieces(buffer, split_text.substr(0, cut), 4);
+    BOOST_TEST_GT(pieces_of(buffer), 1U);
+    const std::string_view rest = split_text.substr(cut);
+    asio::write(c.writer, asio::buffer(rest.data(), rest.size()));
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    outcomes read;
+    read_all(io, c.reader, buffer, parser, read, 3);
+    BOOST_TEST(read == split_read());
+}
+
+// A buffer of Boost.Asio's second model and of no other: the members of DynamicBuffer_v2 over a
+// string, a copy of it naming the same string.
+class second_model_buffer {
+public:
+    using const_buffers_type = asio::const_buffer;
+    using mutable_buffers_type = asio::mutable_buffer;
+
+    explicit second_model_buffer(std::string& s, std::size_t max = std::string::npos) noexcept
+        : string_(&s), max_(max) {}
+
+    [[nodiscard]] std::size_t size() const noexcept { return std::min(string_->size(), max_); }
+    [[nodiscard]] std::size_t max_size() const noexcept { return max_; }
+    [[nodiscard]] std::size_t capacity() const noexcept {
+        return std::min(string_->capacity(), max_);
+    }
+    [[nodiscard]] const_buffers_type data(std::size_t pos, std::size_t n) const noexcept {
+        return asio::buffer(asio::buffer(*string_) + pos, n);
+    }
+    mutable_buffers_type data(std::size_t pos, std::size_t n) noexcept {
+        return asio::buffer(asio::buffer(*string_) + pos, n);
+    }
+    void grow(std::size_t n) { string_->resize(size() + n); }
+    void shrink(std::size_t n) { string_->resize(n > size() ? 0 : size() - n); }
+    void consume(std::size_t n) { string_->erase(0, std::min(n, string_->size())); }
+
+private:
+    std::string* string_;
+    std::size_t max_;
+};
+
+static_assert(asio::is_dynamic_buffer_v2<second_model_buffer>::value);
+static_assert(!asio::is_dynamic_buffer_v1<second_model_buffer>::value);
+
+// A buffer of both models, as asio::dynamic_buffer makes of a string, that counts the members of
+// each model the operation calls, so that the test sees which model the operation used.
+struct counts {
+    std::size_t grows = 0;
+    std::size_t prepares = 0;
+};
+
+class counting_buffer
+    : public asio::dynamic_string_buffer<char, std::char_traits<char>, std::allocator<char>> {
+    using base = asio::dynamic_string_buffer<char, std::char_traits<char>, std::allocator<char>>;
+
+public:
+    counting_buffer(std::string& s, counts& seen) : base(s), seen_(&seen) {}
+
+    void grow(std::size_t n) {
+        ++seen_->grows;
+        base::grow(n);
+    }
+    mutable_buffers_type prepare(std::size_t n) {
+        ++seen_->prepares;
+        return base::prepare(n);
+    }
+
+private:
+    counts* seen_;
+};
+
+static_assert(asio::is_dynamic_buffer_v1<counting_buffer>::value);
+static_assert(asio::is_dynamic_buffer_v2<counting_buffer>::value);
+
+// A buffer of both models is read as the second, as Boost.Asio's own reads do.
+void a_buffer_of_both_models_is_read_as_the_second() {
+    asio::io_context io;
+    connection c(io);
+    wd::stream_parser parser;
+    std::string storage;
+    counts seen;
+    counting_buffer buffer(storage, seen);
+    asio::write(c.writer, asio::buffer(split_text.data(), split_text.size()));
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    outcomes read;
+    read_all(io, c.reader, buffer, parser, read, 4);
+    BOOST_TEST((read == outcomes{split_read()[0], split_read()[1], split_read()[2], "eof"}));
+    BOOST_TEST_GT(seen.grows, 0U);
+    BOOST_TEST_EQ(seen.prepares, 0U);
+    BOOST_TEST(storage.empty());
+}
+
+// A buffer of the second model only: contiguous, with a small maximum size so that each read
+// cuts the documents, with the bytes it already holds before any read, and with only the start of
+// a document held, the rest coming from the stream.
+void a_second_model_buffer_reads_documents() {
+    {
+        asio::io_context io;
+        connection c(io);
+        wd::stream_parser parser;
+        std::string storage;
+        second_model_buffer buffer(storage);
+        asio::write(c.writer, asio::buffer(split_text.data(), split_text.size()));
+        c.writer.shutdown(tcp::socket::shutdown_send);
+        outcomes read;
+        read_all(io, c.reader, buffer, parser, read, 4);
+        BOOST_TEST((read == outcomes{split_read()[0], split_read()[1], split_read()[2], "eof"}));
+        BOOST_TEST(storage.empty());
+    }
+    {
+        asio::io_context io;
+        connection c(io);
+        wd::stream_parser parser;
+        std::string storage;
+        second_model_buffer buffer(storage, 5);
+        asio::write(c.writer, asio::buffer(split_text.data(), split_text.size()));
+        c.writer.shutdown(tcp::socket::shutdown_send);
+        outcomes read;
+        read_all(io, c.reader, buffer, parser, read, 4);
+        BOOST_TEST((read == outcomes{split_read()[0], split_read()[1], split_read()[2], "eof"}));
+    }
+    {
+        asio::io_context io;
+        connection c(io);
+        wd::stream_parser parser;
+        std::string storage(split_text);
+        second_model_buffer buffer(storage);
+        outcomes read;
+        read_all(io, c.reader, buffer, parser, read, 3);
+        BOOST_TEST(read == split_read());
+        BOOST_TEST(storage.empty());
+    }
+    {
+        asio::io_context io;
+        connection c(io);
+        wd::stream_parser parser;
+        const std::size_t cut = split_text.find("cut") + 1;
+        std::string storage(split_text.substr(0, cut));
+        second_model_buffer buffer(storage);
+        const std::string_view rest = split_text.substr(cut);
+        asio::write(c.writer, asio::buffer(rest.data(), rest.size()));
+        c.writer.shutdown(tcp::socket::shutdown_send);
+        outcomes read;
+        read_all(io, c.reader, buffer, parser, read, 3);
+        BOOST_TEST(read == split_read());
+    }
+}
+
+// What asio::dynamic_buffer makes of a string, passed as it is: with bytes held, and with a
+// maximum size that no read goes past.
+void a_string_buffer_holds_bytes_and_a_maximum() {
+    {
+        asio::io_context io;
+        connection c(io);
+        wd::stream_parser parser;
+        std::string storage(split_text);
+        auto buffer = asio::dynamic_buffer(storage);
+        outcomes read;
+        read_all(io, c.reader, buffer, parser, read, 3);
+        BOOST_TEST(read == split_read());
+        BOOST_TEST(storage.empty());
+    }
+    {
+        asio::io_context io;
+        connection c(io);
+        wd::stream_parser parser;
+        std::string storage;
+        asio::write(c.writer, asio::buffer(split_text.data(), split_text.size()));
+        c.writer.shutdown(tcp::socket::shutdown_send);
+        outcomes read;
+        auto buffer = asio::dynamic_buffer(storage, 5);
+        read_all(io, c.reader, buffer, parser, read, 4);
+        BOOST_TEST((read == outcomes{split_read()[0], split_read()[1], split_read()[2], "eof"}));
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -288,5 +553,11 @@ int main() {
     a_coroutine_reads_documents();
 #endif
     completions();
+    a_multi_buffer_with_small_blocks();
+    a_multi_buffer_holds_bytes();
+    a_multi_buffer_holds_the_start();
+    a_buffer_of_both_models_is_read_as_the_second();
+    a_second_model_buffer_reads_documents();
+    a_string_buffer_holds_bytes_and_a_maximum();
     return boost::report_errors();
 }

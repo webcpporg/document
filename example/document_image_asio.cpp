@@ -8,8 +8,9 @@
 // images with async_write_image, and a client reads them with async_read_image into a pool of two
 // blocks, each opened in place, with no parsing and no allocation on the receiving side. A coroutine
 // reads the first stream and a callback the second; each prints its document with stringify while
-// the image is held in its block, and the blocks the pool has free then. The context is drained
-// with poll and restart, so the output does not depend on timing.
+// the image is held in its block, and the blocks the pool has free then. A third stream carries
+// the three images in one gather write, with async_write_images. The context is drained with poll
+// and restart, so the output does not depend on timing.
 
 #include <webcpp/document.hpp>
 #include <webcpp/document/asio.hpp>
@@ -271,13 +272,42 @@ bool images_with_callback(asio::io_context& io, tcp::acceptor& acceptor,
 }
 // end::callback[]
 
+// tag::batch[]
+/**
+ Sends the three images in one gather write with async_write_images, then receives them in a
+ coroutine, as the first exchange does.
+
+ Tip: the write reads the images in place and completes with the bytes it wrote, so the documents
+ stay unchanged until it completes.
+*/
+bool images_in_one_write(asio::io_context& io, tcp::acceptor& acceptor,
+                         std::vector<wd::document>& sent) {
+    std::cout << "images, sent in one write:\n";
+    link c(io, acceptor);
+    wd::image_pool pool = pool_of_two();
+    bool done = false;
+    wd::async_write_images(c.server, sent,
+                           [&c](boost::system::error_code ec, std::size_t bytes) {
+                               if (ec) {
+                                   std::cout << "error: " << ec.message() << '\n';
+                               } else {
+                                   std::cout << "written: " << bytes << " bytes\n";
+                               }
+                               c.server.shutdown(tcp::socket::shutdown_send);
+                           });
+    asio::co_spawn(io, receive_in_coroutine(c.client, pool, done), asio::detached);
+    return drain_until(io, [&done] { return done; });
+}
+// end::batch[]
+
 }  // namespace
 
 int main() {
     asio::io_context io;
     tcp::acceptor acceptor(io, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
     std::vector<wd::document> sent = documents();
-    if (!images_in_coroutine(io, acceptor, sent) || !images_with_callback(io, acceptor, sent)) {
+    if (!images_in_coroutine(io, acceptor, sent) || !images_with_callback(io, acceptor, sent) ||
+        !images_in_one_write(io, acceptor, sent)) {
         return 1;
     }
 }

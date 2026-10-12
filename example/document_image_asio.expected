@@ -8,3 +8,9 @@ images, received with a callback:
 {"name":"Grace","langs":["COBOL"]}: sealed, blocks available: 1
 {"name":"Alan","n":1500}: sealed, blocks available: 1
 eof, blocks available: 2
+images, sent in one write:
+written: 4176 bytes
+{"name":"Ada","born":1815,"langs":["Analytical"]}: sealed, blocks available: 1
+{"name":"Grace","langs":["COBOL"]}: sealed, blocks available: 1
+{"name":"Alan","n":1500}: sealed, blocks available: 1
+eof, blocks available: 2

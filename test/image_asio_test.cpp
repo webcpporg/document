@@ -10,7 +10,8 @@
 // use_awaitable; each equals its source. A pool of two blocks with two leases held refuses the
 // third read with errc::capacity, without reading the stream, and reads the third image once a
 // block is given back. An image cut short by the end of the stream is refused, and the end of a
-// stream is eof, every time.
+// stream is eof, every time. A batch of images written with async_write_images in one call arrives
+// whole, each image sealed; an empty batch and a batch that fails to seal write nothing.
 
 #include <webcpp/document/asio.hpp>
 #include <webcpp/document/image_stream.hpp>
@@ -220,7 +221,44 @@ completion read_once(asio::io_context& io, tcp::socket& socket, wd::image_pool& 
     return std::move(*done);
 }
 
+// The bytes of all the images of the documents, which a batch write must send in full.
+std::size_t image_bytes(const std::vector<wd::document>& documents) {
+    std::size_t total = 0;
+    for (const wd::document& document : documents) {
+        total += document.image().size();
+    }
+    return total;
+}
+
+// What one batch write completed with, its error and the bytes it wrote.
+struct batch_result {
+    boost::system::error_code ec;
+    std::size_t bytes = 0;
+};
+
+// Starts one batch write of the documents and drains the context until it completes.
+batch_result write_once(asio::io_context& io, tcp::socket& socket,
+                        std::vector<wd::document>& documents) {
+    std::optional<batch_result> done;
+    wd::async_write_images(socket, documents,
+                           [&done](boost::system::error_code ec, std::size_t bytes) {
+                               done.emplace(batch_result{ec, bytes});
+                           });
+    drain_until(io, [&done] { return done.has_value(); });
+    return *done;
+}
+
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+// The batch written in a coroutine, awaiting async_write_images with as_tuple(use_awaitable).
+asio::awaitable<void> write_batch_in_coroutine(tcp::socket& socket,
+                                               std::vector<wd::document>& documents,
+                                               batch_result& written) {
+    auto [ec, bytes] =
+        co_await wd::async_write_images(socket, documents, asio::as_tuple(asio::use_awaitable));
+    written = batch_result{ec, bytes};
+    socket.shutdown(tcp::socket::shutdown_send);
+}
+
 // The writer in a coroutine, awaiting each async_write_image with use_awaitable.
 asio::awaitable<void> write_in_coroutine(tcp::socket& socket,
                                          std::vector<wd::document>& documents) {
@@ -336,7 +374,78 @@ void cut_short() {
     BOOST_TEST(cut.image.empty());
 }
 
+// The documents of one batch write arrive as one write of all their bytes, and are read back one
+// by one, each equal to its source and sealed; the end of the stream is eof, and every block is
+// given back.
+void a_batch_is_written_in_one_call() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    wd::image_pool pool = make_pool(4);
+    const batch_result written = write_once(io, c.writer, documents);
+    webcpp::test::require(BOOST_TEST(!written.ec));
+    BOOST_TEST_EQ(written.bytes, image_bytes(documents));
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    for (const wd::document& source : documents) {
+        completion got = read_once(io, c.reader, pool);
+        webcpp::test::require(BOOST_TEST(!got.ec));
+        BOOST_TEST(same(got.image, source));
+    }
+    completion end = read_once(io, c.reader, pool);
+    BOOST_TEST(end.ec == asio::error::eof);
+    BOOST_TEST_EQ(pool.available(), 4U);
+}
+
+// An empty range completes with 0 bytes and writes nothing: the stream is left unread at its end.
+void an_empty_batch_writes_nothing() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> none;
+    const batch_result written = write_once(io, c.writer, none);
+    BOOST_TEST(!written.ec);
+    BOOST_TEST_EQ(written.bytes, 0U);
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    wd::image_pool pool = make_pool(1);
+    completion end = read_once(io, c.reader, pool);
+    BOOST_TEST(end.ec == asio::error::eof);
+    BOOST_TEST(end.image.empty());
+}
+
+// A document that cannot be sealed, as a moved-from one has no image, fails the batch with
+// errc::type before any byte is written: the stream is left unread.
+void a_seal_failure_writes_nothing() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    wd::document kept = std::move(documents[1]);
+    const batch_result written = write_once(io, c.writer, documents);
+    BOOST_TEST(written.ec == wd::errc::type);
+    BOOST_TEST_EQ(written.bytes, 0U);
+    c.writer.shutdown(tcp::socket::shutdown_send);
+    wd::image_pool pool = make_pool(1);
+    completion end = read_once(io, c.reader, pool);
+    BOOST_TEST(end.ec == asio::error::eof);
+    BOOST_TEST(end.image.empty());
+}
+
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+// The same batch, written in a coroutine with use_awaitable and read in one with as_tuple.
+void batch_in_coroutines() {
+    asio::io_context io;
+    connection c(io);
+    std::vector<wd::document> documents = sources();
+    wd::image_pool pool = make_pool(4);
+    outcomes read;
+    batch_result written;
+    asio::co_spawn(io, write_batch_in_coroutine(c.writer, documents, written), asio::detached);
+    asio::co_spawn(io, read_in_coroutine(c.reader, pool, documents, read), asio::detached);
+    drain_until(io, [&read] { return !read.empty() && read.back() == "eof"; });
+    BOOST_TEST((read == outcomes{"same", "same", "same", "eof"}));
+    BOOST_TEST(!written.ec);
+    BOOST_TEST_EQ(written.bytes, image_bytes(documents));
+    BOOST_TEST_EQ(pool.available(), 4U);
+}
+
 // The same images, written and read in coroutines with use_awaitable and as_tuple.
 void coroutines() {
     asio::io_context io;
@@ -359,7 +468,11 @@ int main() {
     backpressure();
     flipped_in_transit();
     cut_short();
+    a_batch_is_written_in_one_call();
+    an_empty_batch_writes_nothing();
+    a_seal_failure_writes_nothing();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+    batch_in_coroutines();
     coroutines();
 #endif
     return boost::report_errors();

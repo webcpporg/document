@@ -208,9 +208,12 @@ leaves it out, and a program that uses it includes it and is built natively.
 
 `wd::async_read_document(stream, buffer, parser, token)` reads the next document of `stream`, an
 `AsyncReadStream` such as a socket or a pipe. It takes the parser's next document when the parser
-holds one, and otherwise reads from the stream into `buffer`, a `DynamicBuffer_v1` such as what
-`asio::dynamic_buffer` makes of a string, and writes what it read into the parser, until a document
-is complete. It is a composed operation that takes any completion token of Boost.Asio's, a callback,
+holds one, and otherwise reads from the stream into `buffer` and writes what it read into the
+parser, piece by piece, until a document is complete. The buffer is either of Boost.Asio's two
+models: a `DynamicBuffer_v2`, such as what `asio::dynamic_buffer` makes of a string, is taken by
+value and only what it names must outlive the operation; a `DynamicBuffer_v1`, such as Beast's
+`multi_buffer`, is taken by reference and must outlive it. Bytes the buffer already holds are read
+first, and a buffer made of several pieces is never joined into one. It is a composed operation that takes any completion token of Boost.Asio's, a callback,
 `asio::use_awaitable`, `asio::deferred` or `boost::cobalt::use_op` among them, and completes with
 `(boost::system::error_code, document)`:
 
@@ -282,6 +285,44 @@ include::{examples}/document_stream_asio.cpp[tag=callback,indent=0]
 [listing]
 ----
 include::{examples}/document_stream_asio.expected[lines=7..14]
+----
+
+[#document-streams-beast]
+=== After an HTTP header, with Boost.Beast
+
+A response's header is read with Boost.Beast, and the body that follows it is read as a stream of
+documents from the same buffer. Beast reads the socket in blocks, so the bytes of the body that
+arrived with the header are in the buffer when `async_read_header` returns. They stay there, past
+the header, and `async_read_document` takes them before it reads the socket again: nothing is copied
+out of the buffer, and nothing is lost.
+
+The program below runs a server and a client on the loopback address, in one thread. The client
+sends a GET, and the server answers with a header that Beast writes and an NDJSON body in pieces. The
+header and the body's first piece leave in one write, so the client's first read holds both, which
+is the case this section is about:
+
+[source]
+----
+include::{examples}/document_stream_beast.cpp[tag=server,indent=0]
+----
+
+The client reads the header into a `beast::multi_buffer` with a `response_parser<empty_body>`, and
+prints the status and the content type. Beast does not read the body: the same buffer goes on to
+`async_read_document`, with the document parser of the stream:
+
+[source]
+----
+include::{examples}/document_stream_beast.cpp[tag=header,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_stream_beast.cpp[tag=documents,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_beast.expected[]
 ----
 
 [#document-streams-cobalt]

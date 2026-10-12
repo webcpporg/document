@@ -1,0 +1,7 @@
+status 200 OK
+content type application/x-ndjson
+{"id":1,"name":"ada"}
+{"id":2,"tags":["a","b"]}
+[3,null]
+"last"
+eof

@@ -127,6 +127,28 @@ include::{examples}/document_image_asio.cpp[tag=callback,indent=0]
 include::{examples}/document_image_asio.expected[lines=6..10]
 ----
 
+[#document-wire-batch]
+=== Several images in one write
+
+`wd::async_write_images(stream, documents, token)` writes the images of a range of documents in one
+gather write. Every document is sealed first, and when one fails to seal the operation completes
+with its error and writes nothing. The images are not copied: Boost.Asio sends them with `writev`
+and carries on over partial writes. The operation completes with the bytes written, which are the
+sum of the images' sizes; on an error, they are the bytes that reached the stream, and the whole
+documents among them are the leading ones whose images fit in that count. The range is taken by
+lvalue reference, and its documents stay unchanged until the write completes. The example sends its
+three documents this way:
+
+[source]
+----
+include::{examples}/document_image_asio.cpp[tag=batch,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_image_asio.expected[lines=11..16]
+----
+
 [#document-wire-sealed]
 === Sealed images
 
