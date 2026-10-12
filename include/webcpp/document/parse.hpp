@@ -41,12 +41,15 @@ struct parse_options {
     std::uint64_t max_bytes = std::numeric_limits<std::uint64_t>::max();
 
     /**
-     The largest image an owned document grows to; past it is @ref errc::capacity.
+     The largest image an owned document grows to, 64 MiB; past it is @ref errc::capacity.
 
      Each value takes at least 192 bytes of image, so a short value's image is a hundred times its
-     text or more: set it for input from the network.
+     text or more: 2 MB of `[0,0,...]` makes an image of 268 MB. The default is low so that text
+     from the network is refused early: under 1 GiB, 11 MB of such text cost 9 seconds and 2.2 GB
+     of memory before it failed; under 64 MiB, 700 KB fails in 0.4 seconds with 137 MB. A program
+     that parses larger documents raises it.
     */
-    std::uint64_t max_document_bytes = default_max_bytes;
+    std::uint64_t max_document_bytes = std::uint64_t{64} << 20U;
 
     /** Whether a string in exactly Date.prototype.toJSON's format becomes a date. */
     bool revive_dates = false;

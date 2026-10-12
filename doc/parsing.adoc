@@ -35,7 +35,7 @@ passed, and the revivers:
 | The most bytes of text, every chunk counted; no limit unless told otherwise.
 
 | `max_document_bytes`
-| The largest image an owned document grows to, 1 GiB unless told otherwise.
+| The largest image an owned document grows to, 64 MiB unless told otherwise.
 
 | `revive_dates`
 | Whether a string in exactly the format of `Date.prototype.toJSON` becomes a date
@@ -55,13 +55,15 @@ string's bytes, and a key's, take a block of their own besides: 48 bytes for a s
 its key, 432. These are the image's sizes on every target, measured, as an image is the same
 bytes everywhere (<<document-images>>).
 
-A short value costs far more in the image than in its text. Measured, 2 MB of text, `[0,0,...]`
+A short value costs far more in the image than in its text. Measured, 2 MB of text, `+[0,0,...]+`
 with 1,048,576 zeros, makes an image of 268 MB, 128 times the text, which `shrink_to_fit()`
-brings to 201 MB; and while an owned image grows, its old and new buffers are held at once. The
-default `max_document_bytes`, 1 GiB, is reached by 11 MB of such text, which a native release
-build parses for 9 seconds with 2.2 GB resident before it fails. *For input from the network, set
-`max_document_bytes`* to what the program can afford, and `max_bytes` with it: a parse past either
-fails with `errc::capacity`.
+brings to 201 MB; and while an owned image grows, its old and new buffers are held at once. So
+the default `max_document_bytes` is 64 MiB, which refuses input from the network early: it is
+reached by 700 KB of such text, which a native release build reads for 0.4 seconds with 137 MB
+resident before it fails, where a limit of 1 GiB would take 11 MB of text, 9 seconds and 2.2 GB.
+*A program that parses larger documents raises `max_document_bytes`* to what it can afford, and
+sets `max_bytes` with it: a parse past either fails with `errc::capacity`. A document the program
+builds itself, with `create`, keeps a limit of 1 GiB (<<document-images>>).
 
 [#document-parsing-chunks]
 === In chunks

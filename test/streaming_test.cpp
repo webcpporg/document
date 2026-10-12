@@ -7,8 +7,8 @@
 // The streaming parser: every text of the corpus split at every byte, and written one byte at a
 // time, gives the document a whole parse gives; a syntax error has the same offset however the
 // text is split; a failed parser stays failed until reset; a parser takes no text after its
-// finish, nor a second text after its first; max_bytes counts every chunk; and an external parser
-// builds its document in place.
+// finish, nor a second text after its first; max_bytes counts every chunk; the default image limit
+// of 64 MiB holds however the text is split; and an external parser builds its document in place.
 
 #include <webcpp/document/parser.hpp>
 #include <webcpp/document/stringify.hpp>
@@ -292,6 +292,36 @@ void chunk_limits() {
     BOOST_TEST(q.write("").error() == wd::errc::syntax);
 }
 
+// The image limit holds in chunks as it does whole: 400,000 zeros, 800 KB of text whose image would
+// take 77 MB, written 64 KiB at a time, are errc::capacity under the default limit of 64 MiB and
+// read under 128 MiB.
+void the_default_image_limit_holds_in_chunks() {
+    std::string text = "[";
+    for (std::size_t i = 0; i < 400'000; ++i) {
+        text += i == 0 ? "0" : ",0";
+    }
+    text += ']';
+    const auto streamed_with = [&text](const wd::parse_options& o) -> wd::result<wd::document> {
+        wd::parser p(o);
+        constexpr std::size_t chunk = 65536;
+        for (std::size_t at = 0; at < text.size(); at += chunk) {
+            if (const auto written = p.write(std::string_view(text).substr(at, chunk));
+                !written.has_value()) {
+                return written.error();
+            }
+        }
+        return p.finish();
+    };
+    const auto refused = streamed_with({});
+    BOOST_TEST(!refused.has_value() && refused.error() == wd::errc::capacity);
+    wd::parse_options raised;
+    raised.max_document_bytes = std::uint64_t{128} << 20U;
+    const auto made = streamed_with(raised);
+    if (BOOST_TEST(made.has_value())) {
+        BOOST_TEST_EQ(made->root().size(), 400'000U);
+    }
+}
+
 // An external parser formats its buffer when the text begins and builds the document in place; a
 // buffer too small is errc::capacity.
 void an_external_parser() {
@@ -339,6 +369,7 @@ int main() {
     a_finished_parser_takes_no_more_text();
     text_after_the_text_is_extra_data();
     chunk_limits();
+    the_default_image_limit_holds_in_chunks();
     an_external_parser();
     return boost::report_errors();
 }

@@ -6,9 +6,10 @@
 
 // parse reads JSON text as JSON.parse does: what it accepts, written back as Node 26 writes it;
 // what it refuses, as malformed text with the offset where it was found, or as a number past the
-// traits; the limits of depth, bytes and image, exact; an object of 100,000 keys and a 64 MB
-// string; the revivers of dates and bytes; a parse into external buffers of every size. Built with
-// WEBCPP_TEST_DOCUMENT_SUGAR, and so with exceptions, it also checks parse_or_throw.
+// traits; the limits of depth, bytes and image, exact, and the default image limit of 64 MiB; an
+// object of 100,000 keys and a 64 MB string; the revivers of dates and bytes; a parse into external
+// buffers of every size. Built with WEBCPP_TEST_DOCUMENT_SUGAR, and so with exceptions, it also
+// checks parse_or_throw.
 
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/stringify.hpp>
@@ -270,15 +271,39 @@ void an_object_of_100000_keys() {
     BOOST_TEST_EQ(found, count);
 }
 
-// A string of 64 MB parses whole; under an image limit below it, it is errc::capacity.
+// The text of an array of `count` zeros, `[0,0,...]`, whose image takes 192 bytes a zero.
+std::string zeros(std::size_t count) {
+    std::string text = "[";
+    for (std::size_t i = 0; i < count; ++i) {
+        text += i == 0 ? "0" : ",0";
+    }
+    text += ']';
+    return text;
+}
+
+// The default image limit is 64 MiB: 400,000 zeros, 800 KB of text whose image would take 77 MB,
+// are errc::capacity unless max_document_bytes is raised.
+void the_default_image_limit_is_64_mib() {
+    const std::string text = zeros(400'000);
+    BOOST_TEST(refusal(text) == wd::errc::capacity);
+    wd::parse_options raised;
+    raised.max_document_bytes = std::uint64_t{128} << 20U;
+    BOOST_TEST_EQ(parsed(text, raised).root().size(), 400'000U);
+}
+
+// A string of 64 MB parses whole under an image limit above it; under one below it, it is
+// errc::capacity.
 void a_64_mb_string() {
     constexpr std::size_t size = std::size_t{64} << 20U;
     std::string text(size + 2, 'x');
     text.front() = '"';
     text.back() = '"';
     {
-        const wd::document doc = parsed(text);
-        BOOST_TEST_EQ(doc.root().value_or(std::string_view{}).size(), size);
+        wd::parse_options large;
+        large.max_document_bytes = std::uint64_t{256} << 20U;
+        const wd::document doc = parsed(text, large);
+        const auto read = doc.root().value_or(std::string_view{});
+        BOOST_TEST_EQ(read.size(), size);
     }
     wd::parse_options small;
     small.max_document_bytes = std::uint64_t{32} << 20U;
@@ -392,6 +417,7 @@ int main() {
     numbers_past_the_traits();
     limits();
     an_object_of_100000_keys();
+    the_default_image_limit_is_64_mib();
     a_64_mb_string();
     revivers();
     parse_into_every_size();
