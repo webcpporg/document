@@ -1,0 +1,55 @@
+{
+  "name": "@webcpp/document",
+  "version": "0.0.0",
+  "description": "Brings JavaScript programmers the wonders of C++ without the risks of C++: a JSON document with exact decimals, ordered keys, binary images opened in place and documents transferred to workers.",
+  "keywords": [
+    "json",
+    "document",
+    "decimal",
+    "exact-numbers",
+    "ordered-keys",
+    "webassembly",
+    "wasm",
+    "worker",
+    "stream",
+    "ndjson"
+  ],
+  "homepage": "https://webcpporg.github.io/libs/document/",
+  "bugs": {
+    "url": "https://github.com/webcpporg/document/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/webcpporg/document.git",
+    "directory": "js"
+  },
+  "license": "BSL-1.0",
+  "author": "WebCpp.org",
+  "type": "module",
+  "main": "./webcpp-document.mjs",
+  "types": "./webcpp-document.d.mts",
+  "exports": {
+    ".": {
+      "types": "./webcpp-document.d.mts",
+      "default": "./webcpp-document.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "webcpp-document.mjs",
+    "webcpp-document.d.mts",
+    "webcpp-document-core.js",
+    "webcpp-document-core.wasm",
+    "webcpp-document-core.d.ts",
+    "README.md",
+    "LICENSE_1_0.txt"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  }
+}

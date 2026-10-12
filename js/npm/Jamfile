@@ -1,0 +1,101 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# The npm package @webcpp/document: the module built for release, staged with
+# its wrapper, its declarations and its manifest into a directory of the build,
+# and tested as a user receives it.
+#
+#   b2 toolset=emscripten libs/document/js/npm//npm-package
+#     builds the module with -O3 and stages the package into
+#     <build dir>/webcpp/bin/libs/document/js/npm/package, never into the
+#     source tree
+#   b2 toolset=emscripten libs/document/js/npm//npm-package-test
+#     packs the staged directory, installs the tarball into a fresh directory
+#     and runs the smoke test and the type check there
+#
+# Publishing is never a target: the owner publishes from the staged directory
+# (README.md of this directory, and .github/workflows/npm.yml). Every target
+# here is explicit.
+
+import common ;
+import make ;
+import notfile ;
+import path ;
+import project ;
+import webcpp ;
+
+webcpp.targets emscripten ;
+
+path-constant HERE : . ;
+
+# The staging and the test directories, absolute: --emit-tsd is told where to
+# write, and emcc runs from the directory b2 was started in. The build directory
+# is the project's own, which --build-dir moves.
+local build = [ path.root [ project.attribute $(__name__) build-dir ] [ path.pwd ] ] ;
+path-constant STAGE : $(build)/package ;
+path-constant TESTS : $(build)/package-test ;
+path-constant TSD : $(build)/core ;
+
+# The module as the package ships it: the build of js/Jamfile in its release
+# variant, a .wasm beside the .js that finds it through new URL(...,
+# import.meta.url) as Emscripten writes it for an ES module, which bundlers
+# resolve, and the declarations embind writes for its classes.
+exe webcpp-document-core : ../binding.cpp
+  : <variant>release
+    <location>$(build)/core
+    <toolset>emscripten:<linkflags>"-O3"
+    <toolset>emscripten:<linkflags>"--bind"
+    <toolset>emscripten:<linkflags>"-sMODULARIZE=1"
+    <toolset>emscripten:<linkflags>"-sEXPORT_ES6=1"
+    <toolset>emscripten:<linkflags>"-sENVIRONMENT=web,worker,node"
+    <toolset>emscripten:<linkflags>"-sINVOKE_RUN=0"
+    <toolset>emscripten:<linkflags>"--no-entry"
+    <toolset>emscripten:<linkflags>"-sALLOW_MEMORY_GROWTH=1"
+    <toolset>emscripten:<linkflags>"-sMAXIMUM_MEMORY=4GB"
+    <toolset>emscripten:<linkflags>"-sFILESYSTEM=0"
+    <toolset>emscripten:<linkflags>"--emit-tsd=$(build)/core/webcpp-document-core.d.ts"
+  ;
+explicit webcpp-document-core ;
+
+# The staged package: stage.mjs copies the module, the wrapper, the
+# declarations, the README and the licence, and writes the manifest from
+# package.json (the template) with the version of the dev package one level up.
+# Always run again: it is a copy.
+make package.stamp
+  : webcpp-document-core ../webcpp-document.mjs webcpp-document.d.mts package.json README.md
+    ../../LICENSE_1_0.txt stage.mjs ../package.json
+  : @stage ;
+explicit package.stamp ;
+always package.stamp ;
+
+rule stage ( targets + : sources + : properties * )
+{
+    DEPENDS $(targets) : $(sources) ;
+}
+
+actions stage
+{
+    set -e
+    node "$(HERE)/stage.mjs" "$(STAGE)" "$(TSD)" "$(HERE)" "$(HERE)/.." "$(HERE)/../../LICENSE_1_0.txt"
+    echo staged > "$(<)"
+}
+
+alias npm-package : package.stamp ;
+explicit npm-package ;
+
+# The tests, run on the tarball that npm pack makes of the staged package
+# (test/run.mjs says what they prove). The TypeScript they use is the dev
+# package's, pinned by package-lock.json.
+notfile npm-package-test : @run-package-tests : npm-package
+  : <dependency>..//node-modules ;
+always npm-package-test ;
+explicit npm-package-test ;
+
+actions run-package-tests
+{
+    set -e
+    node "$(HERE)/test/run.mjs" "$(STAGE)" "$(TESTS)" "$(HERE)/../node_modules/.bin/tsc" "$(HERE)/test"
+}

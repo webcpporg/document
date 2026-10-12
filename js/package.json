@@ -5,6 +5,7 @@
   "type": "module",
   "description": "webcpp::document's JavaScript API: the tests run by Node, and the example that drives headless Chrome through Playwright, pinned as the benchmarks pin it.",
   "devDependencies": {
-    "playwright": "1.59.0"
+    "playwright": "1.59.0",
+    "typescript": "6.0.3"
   }
 }

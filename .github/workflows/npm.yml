@@ -1,0 +1,188 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+# The npm package @webcpp/document, built and published from a tag v<version>, the version of
+# js/package.json (v0.1.0 publishes 0.1.0), or built and tested alone by hand (workflow_dispatch,
+# which never publishes).
+#
+#   package  checks out this commit into a checkout of the superproject, as the superproject's
+#            library.yml does for every lane, installs Boost, emsdk and Node, then builds the
+#            package (b2 toolset=emscripten libs/document/js/npm//npm-package-test: Emscripten
+#            -O3, staged into bin/npm/.../package) and tests it as a user receives it: npm pack,
+#            install of the tarball into a fresh directory, a smoke test and tsc. On a tag it
+#            also checks that the tag names the version being published. It uploads the staged
+#            directory as the artifact npm-package and the tarball npm pack made of it as the
+#            artifact npm-tarball. The module is built once, on Node 26.7.0.
+#   consumers  on Node 22, 24 and 26 (engines says >=22: Emscripten's own floor is Node 18.3, and
+#            the tests use import.meta.resolve and node:test), one job each: it installs the
+#            tarball into a fresh directory and runs the smoke test and tsc there
+#            (js/npm/test/consume.mjs), with TypeScript from js/package-lock.json. Nothing is built.
+#   publish  on a tag only, after package and every consumers job, downloads that artifact and publishes it with
+#            npm publish --provenance --access public. It is the one job with
+#            id-token: write, and it holds no token secret: npm trusted publishing (OIDC) lets
+#            npm accept this workflow, in this repository, as the publisher.
+#
+# What the owner does once, on npmjs.com, before the first tag publishes:
+#
+#   1. The package must exist before a trusted publisher can be added to it, so the very first
+#      publication is made by the owner by hand, with npm login and then npm publish --access public
+#      run in the staged directory that b2 toolset=emscripten libs/document/js/npm//npm-package
+#      makes (bin/<build dir>/webcpp/bin/libs/document/js/npm/package); this workflow never does it.
+#   2. On npmjs.com, open the package's Settings, Trusted Publisher, and choose GitHub Actions:
+#      organization webcpporg, repository document, workflow filename npm.yml, no environment
+#      (or the name of the environment this workflow's publish job names, if one is added).
+#   3. Optionally, in the package's Settings, Publishing access, require two-factor
+#      authentication and disallow tokens, so that this workflow is the only way to publish.
+#
+# From then on, pushing a tag v<version> whose version is the one in js/package.json publishes it.
+# npm trusted publishing needs npm 11.5.1 or newer and a GitHub-hosted runner; the publish job
+# checks the first.
+name: npm
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # A publication is never cut short.
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Build and test the package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      # The superproject at main, and this commit in place of its submodule libs/document, as
+      # the library workflow of the superproject does (.github/workflows/library.yml).
+      - name: Check out the superproject
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          repository: webcpporg/webcpp
+          ref: main
+          submodules: true
+      - name: Make room for the library
+        run: rm -rf libs/document
+      - name: Check out the library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: libs/document
+
+      - uses: ./tools/ci/actions/boost
+      - uses: ./tools/ci/actions/emsdk
+      - uses: ./tools/ci/actions/node
+
+      - name: Register the emscripten toolset
+        run: python3 tools/ci/matrix.py register emscripten
+
+      # From scratch (-a), as every lane builds. The target installs the dev packages the lock file
+      # pins (TypeScript), stages the package, packs it, installs the tarball into a fresh
+      # directory and runs the smoke test and tsc there.
+      - name: Build the package and test it
+        run: >-
+          b2 --user-config=.local/user-config.jam --build-dir=bin/npm -a toolset=emscripten
+          libs/document/js/npm//npm-package-test
+
+      - name: Check the tag names the version
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p "require('./bin/npm/webcpp/bin/libs/document/js/npm/package/package.json').version")"
+          [ "$TAG" = "v$version" ] || { echo "the tag $TAG does not name the version $version"; exit 1; }
+
+      - name: Upload the tarball the consumers test
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-tarball
+          path: bin/npm/webcpp/bin/libs/document/js/npm/package-test/packed/*.tgz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload the staged package
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: npm-package
+          path: bin/npm/webcpp/bin/libs/document/js/npm/package
+          if-no-files-found: error
+          retention-days: 7
+
+  # The tarball of the package job, installed and tested on each Node it supports; it needs the
+  # library only (its tests, and TypeScript from the lock file), not the superproject.
+  consumers:
+    name: Test on Node ${{ matrix.node }}
+    needs: package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24', '26']
+    steps:
+      - name: Check out the library
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+      - name: Install the pinned dev dependencies
+        working-directory: js
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Download the tarball
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-tarball
+          path: tarball
+      - name: Install the tarball and test it
+        run: >-
+          node js/npm/test/consume.mjs tarball/*.tgz "$RUNNER_TEMP/consumer"
+          js/node_modules/typescript/bin/tsc js/npm/test
+
+  publish:
+    name: Publish to npm
+    needs: [package, consumers]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # The OIDC token npm trusted publishing exchanges for a short-lived publish credential, and
+      # that the provenance statement is signed with.
+      id-token: write
+    steps:
+      # setup-node writes the registry into .npmrc without a token: the credential is the OIDC
+      # token, which npm 11.5.1 or newer requests itself.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 26.7.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Check npm can publish with OIDC
+        run: |
+          npm --version
+          node -e "const [a, b, c] = process.argv[1].split('.').map(Number); process.exit(a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1))) ? 0 : 1)" "$(npm --version)" \
+            || { echo "npm trusted publishing needs npm 11.5.1 or newer"; exit 1; }
+
+      - name: Download the staged package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: npm-package
+          path: package
+
+      - name: Publish
+        run: npm publish ./package --provenance --access public
