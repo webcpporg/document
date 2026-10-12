@@ -35,3 +35,5 @@ webcpp.run errors_raise : errors_test.cpp
 webcpp.run number : number_test.cpp ;
 # The traits: scalar codecs, encodings, bytes, dates and policies.
 webcpp.run traits : traits_test.cpp ;
+# The heap, its allocator and strings, the regions and the image's header.
+webcpp.run heap : heap_test.cpp ;

@@ -22,6 +22,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <span>
 
 namespace webcpp::document {
@@ -71,17 +72,43 @@ struct image_header {
     std::array<std::byte, 16> reserved;
 };
 
+static_assert(sizeof(image_header) == detail::header_bytes, "the header is the heap's offset");
+
 /**
  Checks that bytes are an image this build reads, reading nothing past the header before its size
  is known.
 
- @param bytes The bytes.
+ The magic is checked first, then the format version and the byte order, before the size, which an
+ image of another version or byte order states in another way; then the Boost version and the
+ layout.
+
+ @param bytes The bytes, at any address.
  @param layout The layout tag this build expects.
  @return Success; @ref errc::not_a_document for bytes shorter than the header or than the size it
  states, a size below 64, or another magic; @ref errc::incompatible_document for another format
  version, byte order, Boost version or layout.
 */
-inline result<void> check_image(std::span<const std::byte> bytes, std::uint32_t layout) noexcept;
+inline result<void> check_image(std::span<const std::byte> bytes, std::uint32_t layout) noexcept {
+    if (bytes.size() < sizeof(image_header)) {
+        return errc::not_a_document;
+    }
+    // Copied, not cast: the bytes may be at any address.
+    image_header header{};
+    std::memcpy(&header, bytes.data(), sizeof header);
+    if (header.magic != image_magic) {
+        return errc::not_a_document;
+    }
+    if (header.version != format_version || header.byte_order != byte_order_mark) {
+        return errc::incompatible_document;
+    }
+    if (header.size < sizeof(image_header) || header.size > bytes.size()) {
+        return errc::not_a_document;
+    }
+    if (header.boost_version != BOOST_VERSION || header.layout != layout) {
+        return errc::incompatible_document;
+    }
+    return {};
+}
 
 }  // namespace webcpp::document
 
