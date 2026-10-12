@@ -435,7 +435,11 @@ void numbers_from_text() {
     BOOST_TEST(p.value().number == detail::repr::number);
 
     detail::prepared<js> q;
-    BOOST_TEST(detail::prepare_number("1e400", q).error() == wd::errc::range);
+    // JSON.parse makes 1e400 Infinity, which js_traits stores.
+    BOOST_TEST(detail::prepare_number("1e400", q).has_value());
+    BOOST_TEST(q.value().number == detail::repr::number);
+    BOOST_TEST(wd::scalar_codec<double>::load(q.value().scalar.data()) ==
+               std::numeric_limits<double>::infinity());
     BOOST_TEST(detail::prepare_number("01", q).error() == wd::errc::syntax);
     // JSON.parse rounds 40 digits, which js_traits keeps.
     fixture<js> forty;
@@ -929,8 +933,8 @@ void integers_read_back() {
     BOOST_TEST(g.get<float>().error() == wd::errc::range);
 }
 
-// Structural equality, spec 4.3: kinds, numbers by value, strings, dates and bytes by value,
-// arrays in order, objects by key in any order.
+// Structural equality: kinds, numbers by value, strings, dates and bytes by value, arrays in
+// order, objects by key in any order.
 template <class Traits>
 void equality() {
     const std::vector<std::byte> foo = bytes_of("foo");

@@ -29,10 +29,11 @@ constexpr auto print = [](const wd::const_value& v, wd::path_view where) {
 /** Prints the document a finished parser gives, or its error. */
 void finished(wd::parser& p) {
     const wd::result<wd::document> made = p.finish();
-    std::cout << "finish: "
-              << (made.has_error()              ? made.error().message()
-                  : made->root().is_undefined() ? std::string("undefined")
-                                                : made->stringify())
+    if (made.has_error()) {
+        std::cout << "finish: " << made.error().message() << '\n';
+        return;
+    }
+    std::cout << "finish: " << (made->root().is_undefined() ? "undefined" : made->stringify())
               << '\n';
 }
 
@@ -100,7 +101,8 @@ int main() {
     // tag::bounded[]
     wd::parser stream;
     std::uint64_t count = 0;
-    if (stream.on("$[*]", [&count](wd::const_value, wd::path_view) { ++count; }).has_error() ||
+    if (stream.on("$[*]", [&count](const wd::const_value&, wd::path_view) { ++count; })
+            .has_error() ||
         stream.write("[").has_error()) {
         return 1;
     }

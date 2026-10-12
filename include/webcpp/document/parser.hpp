@@ -97,7 +97,10 @@ public:
     [[nodiscard]] std::uint64_t index(std::size_t i) const noexcept { return steps_[i].index; }
 
     /**
-     The path as normalised JSONPath: `$['items'][3]`, a key's `'` and `\` escaped.
+     The path as a selector of its place, which @ref basic_parser::on parses back: `$['items'][3]`.
+
+     A key is quoted, its `'` and `\` escaped and every other byte written as it is, control
+     characters included; so it is not RFC 9535's normalized path, which escapes those too.
 
      @return The text.
     */
@@ -211,8 +214,9 @@ public:
      Feeds the next chunk of the text, delivering each value a selector matches as it completes.
 
      @param chunk The chunk: any split of the text, down to one byte.
-     @return Success; @ref errc::syntax for malformed text, @ref errc::range for a number the
-     traits refuse, @ref errc::capacity past a limit, or the error a callback returned.
+     @return Success; @ref errc::syntax for malformed text, a second text after the first included,
+     @ref errc::range for a number the traits refuse, @ref errc::capacity past a limit, or the
+     error a callback returned.
     */
     result<void> write(std::string_view chunk) {
         if (!failure_.has_value()) {
@@ -221,15 +225,21 @@ public:
         if (ended_) {
             return end_again();
         }
-        if (chunk.size() > options_.max_bytes - consumed_) {
+        if (chunk.size() > options_.max_bytes - given_) {
             failure_ = errc::capacity;
             return failure_;
         }
+        given_ += chunk.size();
         if (chunk.empty()) {
             return {};
         }
         boost::system::error_code ec;
         const std::size_t used = json_.write_some(true, chunk.data(), chunk.size(), ec);
+        // Boost.JSON stops where a second text begins, without an error, and its next call would
+        // begin that text as a new document.
+        if (!ec && used < chunk.size()) {
+            ec = boost::json::error::extra_data;
+        }
         return settle(ec, used);
     }
 
@@ -270,6 +280,7 @@ public:
         failure_ = {};
         cause_ = {};
         consumed_ = 0;
+        given_ = 0;
         ended_ = false;
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
         thrown_ = nullptr;
@@ -307,7 +318,7 @@ public:
     */
     template <class F>
     result<void> on(std::string_view selector, F&& f)
-        requires detail::selector_callback<std::remove_cvref_t<F>, Traits, Storage>
+        requires detail::selector_callback<std::decay_t<F>, Traits, Storage>
     {
         return subscribe(selector, std::forward<F>(f), true);
     }
@@ -324,7 +335,7 @@ public:
     */
     template <class F>
     result<void> observe(std::string_view selector, F&& f)
-        requires detail::selector_callback<std::remove_cvref_t<F>, Traits, Storage>
+        requires detail::selector_callback<std::decay_t<F>, Traits, Storage>
     {
         return subscribe(selector, std::forward<F>(f), false);
     }
@@ -391,7 +402,7 @@ private:
         if (!parsed.has_value()) {
             return parsed.error();
         }
-        using callback = std::remove_cvref_t<F>;
+        using callback = std::decay_t<F>;
         detail::subscription<Traits, Storage> added;
         added.where = std::move(parsed).unsafe_value();
         added.take = take;
@@ -419,6 +430,7 @@ private:
     result<void> failure_;
     boost::system::error_code cause_;
     std::uint64_t consumed_ = 0;
+    std::uint64_t given_ = 0;
     bool ended_ = false;
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     std::exception_ptr thrown_;

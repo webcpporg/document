@@ -28,6 +28,7 @@
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -94,7 +95,10 @@ struct insertion_order {
     static constexpr std::string_view name = "insertion";
 };
 
-/** The object policy that orders keys by their code units, for canonical JSON. */
+/**
+ The object policy that orders keys by their UTF-16 code units, with either encoding, as
+ JavaScript's `sort()` and RFC 8785 do, for canonical JSON.
+*/
 struct sorted {
     /** The policy's name in the image's layout tag. */
     static constexpr std::string_view name = "sorted";
@@ -417,7 +421,8 @@ struct number_codec<boost::decimal::decimal128_t> {
 
 /**
  The number codec of `double`, for the traits @ref js_traits, with which numbers round as
- JavaScript's do, and NaN and the infinities, which only arithmetic makes, are written `null`.
+ JavaScript's do, a number past a double's range is an infinity, and NaN and the infinities are
+ written `null`.
 */
 template <>
 struct number_codec<double> {
@@ -428,8 +433,8 @@ struct number_codec<double> {
      Reads a JSON number's text, rounded to the nearest double, as `JSON.parse` does.
 
      @param json_number The text.
-     @return The value; @ref errc::range past a double's range, which `JSON.parse` makes
-     `Infinity`.
+     @return The value, an infinity past a double's range, as `JSON.parse` makes `1e400`
+     `Infinity`; @ref errc::syntax for text outside JSON's grammar.
     */
     static result<double> parse(std::string_view json_number) noexcept {
         if (!json_grammar(json_number)) {
@@ -536,7 +541,8 @@ struct number_codec<double> {
      The double nearest a number's digits.
 
      @param d The digits.
-     @return The value; @ref errc::range past a double's range.
+     @return The value, an infinity past a double's range, as JavaScript rounds it; @ref errc::range
+     for more digits than `d` holds.
     */
     static result<double> from_digits(const decimal_digits& d) noexcept {
         if (d.count > d.digits.size()) {
@@ -650,8 +656,8 @@ private:
     }
 
     /**
-     Reads text that from_chars accepts whole, rounded to the nearest double; `large` says which
-     way a value out of range lies.
+     Reads text that from_chars accepts whole, rounded to the nearest double as JavaScript rounds
+     it; `large` says which way a value out of range lies.
     */
     static result<double> read(std::string_view text, bool large) noexcept {
         double value = 0;
@@ -662,20 +668,19 @@ private:
         if (code == std::errc::result_out_of_range) {
             // Some standard libraries report a subnormal value out of range while giving it, which
             // JSON.parse keeps. Otherwise JSON.parse makes a value too small for a double zero,
-            // and one too large Infinity, which a document refuses.
+            // and one too large Infinity, whatever from_chars left in `value`.
             if (finite(value) && value != 0) {
                 return value;
             }
+            const bool negative = text.front() == '-';
             if (large) {
-                return make_error_code(errc::range);
+                constexpr double infinity = std::numeric_limits<double>::infinity();
+                return negative ? -infinity : infinity;
             }
-            return text.front() == '-' ? -0.0 : 0.0;
+            return negative ? -0.0 : 0.0;
         }
         if (code != std::errc{}) {
             return make_error_code(errc::syntax);
-        }
-        if (!finite(value)) {
-            return make_error_code(errc::range);
         }
         return value;
     }

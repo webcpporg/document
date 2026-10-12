@@ -46,7 +46,9 @@ So `+$.items[*].id+` matches the `id` of each element of `items`. A malformed se
 
 A callback takes a `wd::const_value`, the value, which it reads but cannot change, and a
 `wd::path_view`, where the value is in the text, valid during the call; `to_string()` writes it as
-normalised JSONPath. A callback returns `void` or `wd::result<void>`. The program sums the
+a selector of that place, `+$['items'][0]+`, which `on` parses back. A key's `'` and `\` are escaped
+and its other bytes written as they are, control characters included, so the text is not RFC
+9535's normalized path. A callback returns `void` or `wd::result<void>`. The program sums the
 quantities of `items` as they stream, and keeps `meta`:
 
 [source]

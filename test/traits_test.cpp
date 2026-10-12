@@ -245,15 +245,16 @@ void binary_text() {
         BOOST_TEST(parsed && *parsed != 0.0 &&
                    std::string(codec::write(*parsed).view()) == std::string(text));
     }
-    // JSON.parse makes 1e400 Infinity, which the codec refuses, and 1e-400 zero, which it keeps.
-    BOOST_TEST(codec::parse("1e400").error() == wd::errc::range);
-    BOOST_TEST(codec::parse("-1e400").error() == wd::errc::range);
+    // JSON.parse makes 1e400 Infinity and 1e-400 zero, and the codec does too.
+    constexpr double infinity = std::numeric_limits<double>::infinity();
+    BOOST_TEST(codec::parse("1e400") == infinity);
+    BOOST_TEST(codec::parse("-1e400") == -infinity);
     BOOST_TEST(codec::parse("1e-400") == 0.0);
-    BOOST_TEST(codec::parse("123456789e99999999999999999999").error() == wd::errc::range);
+    BOOST_TEST(codec::parse("123456789e99999999999999999999") == infinity);
     BOOST_TEST(codec::parse("0.000001e-99999999999999999999") == 0.0);
     BOOST_TEST(codec::parse("0e99999") == 0.0);
     BOOST_TEST(codec::parse("1.7976931348623158e308") == std::numeric_limits<double>::max());
-    BOOST_TEST(codec::parse("1.7976931348623159e308").error() == wd::errc::range);
+    BOOST_TEST(codec::parse("1.7976931348623159e308") == infinity);
     for (const std::string_view bad :
          {"", "-", "+1", "01", "1.", ".5", "1e", "1e+", "inf", "nan", "0x10", "1 ", "--1"}) {
         BOOST_TEST(codec::parse(bad).error() == wd::errc::syntax);
@@ -262,7 +263,10 @@ void binary_text() {
     huge.count = 1;
     huge.digits[0] = '1';
     huge.point = 400;
-    BOOST_TEST(codec::from_digits(huge).error() == wd::errc::range);
+    BOOST_TEST(codec::from_digits(huge) == infinity);
+    huge.negative = true;
+    BOOST_TEST(codec::from_digits(huge) == -infinity);
+    huge.negative = false;
     huge.point = -400;
     BOOST_TEST(codec::from_digits(huge) == 0.0);
 }

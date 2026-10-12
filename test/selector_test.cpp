@@ -8,7 +8,8 @@
 // them; a value inside another is delivered first; a scalar when its token ends; a callback's
 // failure, or with exceptions its exception, fails the parser; a callback reads and cannot write;
 // a million elements under on stay within 64 KB of image; the deliveries are the same however the
-// text is split; a malformed selector is errc::type; and a path is written as normalised JSONPath.
+// text is split; a malformed selector is errc::type; and a path is written as a selector of its
+// place, which parses back.
 
 #include <webcpp/document/parser.hpp>
 #include <webcpp/document/stringify.hpp>
@@ -221,6 +222,28 @@ void a_failing_callback_fails_the_parser() {
     BOOST_TEST(q.finish().error() == mine);
 }
 
+// A callback that is a function, given by its name: one that returns nothing, and one that refuses
+// every value.
+void ignore_value(const wd::const_value& /*v*/, wd::path_view /*where*/) {}
+
+wd::result<void> refuse_value(const wd::const_value& /*v*/, wd::path_view /*where*/) {
+    return wd::errc::type;
+}
+
+// A function is a callback, by its name or its address, as a lambda is.
+void a_function_is_a_callback() {
+    wd::parser p;
+    BOOST_TEST(p.observe("$[*]", ignore_value).has_value());
+    BOOST_TEST(p.on("$[1]", refuse_value).has_value());
+    BOOST_TEST(p.write("[1,").has_value());
+    BOOST_TEST(p.write("2]").error() == wd::errc::type);
+
+    wd::parser q;
+    BOOST_TEST(q.on("$", &ignore_value).has_value());
+    BOOST_TEST(q.write("[3]").has_value());
+    BOOST_TEST_EQ(finished(q), "");
+}
+
 // The callback's parameter is a read-only handle, which has no set.
 void a_callback_cannot_change_the_document() {
     wd::parser p;
@@ -331,8 +354,9 @@ void a_malformed_selector() {
     BOOST_TEST_EQ(calls, 0U);
 }
 
-// A path is written as normalised JSONPath, a key's quote and backslash escaped; its steps are the
-// text's, which on does not renumber.
+// A path is written as a selector of its place, a key's quote and backslash escaped and every other
+// byte as it is, which parses back and matches that place; its steps are the text's, which on does
+// not renumber.
 void paths_as_jsonpath() {
     std::vector<std::string> paths;
     wd::parser p;
@@ -350,6 +374,9 @@ void paths_as_jsonpath() {
         BOOST_TEST_EQ(paths[1], "$['it\\'s'][1]['\xc3\xa9']");
         BOOST_TEST_EQ(paths[2], R"($['it\'s'][1][''])");
     }
+    for (const std::string& path : paths) {
+        BOOST_TEST(wd::detail::selector::parse(path).has_value());
+    }
     const wd::path_view root;
     BOOST_TEST_EQ(root.size(), 0U);
     BOOST_TEST_EQ(root.to_string(), "$");
@@ -365,6 +392,27 @@ void paths_as_jsonpath() {
     (void)q.finish();
     BOOST_TEST((indices == std::vector<std::uint64_t>{0, 1, 2}));
     BOOST_TEST((keys == std::vector<std::string>{"list", "list", "list"}));
+}
+
+// A path with a key of a newline, a quote, a backslash and U+0001 is written with the quote and
+// the backslash escaped and the rest as it is, and parses back as a selector of that key.
+void a_path_parses_back() {
+    std::vector<std::string> paths;
+    wd::parser p;
+    const auto subscribed = p.observe("$.*", [&paths](const wd::const_value&, wd::path_view where) {
+        paths.push_back(where.to_string());
+    });
+    BOOST_TEST(subscribed.has_value());
+    BOOST_TEST(p.write(R"({"a\n'\\\u0001":1})").has_value());
+    (void)p.finish();
+    if (!BOOST_TEST_EQ(paths.size(), 1U)) {
+        return;
+    }
+    BOOST_TEST_EQ(paths[0], "$['a\n\\'\\\\\x01']");
+    const auto parsed = wd::detail::selector::parse(paths[0]);
+    if (BOOST_TEST(parsed.has_value()) && BOOST_TEST_EQ(parsed->steps().size(), 1U)) {
+        BOOST_TEST_EQ(parsed->steps()[0].key, "a\n'\\\x01");
+    }
 }
 
 // Selectors are kept across reset, for the next text.
@@ -419,11 +467,13 @@ int main() {
     nested_first();
     scalars_when_their_token_ends();
     a_failing_callback_fails_the_parser();
+    a_function_is_a_callback();
     a_callback_cannot_change_the_document();
     a_million_elements_in_bounded_memory();
     selectors_and_splits();
     a_malformed_selector();
     paths_as_jsonpath();
+    a_path_parses_back();
     selectors_survive_reset();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     a_throwing_callback();

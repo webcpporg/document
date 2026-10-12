@@ -57,7 +57,7 @@ The header says what the bytes after it are, in the byte order of the machine th
 | 16 | 4 | the `BOOST_VERSION` of the writer
 | 20 | 4 | the layout tag: a hash of the sizes and alignments of the tree's node, its container and the heap, and of the traits (<<document-traits-identity>>)
 | 24 | 8 | the size of the image
-| 32 | 8 | the offset of the tree's container
+| 32 | 8 | the offset of the tree's container, the heap's first block, the same in every image
 | 40 | 8 | the id the next node takes; ids are never reused
 | 48 | 16 | zero
 |===
@@ -68,7 +68,9 @@ The header says what the bytes after it are, in the byte order of the machine th
 `wd::open` and `wd::from_image` refuse bytes shorter than the header or than the size it states,
 and another magic, with `errc::not_a_document`; and an image of another format version, byte order,
 Boost version or layout tag, with `errc::incompatible_document`. A mismatch is refused, never read
-or converted. Then the heap's own check of its structure runs.
+or converted. Then the heap's own check of its structure runs, and a container offset other than
+the heap's first block, or a pointer to the root that leaves the image, is `errc::not_a_document`
+too, refused before anything is read through it.
 
 [source]
 ----

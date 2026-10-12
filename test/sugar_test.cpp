@@ -5,7 +5,8 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // The sugar that throws, built with exceptions: assignment to a handle stores as set does and
-// never rebinds it, as, as_string and as_bool read as get does, a default-constructed document
+// never rebinds it, so std::swap of two handles writes through them, as, as_string and as_bool
+// read as get does, a default-constructed document
 // holds null, and a copy is equal and independent. Each member that fails throws the exception of
 // the code the core function returns for the same call, and changes nothing.
 
@@ -196,6 +197,19 @@ void assignment_never_rebinds() {
     BOOST_TEST_EQ(doc.root().size(), 3U);
 }
 
+// Handles are not regular values: std::swap assigns through them, so both places end up holding
+// the second value, and the handles still name their own places. std::sort would write likewise.
+void swap_writes_through_handles() {
+    wd::document doc = document_of(wd::object{{"a", 1}, {"b", 2}});
+    wd::value x = doc["a"];
+    wd::value y = doc["b"];
+    std::swap(x, y);
+    BOOST_TEST_EQ(wd::stringify(doc), R"({"a":2,"b":2})");
+    BOOST_TEST(x == doc["a"]);
+    BOOST_TEST_EQ(x.as<std::int64_t>(), 2);
+    BOOST_TEST_EQ(y.as<std::int64_t>(), 2);
+}
+
 // An external document's buffer cannot grow: the assignment throws capacity_error and changes
 // nothing.
 void an_external_document_throws_capacity_error() {
@@ -267,6 +281,7 @@ int main() {
     as_string_reads_utf8_strings_only();
     as_bool_of_another_kind_throws_type_error();
     assignment_never_rebinds();
+    swap_writes_through_handles();
     an_external_document_throws_capacity_error();
     a_default_constructed_document_holds_null();
     a_copy_is_equal_and_independent();

@@ -100,7 +100,7 @@ bool core() {
         std::cout << key << ": " << value.stringify() << '\n';
     }
     // for (const tag of user.tags)
-    for (wd::const_value tag : user["tags"]) {
+    for (const wd::const_value tag : user["tags"]) {
         std::cout << "tag " << tag.stringify() << '\n';
     }
     // end::iteration[]
@@ -113,8 +113,8 @@ void sugar() {
     wd::document doc = wd::parse_or_throw(R"({"n":1,"user":{"name":"Ada"}})");
     doc["n"] = 2;                      // doc.n = 2
     doc["user"]["nick"] = "Countess";  // creates the member
-    std::int64_t n = doc["n"].as<std::int64_t>();
-    std::string_view name = doc["user"]["name"].as_string();
+    const auto n = doc["n"].as<std::int64_t>();
+    const std::string_view name = doc["user"]["name"].as_string();
     std::cout << n << ' ' << name << '\n';
 
     // Assignment writes at the handle's place, a deep copy, and never rebinds the handle.
@@ -140,8 +140,8 @@ void sugar() {
         std::cout << "SyntaxError: " << e.what() << " at " << e.offset() << '\n';
     }
 
-    wd::document empty;       // holds null
-    wd::document twin = doc;  // an equal and independent copy
+    const wd::document empty;  // holds null
+    wd::document twin = doc;   // an equal and independent copy
     twin["n"] = 3;
     std::cout << empty.stringify() << ' ' << doc.stringify() << ' ' << twin.stringify() << '\n';
     // end::sugar[]
@@ -158,7 +158,7 @@ bool differences() {
     show("doc.list['0']", doc["list"]["0"]);  // JavaScript: 10, an index written as a key
     show("doc.o[3]", doc["o"][3]);            // JavaScript: "three", a key written as an index
     show("doc.z", doc["z"]);                  // -0 is 0, as JSON.stringify writes it
-    say("JSON.parse('\"\\ud800\"') refused", wd::parse(R"("\ud800")").error() == wd::errc::syntax);
+    say(R"(JSON.parse('"\ud800"') refused)", wd::parse(R"("\ud800")").error() == wd::errc::syntax);
     // end::differences[]
     return true;
 }

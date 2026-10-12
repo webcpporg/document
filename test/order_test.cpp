@@ -6,8 +6,9 @@
 
 // The order of an object's keys through the public handles, with keys that look like array indices
 // and one that holds a zero byte: JavaScript's order, with UTF-8 and UTF-16 keys, insertion order
-// and sorted order; an assignment keeps a key's place, and a key erased and created again takes the
-// place its policy gives a new one; `contains` and `erase` find exactly the key asked.
+// and sorted order, by UTF-16 code units whatever the encoding; an assignment keeps a key's place,
+// and a key erased and created again takes the place its policy gives a new one; `contains` and
+// `erase` find exactly the key asked.
 
 #include <webcpp/document/document.hpp>
 
@@ -253,6 +254,42 @@ void in_policy_order(const key_list& order) {
     literals_and_assign_in_policy_order<Traits>(order);
 }
 
+// Sorted keys follow their UTF-16 code units, as JavaScript's sort and RFC 8785 order them, with
+// UTF-8 keys too, whose bytes sort as code points: U+1F600, the surrogate pair D83D DE00, comes
+// after U+D7FF and before U+E000 and U+FFFF.
+template <class Traits>
+void sorted_by_utf16_code_units() {
+    constexpr std::array<std::string_view, 6> created{
+        "\xef\xbf\xbf"sv,       // U+FFFF
+        "a\xef\xbf\xbf"sv,      // a, U+FFFF
+        "\xf0\x9f\x98\x80"sv,   // U+1F600
+        "\xee\x80\x80"sv,       // U+E000
+        "a\xf0\x9f\x98\x80"sv,  // a, U+1F600
+        "\xed\x9f\xbf"sv,       // U+D7FF
+    };
+    const std::vector<std::string> expected{
+        "a\xf0\x9f\x98\x80", "a\xef\xbf\xbf", "\xed\x9f\xbf",
+        "\xf0\x9f\x98\x80",  "\xee\x80\x80",  "\xef\xbf\xbf",
+    };
+    auto made = wd::basic_document<Traits>::create();
+    if (!BOOST_TEST(made.has_value())) {
+        return;
+    }
+    wd::basic_document<Traits>& doc = *made;
+    BOOST_TEST(doc.root().set(wd::object()).has_value());
+    for (std::size_t i = 0; i < created.size(); ++i) {
+        BOOST_TEST(doc[created.at(i)].set(i).has_value());
+    }
+    BOOST_TEST(keys_of(doc) == expected);
+    for (const std::string_view key : created) {
+        BOOST_TEST(doc.root().contains(key));
+    }
+    BOOST_TEST(!doc.root().contains("\xef\xbf"));
+    BOOST_TEST(doc.root().erase("\xf0\x9f\x98\x80").value());
+    BOOST_TEST(!doc.root().contains("\xf0\x9f\x98\x80"));
+    BOOST_TEST_EQ(doc.root().size(), created.size() - 1);
+}
+
 }  // namespace
 
 int main() {
@@ -261,5 +298,7 @@ int main() {
     in_policy_order<insertion_traits>(keys_set);
     in_policy_order<sorted_traits>(sorted_keys);
     in_policy_order<sorted16_traits>(sorted_keys);
+    sorted_by_utf16_code_units<sorted_traits>();
+    sorted_by_utf16_code_units<sorted16_traits>();
     return boost::report_errors();
 }

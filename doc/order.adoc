@@ -38,8 +38,8 @@ The traits' `object` chooses the order:
 | the order each key was created, the text's order for a parsed object, whatever the key
 
 | `wd::sorted`
-| by the keys' code units, bytes for UTF-8 and UTF-16 code units for UTF-16: for canonical JSON,
-  signatures and hashes
+| by the keys' UTF-16 code units, with either encoding, as JavaScript's `sort()` and RFC 8785 order
+  them: for canonical JSON, signatures and hashes
 |===
 
 A repeated key in parsed text is accepted as `JSON.parse` accepts it: the last value, in the first

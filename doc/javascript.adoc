@@ -134,9 +134,11 @@ says it does not:
 | What is stored is what was sent (<<document-numbers>>).
 
 | `JSON.parse` of 40 digits rounds, and of `1e999` gives `Infinity`
-| refused with `errc::range` by the default traits; `js_traits` rounds 40 digits and refuses
-  `1e999`
-| A document holds no number it cannot write back.
+| the default traits refuse 40 digits with `errc::range`, and store `1e999` exactly, which a
+  JavaScript peer reads as `Infinity`; `js_traits` round 40 digits and make `1e999` `Infinity`,
+  written `null`, as JavaScript does
+| The default traits keep what was sent; `js_traits` read it as JavaScript does
+  (<<document-numbers-refused>>).
 
 | `-0`
 | `0`

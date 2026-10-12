@@ -7,7 +7,8 @@
 // A document's image: copied to another address and opened there, in place or as an owned copy
 // that grows; formatted into a buffer; refused when it is no image or one of other traits; the same
 // bytes for the same operations at any address; no byte left of an erased value; an owned image
-// shrunk to its content; an external buffer that is full; and a buffer that is not 16-aligned.
+// shrunk to its content; an external buffer that is full; a buffer that is not 16-aligned; and a
+// header whose container offset lies.
 
 #include <webcpp/document/document.hpp>
 
@@ -16,10 +17,12 @@
 #include "require.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <new>
 #include <span>
 #include <string>
 #include <string_view>
@@ -47,6 +50,28 @@ public:
 
 private:
     std::vector<std::byte> raw_;
+    std::span<std::byte> bytes_;
+};
+
+// Exactly `size` bytes at a 16-aligned address, so that a sanitizer sees a read past them.
+class exact_buffer {
+public:
+    explicit exact_buffer(std::span<const std::byte> bytes)
+        : bytes_(static_cast<std::byte*>(::operator new(bytes.size(), std::align_val_t{16})),
+                 bytes.size()) {
+        std::ranges::copy(bytes, bytes_.begin());
+    }
+
+    exact_buffer(const exact_buffer&) = delete;
+    exact_buffer& operator=(const exact_buffer&) = delete;
+    exact_buffer(exact_buffer&&) = delete;
+    exact_buffer& operator=(exact_buffer&&) = delete;
+
+    ~exact_buffer() { ::operator delete(bytes_.data(), std::align_val_t{16}); }
+
+    [[nodiscard]] std::span<std::byte> bytes() const { return bytes_; }
+
+private:
     std::span<std::byte> bytes_;
 };
 
@@ -296,6 +321,37 @@ void a_misaligned_buffer() {
     }
 }
 
+// The container is the heap's first block, at one offset in every image: a header that names
+// another, inside the image or not, is refused before anything is read there.
+void a_lying_container_offset() {
+    wd::document doc = make_document();
+    BOOST_TEST(doc.root().set(wd::object{{"a", wd::array{1, 2, 3}}, {"b", "hello"}}).has_value());
+    BOOST_TEST(doc.shrink_to_fit().has_value());
+    const std::span<const std::byte> image = doc.image();
+    constexpr std::size_t at = offsetof(wd::image_header, container);
+    std::uint64_t container = 0;
+    std::memcpy(&container, image.data() + at, sizeof container);
+    BOOST_TEST_EQ(container, wd::detail::container_offset);
+
+    const exact_buffer intact(image);
+    auto opened = wd::open(intact.bytes());
+    BOOST_TEST(opened.has_value() && same(*opened, doc));
+    const std::array<std::uint64_t, 5> lies{
+        std::uint64_t{image.size() - 64},  // the end of the image
+        std::uint64_t{64},                 // the heap's own header
+        container + 16,
+        container - 16,
+        std::uint64_t{0},  // the image's header
+    };
+    for (const std::uint64_t lie : lies) {
+        const exact_buffer copy(image);
+        std::memcpy(copy.bytes().data() + at, &lie, sizeof lie);
+        BOOST_TEST(wd::open(copy.bytes()).error() == wd::errc::not_a_document);
+        BOOST_TEST(wd::from_image(std::span<const std::byte>(copy.bytes())).error() ==
+                   wd::errc::not_a_document);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -306,5 +362,6 @@ int main() {
     shrink_to_fit();
     an_external_document_says_full();
     a_misaligned_buffer();
+    a_lying_container_offset();
     return boost::report_errors();
 }

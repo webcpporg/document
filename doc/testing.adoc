@@ -69,13 +69,13 @@ document's tests are lightweight_test programs, one per subject, under `test/`, 
 
 | `order`
 | The key order through the handles, with keys that look like array indices and one that holds a
-  zero byte, under each object policy and both encodings: assignment keeps a key's place, and a
-  key erased and created again takes a new key's.
+  zero byte, under each object policy and both encodings, sorted keys by UTF-16 code units with
+  either: assignment keeps a key's place, and a key erased and created again takes a new key's.
 
 | `image`
 | Images copied to another address and opened there, formatted, refused, the same for the same
-  operations, no byte left of an erased secret, shrunk, a full external buffer, and a buffer that
-  is not 16-aligned.
+  operations, no byte left of an erased secret, shrunk, a full external buffer, a buffer that is
+  not 16-aligned, and a header whose container offset lies.
 
 | `stringify`
 | `stringify` and `stringify_to` against Node's text: indentation, empty containers, escapes,
@@ -92,13 +92,14 @@ document's tests are lightweight_test programs, one per subject, under `test/`, 
 | `streaming`
 | Every text of the corpus split at every byte, and written one byte at a time, gives the document
   a whole parse gives; a syntax error's offset is the same however the text is split; a failed
-  parser stays failed and a finished one takes no more text; `max_bytes` counts every chunk; an
-  external parser.
+  parser stays failed and a finished one takes no more text, nor a second text after its first;
+  `max_bytes` counts every chunk; an external parser.
 
 | `selector`
 | Deliveries by `on` and `observe`, nested values first, scalars when their token ends, the root,
-  a callback that fails or throws, a callback that cannot write, a million elements under `on`
-  within 64 KB of image, and the same deliveries however the text is split.
+  a callback that fails or throws, a function as a callback, a callback that cannot write, a
+  million elements under `on` within 64 KB of image, the same deliveries however the text is
+  split, and paths that parse back as selectors.
 
 | `array`
 | Each array method against Node's results, with JavaScript's index rules, on empty arrays and on
@@ -106,9 +107,10 @@ document's tests are lightweight_test programs, one per subject, under `test/`, 
   buffers of every size, which completes or changes nothing.
 
 | `sugar`
-| Built with exceptions: assignment stores as `set` does and never rebinds, `as`, `as_string` and
-  `as_bool` read as `get` does, a default-constructed document holds `null`, a copy is equal and
-  independent, and each failure throws the exception of the core's code and changes nothing.
+| Built with exceptions: assignment stores as `set` does and never rebinds, so `std::swap` of two
+  handles writes through them, `as`, `as_string` and `as_bool` read as `get` does, a
+  default-constructed document holds `null`, a copy is equal and independent, and each failure
+  throws the exception of the core's code and changes nothing.
 
 | `no_exceptions`
 | Built without exceptions, a test of the compiler's diagnostics: each member of the sugar called

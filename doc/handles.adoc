@@ -136,6 +136,12 @@ A copy reads its source before it changes anything, so a value may be copied int
 subtree. Between documents, copies need the same traits, and any storage. `doc.clone()` copies a
 whole document into a new owned one, as `structuredClone` would.
 
+A `wd::value` is not a regular value: with exceptions, `x = y` writes where `x` points, and
+never makes it point elsewhere (<<document-exceptions>>). It must not be swapped or sorted:
+`std::swap(x, y)` assigns through both handles, leaving both places holding `y`'s value, and
+`std::sort` over a range of handles writes the document's values the same way. Read the values
+out, sort them, and set them back.
+
 [#document-handles-iteration]
 === Iteration and equality
 

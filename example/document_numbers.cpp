@@ -32,7 +32,8 @@ template <class T>
 void read(std::string_view label, const wd::result<T>& r) {
     std::cout << label << ": ";
     if (r.has_value()) {
-        std::cout << *r << '\n';
+        // The unary plus prints an 8-bit integer as a number, not as a character.
+        std::cout << +*r << '\n';
     } else {
         std::cout << r.error().message() << '\n';
     }
@@ -53,7 +54,8 @@ int main() {
     constexpr std::string_view forty_digits = "1234567890123456789012345678901234567890";
     parsed("40 digits, default_traits", wd::parse(forty_digits));
     parsed("40 digits, js_traits     ", wd::parse<wd::js_traits>(forty_digits));
-    parsed("1e400, js_traits         ", wd::parse<wd::js_traits>("1e400"));
+    parsed("1e999, default_traits    ", wd::parse("1e999"));
+    parsed("1e999, js_traits         ", wd::parse<wd::js_traits>("1e999"));
     // end::refused[]
 
     // tag::read[]

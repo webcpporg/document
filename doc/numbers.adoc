@@ -68,9 +68,11 @@ and fits `std::int64_t`, so it writes back as Node writes the double.
 [#document-numbers-refused]
 === What each refuses
 
-The default traits refuse a number they cannot store exactly; `js_traits` rounds as `JSON.parse`
-does, and refuse only a number past a double's range, which `JSON.parse` would make `Infinity`, a
-value JSON cannot write:
+The default traits refuse a number they cannot store exactly: more than 34 significant digits, or
+an exponent past the range of `decimal128_t`, beyond about `1e6144`. Within it they store every
+number exactly, `1e999` included, which a JavaScript peer reads as `Infinity`. `js_traits` refuse
+no number: they round as `JSON.parse` does, and a number past a double's range is `Infinity`, as
+`JSON.parse` makes it, which `stringify` writes `null`, as `JSON.stringify` does:
 
 [source]
 ----
@@ -79,12 +81,12 @@ include::{examples}/document_numbers.cpp[tag=refused,indent=0]
 
 [listing]
 ----
-include::{examples}/document_numbers.expected[lines=3..5]
+include::{examples}/document_numbers.expected[lines=3..6]
 ----
 
 `set` refuses a NaN or an infinity of a Boost.Decimal type with `errc::range`. A double's NaN and
-infinities, which only arithmetic makes, are stored under `js_traits`, and written `null`, as
-JavaScript writes them.
+infinities, which arithmetic makes, and a parse past a double's range, are stored under
+`js_traits`, and written `null`, as JavaScript writes them.
 
 [#document-numbers-reading]
 === Reading a number
@@ -101,7 +103,7 @@ include::{examples}/document_numbers.cpp[tag=read,indent=0]
 
 [listing]
 ----
-include::{examples}/document_numbers.expected[lines=6..11]
+include::{examples}/document_numbers.expected[lines=7..12]
 ----
 
 A double is read or set only when the traits' number type is one: the default traits have no
@@ -121,5 +123,5 @@ include::{examples}/document_numbers.cpp[tag=arithmetic,indent=0]
 
 [listing]
 ----
-include::{examples}/document_numbers.expected[lines=12..13]
+include::{examples}/document_numbers.expected[lines=13..14]
 ----

@@ -271,7 +271,7 @@ void a_new_tree_holds_null() {
     BOOST_TEST_EQ(h.layout, detail::layout_tag<traits>());
     BOOST_TEST_EQ(h.size, f.r.size());
     BOOST_TEST_EQ(h.next_id, 2U);
-    BOOST_TEST_GE(h.container, detail::header_bytes);
+    BOOST_TEST_EQ(h.container, detail::container_offset);
     BOOST_TEST(wd::check_image(image_of(f.r), detail::layout_tag<traits>()).has_value());
 }
 
@@ -357,7 +357,7 @@ void insertion_and_sorted_orders() {
 }
 
 // U+FF61 comes before U+1F600 in UTF-8's bytes and after it in UTF-16's code units, whose order
-// sorted keys follow.
+// sorted keys follow with either encoding.
 void sorted_by_code_units() {
     const std::string_view halfwidth = "\xef\xbd\xa1";
     const std::string_view emoji = "\xf0\x9f\x98\x80";
@@ -367,7 +367,7 @@ void sorted_by_code_units() {
         BOOST_TEST(f.t.set_member(1, emoji, integer<sorted_traits>(1)).has_value());
         BOOST_TEST(f.t.set_member(1, halfwidth, integer<sorted_traits>(2)).has_value());
         BOOST_TEST(
-            (keys(f.t, 1) == std::vector<std::string>{std::string(halfwidth), std::string(emoji)}));
+            (keys(f.t, 1) == std::vector<std::string>{std::string(emoji), std::string(halfwidth)}));
     }
     {
         fixture<sorted16_traits> f;

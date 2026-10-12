@@ -14,12 +14,14 @@
 #include <webcpp/document/stringify.hpp>
 
 #include <boost/core/lightweight_test.hpp>
+#include <boost/json/error.hpp>
 
 #include "require.hpp"
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -134,9 +136,14 @@ void numbers_at_their_edges() {
     for (const row& r : js_rows) {
         BOOST_TEST_EQ(reparse<wd::js_traits>(r.text), r.written);
     }
-    // JSON.parse reads 1e400 as Infinity, which JSON.stringify writes null; the double's codec
-    // refuses it as out of range.
-    BOOST_TEST(refusal<wd::js_traits>("[1e400,-1e400]") == wd::errc::range);
+    // JSON.parse reads 1e400 as Infinity, which JSON.stringify writes null, and js_traits does too.
+    BOOST_TEST_EQ(reparse<wd::js_traits>("[1e400,-1e400,1e999]"), "[null,null,null]");
+    const auto infinite = wd::parse<wd::js_traits>("[1e400,-1e400]");
+    if (BOOST_TEST(infinite.has_value())) {
+        BOOST_TEST((*infinite)[0].is_number());
+        BOOST_TEST((*infinite)[0].get<double>() == std::numeric_limits<double>::infinity());
+        BOOST_TEST((*infinite)[1].get<double>() == -std::numeric_limits<double>::infinity());
+    }
     BOOST_TEST(parsed("9223372036854775807").root().is_integer());
     BOOST_TEST_EQ(parsed("-9223372036854775808").root().get<std::int64_t>().value(), INT64_MIN);
 }
@@ -187,17 +194,25 @@ void a_syntax_error_has_its_offset() {
     BOOST_TEST(q.finish().error() == wd::errc::syntax);
     BOOST_TEST_EQ(q.offset(), 4U);
     BOOST_TEST(q.cause());
+
+    // A second text after the first is extra data, where it begins.
+    wd::parser r;
+    BOOST_TEST(r.write("1 2").error() == wd::errc::syntax);
+    BOOST_TEST_EQ(r.offset(), 2U);
+    BOOST_TEST(r.cause() == boost::json::error::extra_data);
+    BOOST_TEST(refusal("1 2") == wd::errc::syntax);
+    BOOST_TEST(refusal<wd::js_traits>(R"({"a":1}{"b":2})") == wd::errc::syntax);
 }
 
 // A number past the default traits is errc::range, where JavaScript rounds or overflows; with
-// js_traits it is the double JavaScript reads.
+// js_traits it is the double JavaScript reads, Infinity past a double's range.
 void numbers_past_the_traits() {
     BOOST_TEST(refusal("1e999999999999") == wd::errc::range);
     BOOST_TEST(refusal("12345678901234567890123456789012345") == wd::errc::range);
     BOOST_TEST(refusal("[1,123456789012345678901234567890123456789]") == wd::errc::range);
     BOOST_TEST_EQ(reparse<wd::js_traits>("12345678901234567890123456789012345"),
                   "1.234567890123457e+34");
-    BOOST_TEST(refusal<wd::js_traits>("1e999999999999") == wd::errc::range);
+    BOOST_TEST_EQ(reparse<wd::js_traits>("[1e999999999999,-1e999999999999]"), "[null,null]");
     BOOST_TEST_EQ(reparse("1234567890123456789012345678901234"),
                   "1.234567890123456789012345678901234e+33");
 }
@@ -348,6 +363,12 @@ void parse_or_throw_throws() {
     } catch (const wd::syntax_error& e) {
         BOOST_TEST_EQ(e.offset(), 3U);
         BOOST_TEST(e.code() == wd::errc::syntax);
+    }
+    try {
+        (void)wd::parse_or_throw("1 2");
+        BOOST_ERROR("1 2 was accepted");
+    } catch (const wd::syntax_error& e) {
+        BOOST_TEST_EQ(e.offset(), 2U);
     }
     BOOST_TEST_THROWS((void)wd::parse_or_throw("12345678901234567890123456789012345"),
                       wd::range_error);

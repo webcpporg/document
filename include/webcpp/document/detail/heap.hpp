@@ -58,6 +58,18 @@ using heap = boost::interprocess::rbtree_best_fit<no_mutexes, pointer<void>, 16>
 inline constexpr std::uint64_t header_bytes = 64;
 
 /**
+ The offset from an image's start of the first block its heap hands out, the same in every image:
+ the header, the heap's own header and as many bytes again, which the region reserves after it,
+ rounded up to the heap's alignment, then the block's size word.
+
+ Tip: it repeats `rbtree_best_fit`'s layout, which the image's Boost version pins.
+*/
+inline constexpr std::uint64_t first_block_offset =
+    header_bytes +
+    (((2 * sizeof(heap)) + heap::Alignment - 1) / heap::Alignment * heap::Alignment) +
+    heap::PayloadPerAllocation + sizeof(heap::size_type);
+
+/**
  The allocator of the tree's container: it allocates in the heap, zeroes each block before it
  hands it out and before it frees it, and reports an allocation that fails through
  `boost::throw_exception`, since every operation finds its room first and such a failure is a bug.
@@ -435,7 +447,10 @@ private:
         return *std::launder(reinterpret_cast<heap*>(data_ + header_bytes));
     }
 
-    /** Builds an empty heap after the header of `size` zeroed bytes. */
+    /**
+     Builds an empty heap after the header of `size` zeroed bytes, its first block where
+     @ref first_block_offset says.
+    */
     static void make_heap(std::byte* bytes, std::uint64_t size) noexcept {
         new (bytes + header_bytes) heap(size - header_bytes, sizeof(heap));
     }

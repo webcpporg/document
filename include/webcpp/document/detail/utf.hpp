@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string_view>
 
 namespace webcpp::document::detail {
@@ -102,6 +103,33 @@ inline bool valid_utf8(std::string_view text) noexcept {
         i += lead.length;
     }
     return true;
+}
+
+/**
+ The first UTF-16 code unit of the character UTF-8 text starts with: a high surrogate for one past
+ U+FFFF; nothing when the text does not start with a valid character.
+*/
+inline std::optional<char16_t> first_utf16_unit(std::string_view utf8) noexcept {
+    if (utf8.empty()) {
+        return std::nullopt;
+    }
+    const utf8_lead lead = lead_of(byte_at(utf8, 0));
+    if (lead.length == 0 || utf8.size() < lead.length ||
+        (lead.length > 1 && !continuation(byte_at(utf8, 1), lead.low, lead.high))) {
+        return std::nullopt;
+    }
+    std::uint32_t code_point =
+        byte_at(utf8, 0) & (0xffU >> (lead.length == 1 ? 1 : lead.length + 1));
+    for (std::size_t k = 1; k < lead.length; ++k) {
+        if (!continuation(byte_at(utf8, k))) {
+            return std::nullopt;
+        }
+        code_point = (code_point << 6U) | (byte_at(utf8, k) & 0x3fU);
+    }
+    if (code_point < 0x10000) {
+        return static_cast<char16_t>(code_point);
+    }
+    return static_cast<char16_t>(0xd800 + ((code_point - 0x10000) >> 10U));
 }
 
 /** JavaScript's `length` of valid UTF-8 text: its count of UTF-16 code units. */

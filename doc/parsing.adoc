@@ -45,6 +45,24 @@ passed, and the revivers:
 | Whether text of the traits' bytes policy becomes bytes (<<document-strings-bytes>>).
 |===
 
+[#document-parsing-memory]
+=== Memory per value
+
+Every value of a document is a node of the image's tree, and a node takes 192 bytes of the image
+whatever it holds: a number, `true`, `null`, an empty string, an empty array or object alike. A
+string's bytes, and a key's, take a block of their own besides: 48 bytes for a string of 8 bytes,
+112 for one of 100. So `"abcdefgh"` takes 240 bytes, and `{"k":0}`, an object and a member with
+its key, 432. These are the image's sizes on every target, measured, as an image is the same
+bytes everywhere (<<document-images>>).
+
+A short value costs far more in the image than in its text. Measured, 2 MB of text, `[0,0,...]`
+with 1,048,576 zeros, makes an image of 268 MB, 128 times the text, which `shrink_to_fit()`
+brings to 201 MB; and while an owned image grows, its old and new buffers are held at once. The
+default `max_document_bytes`, 1 GiB, is reached by 11 MB of such text, which a native release
+build parses for 9 seconds with 2.2 GB resident before it fails. *For input from the network, set
+`max_document_bytes`* to what the program can afford, and `max_bytes` with it: a parse past either
+fails with `errc::capacity`.
+
 [#document-parsing-chunks]
 === In chunks
 
@@ -76,9 +94,12 @@ consumed, which after a syntax error is the offset where it was found, the same 
 was split, and `cause()` is the code of Boost.JSON's parser behind it. A number the traits refuse
 is `errc::range` (<<document-numbers-refused>>), and a limit passed `errc::capacity`.
 
-A parser that failed stays failed: every later `write` and `finish` returns the same error, until
-`reset`. A finished parser takes no more text, which is `errc::syntax`, until `reset`. And
-`max_bytes` counts every chunk written, not each one alone:
+A parser reads one text: anything but whitespace after it is `errc::syntax`, whose `cause()` is
+Boost.JSON's `extra_data`, at the offset where the second text begins, whether it comes in the same
+chunk or a later one, so `"1 2"` and `"[1] "` then `"[2]"` are refused, and no selector sees the
+second text. A parser that failed stays failed: every later `write` and `finish` returns the same
+error, until `reset`. A finished parser takes no more text, which is `errc::syntax`, until `reset`.
+And `max_bytes` counts every chunk written, not each one alone:
 
 [source]
 ----

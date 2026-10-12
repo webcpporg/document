@@ -731,6 +731,10 @@ private:
  included. Assignment to a handle writes to its place, with exceptions only: it never rebinds the
  handle.
 
+ So a handle is not a regular value, and must not be swapped or sorted: `std::swap(x, y)` assigns
+ through both, leaving both places holding `y`'s value, and `std::sort` over handles writes the
+ document's values the same way.
+
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
  @see "Handles", in the guide.
@@ -854,8 +858,8 @@ public:
     }
 
     // The source's keys and ids are staged on the process heap, whose exhaustion ends the program,
-    // as the library tolerates; the source is taken by value, as every handle is passed.
-    // NOLINTBEGIN(bugprone-exception-escape,performance-unnecessary-value-param)
+    // as the library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
     /**
      `Object.assign(v, source)`: sets each member of `source` here, in its order, as one operation.
 
@@ -867,7 +871,7 @@ public:
      @ref errc::capacity when there is no room.
     */
     template <class S>
-    [[nodiscard]] result<void> assign_from(basic_const_value<Traits, S> source) noexcept {
+    [[nodiscard]] result<void> assign_from(const basic_const_value<Traits, S>& source) noexcept {
         const detail::node<Traits>* target = this->resolve();
         if (target == nullptr || target->kind != webcpp::document::kind::object) {
             return errc::type;
@@ -899,14 +903,15 @@ public:
         return writable_tree()->set_members(target->id, entries);
     }
 
-    // NOLINTEND(bugprone-exception-escape,performance-unnecessary-value-param)
+    // NOLINTEND(bugprone-exception-escape)
 
     /**
      `Array.prototype.push`: appends each value.
 
      @tparam T The values' types, each settable.
      @param v The values.
-     @return The new length; @ref errc::type for any other kind than an array.
+     @return The new length; @ref errc::type for any other kind than an array, @ref errc::capacity
+     when there is no room, and the errors of @ref set for a value.
     */
     template <class... T>
     [[nodiscard]] result<std::uint64_t> push(const T&... v) noexcept
@@ -933,7 +938,8 @@ public:
 
      @tparam T The values' types, each settable.
      @param v The values.
-     @return The new length; @ref errc::type for any other kind than an array.
+     @return The new length; @ref errc::type for any other kind than an array, @ref errc::capacity
+     when there is no room, and the errors of @ref set for a value.
     */
     template <class... T>
     [[nodiscard]] result<std::uint64_t> unshift(const T&... v) noexcept

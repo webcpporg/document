@@ -185,7 +185,8 @@ public:
     /**
      Copies the image into a new owned document, as `structuredClone` would.
 
-     @return The copy, equal and independent; @ref errc::capacity when it does not fit.
+     @return The copy, equal and independent; @ref errc::capacity when it does not fit, and
+     @ref errc::type for a moved-from document, which has no image.
     */
     [[nodiscard]] result<basic_document<Traits, owned>> clone() const noexcept {
         if (region_.data() == nullptr) {
@@ -259,7 +260,11 @@ public:
     }
 
     /**
-     Makes an owned image as small as its content, which is unchanged.
+     Shrinks an owned image to the end of its last block in use, its content unchanged.
+
+     Blocks never move, so the free blocks before the last one in use stay in the image: a
+     document that grew and then let most of its values go may stay nearly as large. A deep copy
+     into a new document, `packed.root().set(doc)`, packs the content.
 
      @return Success; @ref errc::capacity when the smaller buffer cannot be allocated.
     */

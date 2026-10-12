@@ -7,12 +7,14 @@
 // The streaming parser: every text of the corpus split at every byte, and written one byte at a
 // time, gives the document a whole parse gives; a syntax error has the same offset however the
 // text is split; a failed parser stays failed until reset; a parser takes no text after its
-// finish; max_bytes counts every chunk; and an external parser builds its document in place.
+// finish, nor a second text after its first; max_bytes counts every chunk; and an external parser
+// builds its document in place.
 
 #include <webcpp/document/parser.hpp>
 #include <webcpp/document/stringify.hpp>
 
 #include <boost/core/lightweight_test.hpp>
+#include <boost/json/error.hpp>
 
 #include "parse_corpus.hpp"
 #include "require.hpp"
@@ -65,8 +67,7 @@ std::string streamed(std::span<const std::string_view> chunks) {
 }
 
 // Every split of every text of the corpus, and one byte at a time, under the traits, gives what
-// the text whole gives: the same document, or the same error at the same offset (js_traits'
-// doubles refuse 1e400).
+// the text whole gives: the same document, or the same error at the same offset.
 template <class Traits>
 void every_split_under() {
     for (const std::string& text : webcpp::test::parse_corpus()) {
@@ -191,6 +192,67 @@ void a_finished_parser_takes_no_more_text() {
     BOOST_TEST(blank.finish().error() == wd::errc::syntax);
 }
 
+// A parser takes one text: whatever follows it but whitespace, in its chunk or a later one, is
+// extra data, errc::syntax at the offset where it begins, and starts no other document.
+void text_after_the_text_is_extra_data() {
+    const auto refused_at = [](const wd::parser& p, std::uint64_t offset) {
+        BOOST_TEST_EQ(p.offset(), offset);
+        BOOST_TEST(p.cause() == boost::json::error::extra_data);
+    };
+    wd::parser p;
+    BOOST_TEST(p.write("1 ").has_value());
+    BOOST_TEST(p.write("2 ").error() == wd::errc::syntax);
+    BOOST_TEST(p.write("3").error() == wd::errc::syntax);
+    BOOST_TEST(p.finish().error() == wd::errc::syntax);
+    refused_at(p, 2);
+
+    // Whitespace after the text, in any chunk, is part of it.
+    wd::parser blank;
+    for (const std::string_view chunk : {"[1]", " ", "\n\t", " \r"}) {
+        BOOST_TEST(blank.write(chunk).has_value());
+    }
+    auto made = blank.finish();
+    if (BOOST_TEST(made.has_value())) {
+        BOOST_TEST_EQ(wd::stringify(*made), "[1]");
+    }
+
+    // A selector sees the first text only: the second is refused before it begins.
+    wd::parser observed;
+    std::vector<std::string> delivered;
+    const auto subscribed =
+        observed.observe("$", [&delivered](const wd::const_value& v, const wd::path_view&) {
+            delivered.push_back(wd::stringify(v));
+        });
+    BOOST_TEST(subscribed.has_value());
+    BOOST_TEST(observed.write(R"({"a":1} )").has_value());
+    BOOST_TEST(observed.write("[2] ").error() == wd::errc::syntax);
+    BOOST_TEST(observed.write(R"({"evil":true})").error() == wd::errc::syntax);
+    BOOST_TEST(observed.finish().error() == wd::errc::syntax);
+    refused_at(observed, 8);
+    BOOST_TEST((delivered == std::vector<std::string>{R"({"a":1})"}));
+
+    // However the text is split, in two chunks or in three, the error and its offset are one.
+    constexpr std::string_view two = "[1] 2";
+    const std::array<std::string_view, 1> whole{two};
+    const std::string expected = streamed<wd::default_traits>(whole);
+    BOOST_TEST_EQ(expected, "error malformed JSON text at 4");
+    for (std::size_t at = 0; at <= two.size(); ++at) {
+        const std::array<std::string_view, 2> halves{two.substr(0, at), two.substr(at)};
+        BOOST_TEST_EQ(streamed<wd::default_traits>(halves), expected);
+        for (std::size_t second = at; second <= two.size(); ++second) {
+            const std::array<std::string_view, 3> thirds{
+                two.substr(0, at),
+                two.substr(at, second - at),
+                two.substr(second),
+            };
+            BOOST_TEST_EQ(streamed<wd::default_traits>(thirds), expected);
+        }
+    }
+    wd::parser at_once;
+    BOOST_TEST(at_once.write(two).error() == wd::errc::syntax);
+    refused_at(at_once, 4);
+}
+
 // max_bytes counts every chunk: the chunk that passes it fails, and the total may reach it.
 void chunk_limits() {
     std::string text = "[";
@@ -275,6 +337,7 @@ int main() {
     a_syntax_error_has_the_same_offset_however_split();
     a_failed_parser_stays_failed();
     a_finished_parser_takes_no_more_text();
+    text_after_the_text_is_extra_data();
     chunk_limits();
     an_external_parser();
     return boost::report_errors();

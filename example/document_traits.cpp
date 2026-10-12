@@ -135,8 +135,12 @@ bool dates() {
 
 bool bytes() {
     // tag::bytes[]
-    const std::array<std::byte, 4> raw{std::byte{0xde}, std::byte{0xad}, std::byte{0xbe},
-                                       std::byte{0xef}};
+    const std::array<std::byte, 4> raw{
+        std::byte{0xde},
+        std::byte{0xad},
+        std::byte{0xbe},
+        std::byte{0xef},
+    };
     const std::span<const std::byte> view(raw);
     wd::result<wd::document> base64 = wd::document::create();
     wd::result<wd::basic_document<canonical_traits>> base64url =

@@ -85,7 +85,8 @@ constexpr std::string_view escaped_text = R"(x\"\\\b\f\n\r\t\u0001\u001f/)"
                                           "\xe2\x80\xa8"
                                           "\xf0\x9f\x98\x80";
 
-// The document of the plan's first case, in a document of type `Document`.
+// An object holding arrays, objects, a string of every escape, null and true, in a document of
+// type `Document`.
 template <class Document>
 Document sample() {
     return document_of<Document>(wd::object{
@@ -119,7 +120,7 @@ void writes_as_json_stringify() {
     const auto doc = sample<wd::document>();
     BOOST_TEST_EQ(wd::stringify(doc), sample_compact());
     BOOST_TEST_EQ(wd::stringify(doc, 2), sample_indented());
-    // The plan's line takes 11 characters, one short of the two spaces it compares.
+    // An indent of 1 nests by one space per level: the first 12 characters show two levels.
     BOOST_TEST_EQ(wd::stringify(doc, 1).substr(0, 12), "{\n \"b\": [\n  ");
     // Clamped, as JavaScript does.
     BOOST_TEST_EQ(wd::stringify(doc, 12), wd::stringify(doc, 10));

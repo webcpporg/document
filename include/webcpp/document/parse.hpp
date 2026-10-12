@@ -40,7 +40,12 @@ struct parse_options {
     /** The most bytes of text, every chunk counted; past it is @ref errc::capacity. */
     std::uint64_t max_bytes = std::numeric_limits<std::uint64_t>::max();
 
-    /** The largest image an owned document grows to; past it is @ref errc::capacity. */
+    /**
+     The largest image an owned document grows to; past it is @ref errc::capacity.
+
+     Each value takes at least 192 bytes of image, so a short value's image is a hundred times its
+     text or more: set it for input from the network.
+    */
     std::uint64_t max_document_bytes = default_max_bytes;
 
     /** Whether a string in exactly Date.prototype.toJSON's format becomes a date. */

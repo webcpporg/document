@@ -87,6 +87,12 @@ inline constexpr std::uint8_t key_group = 1;
 inline constexpr std::uint64_t root_id = 1;
 
 /**
+ The offset of the tree's container from the image's start, the same in every image: the heap's
+ first block, since formatting allocates the container first.
+*/
+inline constexpr std::uint64_t container_offset = first_block_offset;
+
+/**
  One value of the tree, in the image's heap: a scalar, a string, bytes, or a container whose
  children are the nodes whose `parent` is its `id`.
 */
@@ -175,8 +181,8 @@ struct key_bytes {
 };
 
 /**
- The order of keys in the index @ref by_key, by the code units of the traits' encoding: the order
- the `sorted` policy writes, which for `utf16` is not the order of the bytes.
+ The order of keys in the index @ref by_key, by their UTF-16 code units, whatever the encoding: the
+ order the `sorted` policy writes, as JavaScript's sort and RFC 8785 order keys.
 */
 template <class Traits>
 struct key_less {
@@ -196,8 +202,36 @@ struct key_less {
             }
             return a.size() < b.size();
         } else {
-            // char_traits<char> compares as unsigned char, which is UTF-8's code unit order.
-            return a < b;
+            // UTF-8's bytes sort as code points, which is UTF-16's order but where a character
+            // from U+E000 to U+FFFF meets one past U+FFFF, whose surrogates UTF-16 writes from
+            // 0xD800: the first characters that differ are compared by their first UTF-16 units.
+            const std::size_t common = std::min(a.size(), b.size());
+            std::size_t i = 0;
+            while (i < common && a[i] == b[i]) {
+                ++i;
+            }
+            if (i == common) {
+                return a.size() < b.size();
+            }
+            // The two characters start at the same byte, the last lead byte up to the difference.
+            std::size_t start = i;
+            while (start > 0 && continuation(byte_at(a, start)) &&
+                   continuation(byte_at(b, start))) {
+                --start;
+            }
+            std::string_view rest_of_a = a;
+            std::string_view rest_of_b = b;
+            rest_of_a.remove_prefix(start);
+            rest_of_b.remove_prefix(start);
+            const std::optional<char16_t> x = first_utf16_unit(rest_of_a);
+            const std::optional<char16_t> y = first_utf16_unit(rest_of_b);
+            if (x && y && *x != *y) {
+                return *x < *y;
+            }
+            // Two characters past U+FFFF of one high surrogate sort as their bytes do, and text
+            // that is not UTF-8, which no stored key is, by its bytes, so no two keys are
+            // equivalent unless they are equal.
+            return byte_at(a, i) < byte_at(b, i);
         }
     }
 };
@@ -353,6 +387,8 @@ public:
             boost::throw_exception(std::bad_alloc());
         }
         std::memset(block, 0, sizeof(nodes_type));
+        // The container is the heap's first block, where attach requires it.
+        BOOST_ASSERT(std::cmp_equal(static_cast<std::byte*>(block) - r.data(), container_offset));
         auto* nodes = new (block) nodes_type(allocator<node_type>(&h));
         const byte_string empty;
         const scalar_type zero{};
@@ -366,7 +402,7 @@ public:
         header.boost_version = BOOST_VERSION;
         header.layout = layout_tag<Traits>();
         header.size = r.size();
-        header.container = static_cast<std::uint64_t>(static_cast<std::byte*>(block) - r.data());
+        header.container = container_offset;
         header.next_id = root_id + 1;
         std::memcpy(r.data(), &header, sizeof header);
         tree t;
@@ -376,7 +412,10 @@ public:
 
     // NOLINTEND(bugprone-exception-escape)
 
-    /** Attaches to an image already in a region: checks its header and its heap's sanity. */
+    /**
+     Attaches to an image already in a region: checks its header, its heap's sanity, and that the
+     pointers it follows to the root lie inside the image.
+    */
     static result<tree> attach(region& r) noexcept {
         // Fewer bytes than a header and a heap would have the heap's check read past them.
         if (r.data() == nullptr || r.size() < smallest_image() ||
@@ -389,9 +428,8 @@ public:
         }
         image_header header{};
         std::memcpy(&header, r.data(), sizeof header);
-        if (header.container < header_bytes || header.container % alignof(nodes_type) != 0 ||
-            header.container > header.size || header.size - header.container < sizeof(nodes_type) ||
-            header.next_id <= root_id) {
+        if (header.container != container_offset ||
+            header.size < container_offset + sizeof(nodes_type) || header.next_id <= root_id) {
             return errc::not_a_document;
         }
         heap& h = heap_of(r);
@@ -400,8 +438,8 @@ public:
         }
         tree t;
         t.region_ = &r;
-        const node_type* root = t.find(root_id);
-        if (root == nullptr || root->parent != 0) {
+        const node_type* root = t.first_by_id(header.size);
+        if (root == nullptr || root->id != root_id || root->parent != 0) {
             return errc::not_a_document;
         }
         return t;
@@ -869,6 +907,32 @@ private:
         /** How many new nodes it creates. */
         std::uint64_t created = 0;
     };
+
+    /**
+     The node of the smallest id, which is the root, read through the two pointers that reach it,
+     the container's header node and the first node of the index by id, each first checked to lie
+     inside the image's `size` bytes; null when either does not, or when the tree has no node.
+    */
+    [[nodiscard]] const node_type* first_by_id(std::uint64_t size) const noexcept {
+        const auto& ids = nodes_of()->template get<by_id>();
+        const auto begin = reinterpret_cast<std::uintptr_t>(region_->data());
+        const auto within = [begin, size](const auto* p) {
+            const auto at = reinterpret_cast<std::uintptr_t>(p);
+            constexpr std::uint64_t bytes = sizeof(*p);
+            return at >= begin + header_bytes && at % alignof(decltype(*p)) == 0 && bytes <= size &&
+                   at - begin <= size - bytes;
+        };
+        // get_node gives an iterator's node without reading it, which no other member does.
+        const auto end = ids.end();
+        if (!within(end.get_node())) {
+            return nullptr;
+        }
+        const auto first = ids.begin();
+        if (first == end || !within(first.get_node())) {
+            return nullptr;
+        }
+        return &*first;
+    }
 
     /** The fewest bytes that hold a header and an empty heap. */
     static std::uint64_t smallest_image() noexcept {
