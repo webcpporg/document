@@ -509,8 +509,9 @@ struct number_codec<double> {
             return d;
         }
         // Without a precision, to_chars writes the shortest digits that read back, as
-        // `d.ddde+xx`: the value is 0.dddd times ten to the exponent plus one. It is Boost.Charconv's
-        // because some libc++ lacks the standard library's floating-point overloads.
+        // `d.ddde+xx`: the value is 0.dddd times ten to the exponent plus one. It is
+        // Boost.Charconv's because some libc++ lacks the standard library's floating-point
+        // overloads.
         std::array<char, 32> buffer{};
         const auto written =
             boost::charconv::to_chars(buffer.data(), buffer.data() + buffer.size(), v,

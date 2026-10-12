@@ -270,7 +270,7 @@ private:
     }
 };
 
-/** The key of the index @ref by_order: parent, group and ordinal. */
+/** The key of the index @ref by_order, which is the parent, the group and the ordinal. */
 template <class Traits>
 struct order_key {
     /** What it extracts. */
@@ -285,7 +285,8 @@ struct order_key {
     std::uint8_t zero = 0;
 };
 
-/** The key of the index @ref by_key: parent, and the key's bytes as a `std::string_view`. */
+/** The key of the index @ref by_key, which is the parent and the key's bytes as a
+ * `std::string_view`. */
 template <class Traits>
 struct member_key {
     /** What it extracts. */

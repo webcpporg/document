@@ -174,7 +174,11 @@ void nesting() {
                   "                2,\n                {}\n            ]\n        ]\n    }\n}");
     // Keys in JavaScript's order: indices first, ascending, then the others as inserted.
     const wd::document keys = document_of(wd::object{
-        {"1", 1}, {"0", 0}, {"a", wd::array{wd::literal(wd::array())}}, {"b", wd::object()}});
+        {"1", 1},
+        {"0", 0},
+        {"a", wd::array{wd::literal(wd::array())}},
+        {"b", wd::object()},
+    });
     BOOST_TEST_EQ(wd::stringify(keys, 3),
                   "{\n   \"0\": 0,\n   \"1\": 1,\n   \"a\": [\n      []\n   ],\n   \"b\": {}\n}");
 }
