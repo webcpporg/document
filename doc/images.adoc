@@ -56,7 +56,7 @@ The header says what the bytes after it are, in the byte order of the machine th
 | 0 | 8 | the magic, `WCPPDOC` and a zero byte
 | 8 | 4 | the format version, 1
 | 12 | 4 | the byte-order mark, `0x01020304` as the writer's machine writes it
-| 16 | 4 | the `BOOST_VERSION` of the writer
+| 16 | 4 | reserved, zero; an image whose reserved bytes are not zero is refused
 | 20 | 4 | the layout tag: a hash of the sizes and alignments of the tree's node, its container and the heap, and of the traits (<<document-traits-identity>>)
 | 24 | 8 | the size of the image
 | 32 | 8 | the offset of the tree's container, the heap's first block, the same in every image
@@ -65,13 +65,22 @@ The header says what the bytes after it are, in the byte order of the machine th
 | 56 | 8 | zero
 |===
 
+The format version is the library's: `webcpp::document::format_version`, which the library raises when
+the layout of an image changes, and then provides a migration from the previous version. The Boost
+release an image was written with is not in the header, and a Boost upgrade does not change the
+version, since the structures the image holds, Boost.Interprocess's `rbtree_best_fit` blocks and
+Boost.MultiIndex's ordered index nodes, rarely change. The library watches them: its format test
+compares the compact image of a fixed document, under each traits, with golden images committed with
+the tests, and fails when a Boost release changes one byte of them. The bytes at offset 16 are kept
+for a future version.
+
 [#document-images-refused]
 === What is refused
 
 `wd::open` and `wd::from_image` refuse bytes shorter than the header or than the size it states,
 and another magic, with `errc::not_a_document`; and an image of another format version, byte order,
-Boost version or layout tag, with `errc::incompatible_document`. A mismatch is refused, never read
-or converted. Then the heap's own check of its structure runs, and a container offset other than
+layout tag or nonzero reserved bytes, with `errc::incompatible_document`. A mismatch is refused,
+never read or converted. Then the heap's own check of its structure runs, and a container offset other than
 the heap's first block, or a pointer to the root that leaves the image, is `errc::not_a_document`
 too, refused before anything is read through it. A sealed image whose bytes do not match its seal is
 `errc::damaged_document`, and is checked first of all (<<document-wire-sealed>>).

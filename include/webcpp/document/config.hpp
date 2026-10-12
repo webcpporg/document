@@ -16,6 +16,8 @@
 
 #include <webcpp/config.hpp>
 
+#include <cstdint>
+
 // MrDocs parses document as a build with exceptions does, where the macro is not defined: this
 // definition, undone at once, is the one the reference lists, and the parse goes on with every API
 // that throws in it.
@@ -54,6 +56,22 @@
 */
 #define WEBCPP_DOCUMENT_NO_DANGLING
 #endif
+
+namespace webcpp::document {
+
+/**
+ The version of the image's format that this library writes and opens.
+
+ The library raises it when the layout of an image changes, and then provides a migration from the
+ previous version; none exists yet, since 1 is the first. It is the library's constant, not an
+ option: a new Boost release does not change it, and the format test watches that the layout the
+ Boost libraries give the image has not changed.
+
+ @see "Images", in the guide.
+*/
+inline constexpr std::uint32_t format_version = 1;
+
+}  // namespace webcpp::document
 
 namespace webcpp::document::detail {
 

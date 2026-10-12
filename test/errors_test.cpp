@@ -46,7 +46,7 @@ void the_category_is_webcpp_document() {
     BOOST_TEST_EQ(boost::system::error_code(wd::errc::not_a_document).message(),
                   "not a document's image");
     BOOST_TEST_EQ(boost::system::error_code(wd::errc::incompatible_document).message(),
-                  "an image of another format, Boost, layout, byte order or traits");
+                  "an image of another format, layout, byte order or traits");
     BOOST_TEST_EQ(boost::system::error_code(wd::errc::damaged_document).message(),
                   "a sealed image whose bytes do not match its seal");
 
@@ -131,7 +131,7 @@ void raise_throws_the_type_of_its_code() {
     BOOST_TEST_EQ(thrown(wd::errc::capacity), "capacity no room left");
     BOOST_TEST_EQ(thrown(wd::errc::not_a_document), "image not a document's image");
     BOOST_TEST_EQ(thrown(wd::errc::incompatible_document),
-                  "image an image of another format, Boost, layout, byte order or traits");
+                  "image an image of another format, layout, byte order or traits");
     BOOST_TEST_EQ(thrown(wd::errc::damaged_document),
                   "image a sealed image whose bytes do not match its seal");
 }

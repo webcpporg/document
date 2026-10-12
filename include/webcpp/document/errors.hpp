@@ -68,7 +68,7 @@ enum class errc : int {
     /** Bytes that are not a document's image. */
     not_a_document = 5,
 
-    /** An image of another format version, Boost version, layout, byte order or traits. */
+    /** An image of another format version, nonzero reserved bytes, layout, byte order or traits. */
     incompatible_document = 6,
 
     /** A sealed image whose bytes do not match its seal: changed, torn or cut short. */
@@ -86,7 +86,7 @@ inline const char* message_of(int value) noexcept {
         case errc::capacity: return "no room left";
         case errc::not_a_document: return "not a document's image";
         case errc::incompatible_document:
-            return "an image of another format, Boost, layout, byte order or traits";
+            return "an image of another format, layout, byte order or traits";
         case errc::damaged_document: return "a sealed image whose bytes do not match its seal";
     }
     return "unknown webcpp.document error";

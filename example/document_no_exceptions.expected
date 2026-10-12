@@ -5,5 +5,5 @@ doc.n as a string: webcpp.document:2, a value of another kind
 doc.n as int8_t: webcpp.document:3, a number or index out of range
 [[1]], max_depth 1: webcpp.document:4, no room left
 64 zero bytes: webcpp.document:5, not a document's image
-another traits' image: webcpp.document:6, an image of another format, Boost, layout, byte order or traits
+another traits' image: webcpp.document:6, an image of another format, layout, byte order or traits
 still {"n":300}

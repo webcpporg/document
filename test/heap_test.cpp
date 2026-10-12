@@ -458,7 +458,7 @@ void headers_are_checked() {
         h.magic = wd::image_magic;
         h.version = wd::format_version;
         h.byte_order = 0x01020304;
-        h.boost_version = BOOST_VERSION;
+        h.reserved_4 = 0;
         h.layout = 42;
         h.size = image.size();
         change(h);
@@ -477,8 +477,16 @@ void headers_are_checked() {
     BOOST_TEST(wd::check_image(image, 42).error() == wd::errc::incompatible_document);
     write([](wd::image_header& h) { h.byte_order = 0x04030201; });
     BOOST_TEST(wd::check_image(image, 42).error() == wd::errc::incompatible_document);
-    write([](wd::image_header& h) { h.boost_version = BOOST_VERSION + 1; });
+    // The four reserved bytes are kept for a future version: an image that sets one is refused.
+    write([](wd::image_header& h) { h.reserved_4 = 1; });
     BOOST_TEST(wd::check_image(image, 42).error() == wd::errc::incompatible_document);
+    write([](wd::image_header& h) { h.reserved_4 = 0x80000000U; });
+    BOOST_TEST(wd::check_image(image, 42).error() == wd::errc::incompatible_document);
+    write([](wd::image_header& h) { h.version = wd::format_version + 1; });
+    BOOST_TEST(wd::check_image(image, 42).error() == wd::errc::incompatible_document);
+    // The reserved bytes sit where the Boost version sat: the other fields do not move.
+    static_assert(offsetof(wd::image_header, reserved_4) == 16);
+    static_assert(offsetof(wd::image_header, layout) == 20);
     write([](wd::image_header&) {});
     BOOST_TEST(wd::check_image(image, 43).error() == wd::errc::incompatible_document);
 }
@@ -491,7 +499,7 @@ void a_foreign_image_is_incompatible() {
     h.magic = wd::image_magic;
     h.version = wd::format_version;
     h.byte_order = 0x04030201;
-    h.boost_version = BOOST_VERSION;
+    h.reserved_4 = 0;
     h.layout = 42;
     h.size = std::uint64_t{256} << 56U;
     std::memcpy(image.data(), &h, sizeof h);

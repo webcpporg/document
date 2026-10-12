@@ -236,7 +236,7 @@ empty:
 | Bytes that are not an image, or an image whose heap is not sound.
 
 | `errc::incompatible_document`
-| An image of another format version, byte order, Boost version or traits.
+| An image of another format version, byte order, reserved bytes or traits.
 
 | `errc::damaged_document`
 | A sealed image whose bytes do not match its seal.

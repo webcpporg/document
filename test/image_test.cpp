@@ -187,6 +187,32 @@ void format_and_open() {
     BOOST_TEST(wd::document::create(256).error() == wd::errc::capacity);
 }
 
+// An image whose reserved header bytes are not zero, or of another format version, is refused by
+// open and from_image alike; the same image with them as written is read.
+void reserved_bytes_and_versions_are_refused() {
+    wd::document doc = make_document();
+    webcpp::test::require(BOOST_TEST(doc.root().set(wd::object{{"k", "v"}}).has_value()));
+    const aligned_buffer buffer(doc.image().size());
+    std::ranges::copy(doc.image(), buffer.bytes().begin());
+    BOOST_TEST(wd::open(buffer.bytes()).has_value());
+
+    wd::image_header header{};
+    std::memcpy(&header, buffer.bytes().data(), sizeof header);
+    BOOST_TEST_EQ(header.reserved_4, 0U);
+    const auto refused_with = [&](auto&& change) {
+        wd::image_header edited = header;
+        change(edited);
+        std::memcpy(buffer.bytes().data(), &edited, sizeof edited);
+        BOOST_TEST(wd::open(buffer.bytes()).error() == wd::errc::incompatible_document);
+        BOOST_TEST(wd::from_image(buffer.bytes()).error() == wd::errc::incompatible_document);
+    };
+    refused_with([](wd::image_header& h) { h.reserved_4 = 1; });
+    refused_with([](wd::image_header& h) { h.reserved_4 = 0xffffffffU; });
+    refused_with([](wd::image_header& h) { h.version = wd::format_version + 1; });
+    std::memcpy(buffer.bytes().data(), &header, sizeof header);
+    BOOST_TEST(wd::open(buffer.bytes()).has_value());
+}
+
 // The same calls, with growth, erasure and nesting, on a document of each storage.
 template <class Document>
 void build(Document& doc) {
@@ -362,6 +388,7 @@ void a_lying_container_offset() {
 int main() {
     an_image_moves();
     format_and_open();
+    reserved_bytes_and_versions_are_refused();
     the_same_operations_give_the_same_image();
     an_erased_secret_leaves_no_byte();
     shrink_to_fit();

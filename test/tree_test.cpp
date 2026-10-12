@@ -267,7 +267,7 @@ void a_new_tree_holds_null() {
     BOOST_TEST(h.magic == wd::image_magic);
     BOOST_TEST_EQ(h.version, wd::format_version);
     BOOST_TEST_EQ(h.byte_order, wd::byte_order_mark);
-    BOOST_TEST_EQ(h.boost_version, static_cast<std::uint32_t>(BOOST_VERSION));
+    BOOST_TEST_EQ(h.reserved_4, 0U);
     BOOST_TEST_EQ(h.layout, detail::layout_tag<traits>());
     BOOST_TEST_EQ(h.size, f.r.size());
     BOOST_TEST_EQ(h.next_id, 2U);

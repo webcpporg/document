@@ -1,5 +1,5 @@
-js_traits: incompatible_document, an image of another format, Boost, layout, byte order or traits
-format version 2: incompatible_document, an image of another format, Boost, layout, byte order or traits
+js_traits: incompatible_document, an image of another format, layout, byte order or traits
+format version 2: incompatible_document, an image of another format, layout, byte order or traits
 garbage: not_a_document, not a document's image
 zeroed memory: not_a_document, not a document's image
 misaligned buffer: not_a_document, not a document's image

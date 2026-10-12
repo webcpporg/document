@@ -45,7 +45,7 @@ unchanged, in its own category.
 | `wd::image_error`
 
 | `incompatible_document`, 6
-| an image of another format version, Boost version, layout, byte order or traits
+| an image of another format version, reserved bytes, layout, byte order or traits
 | none; `TypeError` from the module
 | `wd::image_error`
 

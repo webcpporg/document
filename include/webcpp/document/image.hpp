@@ -19,7 +19,6 @@
 #include <webcpp/document/errors.hpp>
 
 #include <boost/crc.hpp>
-#include <boost/version.hpp>
 
 #include <array>
 #include <cstddef>
@@ -28,9 +27,6 @@
 #include <span>
 
 namespace webcpp::document {
-
-/** The version of the image's format; a change to its layout raises it. */
-inline constexpr std::uint32_t format_version = 1;
 
 /** The first eight bytes of every image: `WCPPDOC` and a zero byte. */
 inline constexpr std::array<char, 8> image_magic{'W', 'C', 'P', 'P', 'D', 'O', 'C', '\0'};
@@ -55,8 +51,9 @@ struct image_header {
     /** @ref byte_order_mark, as the writer's machine writes it. */
     std::uint32_t byte_order;
 
-    /** The `BOOST_VERSION` of the writer. */
-    std::uint32_t boost_version;
+    /** Zero, and kept for a future version: an image whose reserved bytes are not zero is refused.
+     */
+    std::uint32_t reserved_4;
 
     /**
      A hash of the node's, the container's and the heap's sizes and alignments, and of the traits.
@@ -150,16 +147,16 @@ inline bool is_sealed(std::span<const std::byte> image) noexcept {
  A seal is checked first, before anything else its header states is trusted, so that a change
  anywhere in a sealed image, its magic and its size included, is reported as damage. Then the
  magic, the format version and the byte order, before the size, which an image of another version
- or byte order states in another way; then the Boost version and the layout.
+ or byte order states in another way; then the reserved bytes and the layout.
 
  @param bytes The bytes, at any address.
  @param layout The layout tag this build expects.
  @param check Whether a sealed image's bytes are checked against its seal.
  @return Success; @ref errc::not_a_document for bytes shorter than the header or than the size it
  states, a size below 64, or another magic; @ref errc::incompatible_document for another format
- version, byte order, Boost version or layout; @ref errc::damaged_document for a sealed image whose
- bytes do not match its seal, or are fewer than its size, and for a seal that is neither zero nor
- marked.
+ version, byte order, nonzero reserved bytes or layout; @ref errc::damaged_document for a sealed
+ image whose bytes do not match its seal, or are fewer than its size, and for a seal that is neither
+ zero nor marked.
 */
 inline result<void> check_image(std::span<const std::byte> bytes, std::uint32_t layout,
                                 verify check = verify::seal) noexcept {
@@ -187,7 +184,7 @@ inline result<void> check_image(std::span<const std::byte> bytes, std::uint32_t 
     if (header.size < sizeof(image_header) || header.size > bytes.size()) {
         return errc::not_a_document;
     }
-    if (header.boost_version != BOOST_VERSION || header.layout != layout) {
+    if (header.reserved_4 != 0 || header.layout != layout) {
         return errc::incompatible_document;
     }
     // Only a changed byte makes a seal that is neither zero nor marked: the byte order, which
