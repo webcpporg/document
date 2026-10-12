@@ -12,7 +12,8 @@ webcpp.targets native emscripten wasip2 wasip3 ;
 
 # The guide's programs, each shown on the page with the output it prints.
 webcpp.example document_quick_start.cpp ;
-# The sugar that throws stands beside the core here, so this program needs exceptions.
+# The sugar that throws stands beside the core here, so this program needs
+# exceptions.
 webcpp.example document_javascript.cpp : <exception-handling>on ;
 webcpp.example document_numbers.cpp ;
 webcpp.example document_arrays.cpp ;

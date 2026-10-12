@@ -171,10 +171,11 @@ void keys_found_exactly() {
         BOOST_TEST(doc.root().contains(key));
         BOOST_TEST_EQ(doc[key].template get<std::int64_t>().value(), place_of(key));
     }
+    auto root = doc.root();
     for (const std::string_view other : {"1"sv, "00"sv, "+0"sv, "100"sv, "k"sv, "\0"sv, "1E2"sv}) {
-        BOOST_TEST(!doc.root().contains(other));
+        BOOST_TEST(!root.contains(other));
         BOOST_TEST(doc[other].is_undefined());
-        BOOST_TEST(!doc.root().erase(other).value());
+        BOOST_TEST(!root.erase(other).value());
     }
 }
 
@@ -191,10 +192,11 @@ void places_kept_and_taken(const key_list& order) {
     BOOST_TEST(doc["01"][0].template get<std::string>().value() == "01");
 
     std::vector<std::string> now = expected;
+    auto root = doc.root();
     for (const std::string_view key : keys_recreated) {
-        BOOST_TEST(doc.root().erase(key).value());
-        BOOST_TEST(!doc.root().contains(key));
-        BOOST_TEST_EQ(doc.root().size(), keys_set.size() - 1);
+        BOOST_TEST(root.erase(key).value());
+        BOOST_TEST(!root.contains(key));
+        BOOST_TEST_EQ(root.size(), keys_set.size() - 1);
         BOOST_TEST(doc[key].set(nullptr).has_value());
         now = recreated<Traits>(now, std::string(key));
         BOOST_TEST(keys_of(doc) == now);
@@ -284,10 +286,11 @@ void sorted_by_utf16_code_units() {
     for (const std::string_view key : created) {
         BOOST_TEST(doc.root().contains(key));
     }
-    BOOST_TEST(!doc.root().contains("\xef\xbf"));
-    BOOST_TEST(doc.root().erase("\xf0\x9f\x98\x80").value());
-    BOOST_TEST(!doc.root().contains("\xf0\x9f\x98\x80"));
-    BOOST_TEST_EQ(doc.root().size(), created.size() - 1);
+    auto root = doc.root();
+    BOOST_TEST(!root.contains("\xef\xbf"));
+    BOOST_TEST(root.erase("\xf0\x9f\x98\x80").value());
+    BOOST_TEST(!root.contains("\xf0\x9f\x98\x80"));
+    BOOST_TEST_EQ(root.size(), created.size() - 1);
 }
 
 }  // namespace

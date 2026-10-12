@@ -227,13 +227,14 @@ void an_erased_secret_leaves_no_byte() {
     const std::string secret = "s3cr3t-0123456789-abcdefghijklmnopqrstuvwxyz-ABCDEFGHIJKLMNOPQRS";
     BOOST_TEST_EQ(secret.size(), 64U);
     wd::document doc = make_document();
-    BOOST_TEST(doc.root().set(wd::object{{"user", "ana"}}).has_value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.set(wd::object{{"user", "ana"}}).has_value());
     BOOST_TEST(doc["password"].set(secret).has_value());
     BOOST_TEST(doc["list"].set(wd::array{secret, wd::object{{secret, secret}}}).has_value());
     BOOST_TEST(doc["copy"].set(doc["list"]).has_value());
     BOOST_TEST(holds(doc.image(), secret));
 
-    BOOST_TEST(doc.root().erase("password").value());
+    BOOST_TEST(root.erase("password").value());
     BOOST_TEST(doc["list"].set(nullptr).has_value());
     BOOST_TEST(doc["copy"].set(wd::undefined).has_value());
     for (std::size_t at = 0; at + 8 <= secret.size(); ++at) {
@@ -244,7 +245,8 @@ void an_erased_secret_leaves_no_byte() {
 
 void shrink_to_fit() {
     wd::document doc = make_document();
-    BOOST_TEST(doc.root().set(wd::object{{"keep", "this"}}).has_value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.set(wd::object{{"keep", "this"}}).has_value());
     const std::string text(1000, 'f');
     for (std::uint64_t i = 0; doc.image().size() < mebibyte; ++i) {
         if (!BOOST_TEST(doc["f" + std::to_string(i)].set(text).has_value())) {
@@ -261,7 +263,7 @@ void shrink_to_fit() {
     }();
     for (const std::string& key : keys) {
         if (key != "keep") {
-            BOOST_TEST(doc.root().erase(key).value());
+            BOOST_TEST(root.erase(key).value());
         }
     }
     const auto before = doc.clone();
@@ -290,7 +292,8 @@ void an_external_document_says_full() {
         return;
     }
     auto& doc = *made;
-    BOOST_TEST(doc.root().set(wd::object{{"a", 1}, {"b", wd::array{"x"}}}).has_value());
+    auto root = doc.root();
+    BOOST_TEST(root.set(wd::object{{"a", 1}, {"b", wd::array{"x"}}}).has_value());
     const std::vector<std::byte> before(doc.image().begin(), doc.image().begin() + 64);
     const auto content = doc.clone();
     BOOST_TEST(doc["big"].set(std::string(10 * kibibyte, 'b')).error() == wd::errc::capacity);
@@ -310,7 +313,8 @@ void a_misaligned_buffer() {
     BOOST_TEST(wd::format(misaligned.bytes()).error() == wd::errc::capacity);
 
     wd::document doc = make_document();
-    BOOST_TEST(doc.root().set(wd::array{1}).has_value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.set(wd::array{1}).has_value());
     const aligned_buffer copy(doc.image().size(), 8);
     std::ranges::copy(doc.image(), copy.bytes().begin());
     BOOST_TEST(wd::open(copy.bytes()).error() == wd::errc::not_a_document);
@@ -325,7 +329,8 @@ void a_misaligned_buffer() {
 // another, inside the image or not, is refused before anything is read there.
 void a_lying_container_offset() {
     wd::document doc = make_document();
-    BOOST_TEST(doc.root().set(wd::object{{"a", wd::array{1, 2, 3}}, {"b", "hello"}}).has_value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.set(wd::object{{"a", wd::array{1, 2, 3}}, {"b", "hello"}}).has_value());
     BOOST_TEST(doc.shrink_to_fit().has_value());
     const std::span<const std::byte> image = doc.image();
     constexpr std::size_t at = offsetof(wd::image_header, container);

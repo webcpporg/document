@@ -60,7 +60,8 @@ wd::document make_document() {
 template <class T>
 wd::document document_of(const T& v) {
     wd::document d = make_document();
-    webcpp::test::require(BOOST_TEST(d.root().set(v).has_value()));
+    wd::value root = d.root();
+    webcpp::test::require(BOOST_TEST(root.set(v).has_value()));
     return d;
 }
 
@@ -254,7 +255,8 @@ void strings_dates_bytes() {
     BOOST_TEST(doc["s"].set(std::u16string_view(u"ab")).has_value());
     BOOST_TEST_EQ(doc["s"].get<std::string_view>().value(), "ab");
     BOOST_TEST(doc["s"].get<std::u16string_view>().error() == wd::errc::type);
-    BOOST_TEST(doc.root().length().error() == wd::errc::type);
+    const auto root_length = doc.root().length();
+    BOOST_TEST(root_length.error() == wd::errc::type);
     BOOST_TEST(doc["absent"].length().error() == wd::errc::type);
     dates(doc);
     bytes(doc);
@@ -320,9 +322,10 @@ void js_traits_strings() {
         BOOST_TEST(!v.is_undefined());
     }
     BOOST_TEST(keys == (std::vector<std::u16string>{u"s", u"été"}));
-    BOOST_TEST(doc.root().contains("\xC3\xA9t\xC3\xA9"));
-    BOOST_TEST(doc.root().erase("\xC3\xA9t\xC3\xA9").value());
-    BOOST_TEST(!doc.root().contains("\xC3\xA9t\xC3\xA9"));
+    auto root = doc.root();
+    BOOST_TEST(root.contains("\xC3\xA9t\xC3\xA9"));
+    BOOST_TEST(root.erase("\xC3\xA9t\xC3\xA9").value());
+    BOOST_TEST(!root.contains("\xC3\xA9t\xC3\xA9"));
 }
 
 void value_or_is_nullish_coalescing() {
@@ -337,8 +340,9 @@ void value_or_is_nullish_coalescing() {
 
 void erase_and_assign_from() {
     wd::document doc = document_of(wd::object{{"age", 30}, {"b", 0}, {"c", 3}});
-    BOOST_TEST(doc.root().erase("age").value());
-    BOOST_TEST(!doc.root().erase("age").value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.erase("age").value());
+    BOOST_TEST(!root.erase("age").value());
     BOOST_TEST(doc["b"].erase("x").error() == wd::errc::type);
     BOOST_TEST(doc["absent"].erase("x").error() == wd::errc::type);
 
@@ -353,9 +357,9 @@ void erase_and_assign_from() {
     BOOST_TEST(keys_of(doc.root()) == (std::vector<std::string>{"0", "1", "b", "c", "a"}));
     BOOST_TEST(doc["1"][0].get<bool>().value());
     BOOST_TEST(doc.root().assign_from(document_of(nullptr).root()).has_value());
-    BOOST_TEST(doc.root().assign_from(source["absent"]).has_value());
+    BOOST_TEST(root.assign_from(source["absent"]).has_value());
     BOOST_TEST_EQ(doc.root().size(), 5U);
-    BOOST_TEST(doc.root().assign_from(source["a"]).error() == wd::errc::type);
+    BOOST_TEST(root.assign_from(source["a"]).error() == wd::errc::type);
     BOOST_TEST(doc["b"].assign_from(source.root()).error() == wd::errc::type);
 
     // A source within the same object is read before anything changes.
@@ -502,7 +506,8 @@ void iteration() {
     }
     BOOST_TEST(kinds ==
                (std::vector<wd::kind>{wd::kind::number, wd::kind::string, wd::kind::null}));
-    BOOST_TEST(arr.root().keys().begin() == arr.root().keys().end());
+    const wd::const_value arr_root = arr.root();
+    BOOST_TEST(arr_root.keys().begin() == arr_root.keys().end());
     static_assert(std::forward_iterator<decltype(arr.root().begin())>);
     static_assert(std::ranges::forward_range<decltype(arr.root().entries())>);
     auto it = arr.root().begin();
@@ -546,8 +551,9 @@ void copy_in_every_size() {
         // The header, its next id included, is as it was; the heap's free blocks may differ.
         BOOST_TEST(std::ranges::equal(before, doc.image().first(64)));
         // A value that needs no block is stored still.
-        BOOST_TEST(doc.root().set(true).has_value());
-        BOOST_TEST(doc.root().value_or(false));
+        auto root = doc.root();
+        BOOST_TEST(root.set(true).has_value());
+        BOOST_TEST(root.value_or(false));
     }
     BOOST_TEST(copied_once);
     BOOST_TEST_EQ(formatted, failed + 1);
@@ -561,7 +567,8 @@ void a_moved_from_document() {
     // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move): the state it leaves
     BOOST_TEST(doc.root().is_undefined());
     BOOST_TEST(doc["a"].is_undefined());
-    BOOST_TEST(doc.root().set(1).error() == wd::errc::type);
+    const auto refused = doc.root().set(1);
+    BOOST_TEST(refused.error() == wd::errc::type);
     BOOST_TEST(doc["a"].set(1).error() == wd::errc::type);
     BOOST_TEST(doc.image().empty());
     BOOST_TEST(!doc.clone().has_value());
@@ -579,13 +586,14 @@ void a_moved_from_document() {
 
 void a_root_holding_undefined() {
     wd::document doc = document_of(wd::object{{"a", 1}});
-    BOOST_TEST(doc.root().set(wd::undefined).has_value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.set(wd::undefined).has_value());
     BOOST_TEST(doc.root().is_undefined());
     BOOST_TEST(doc.root().kind() == wd::kind::undefined);
     BOOST_TEST(doc["a"].is_undefined());
     BOOST_TEST(doc["a"].set(1).error() == wd::errc::type);
     BOOST_TEST(doc.root().get<std::int64_t>().error() == wd::errc::type);
-    BOOST_TEST(doc.root().length().error() == wd::errc::type);
+    BOOST_TEST(root.length().error() == wd::errc::type);
     BOOST_TEST_EQ(doc.root().size(), 0U);
 
     // Its value copied anywhere is undefined: a member erased, an element null.
@@ -595,11 +603,12 @@ void a_root_holding_undefined() {
     BOOST_TEST(other["y"][0].set(doc.root()).has_value());
     BOOST_TEST(other["y"][0].is_null());
     wd::document empty = make_document();
-    BOOST_TEST(empty.root().set(doc).has_value());
+    wd::value empty_root = empty.root();
+    BOOST_TEST(empty_root.set(doc).has_value());
     BOOST_TEST(empty.root().is_undefined());
     BOOST_TEST(empty == doc);
 
-    BOOST_TEST(doc.root().set(5).has_value());
+    BOOST_TEST(root.set(5).has_value());
     BOOST_TEST_EQ(doc.root().get<std::int64_t>().value(), 5);
 }
 

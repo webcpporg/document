@@ -45,7 +45,8 @@ wd::document make_document() {
 template <class T>
 wd::document document_of(const T& v) {
     wd::document d = make_document();
-    webcpp::test::require(BOOST_TEST(d.root().set(v).has_value()));
+    wd::value root = d.root();
+    webcpp::test::require(BOOST_TEST(root.set(v).has_value()));
     return d;
 }
 
@@ -263,7 +264,8 @@ void slice_copies() {
 void push_pop_shift_unshift() {
     {
         wd::document d = five();
-        BOOST_TEST_EQ(d.root().push(5, 6).value(), 7U);
+        wd::value root = d.root();
+        BOOST_TEST_EQ(root.push(5, 6).value(), 7U);
         BOOST_TEST_EQ(text(d), "[0,1,2,3,4,5,6]");
     }
     {
@@ -280,35 +282,40 @@ void push_pop_shift_unshift() {
     }
     {
         wd::document d = five();
-        BOOST_TEST_EQ(d.root().unshift("a", "b").value(), 7U);
+        wd::value root = d.root();
+        BOOST_TEST_EQ(root.unshift("a", "b").value(), 7U);
         BOOST_TEST_EQ(text(d), R"(["a","b",0,1,2,3,4])");
     }
     {
         // No value: the length, unchanged.
         wd::document d = five();
-        BOOST_TEST_EQ(d.root().push().value(), 5U);
-        BOOST_TEST_EQ(d.root().unshift().value(), 5U);
+        wd::value root = d.root();
+        BOOST_TEST_EQ(root.push().value(), 5U);
+        BOOST_TEST_EQ(root.unshift().value(), 5U);
         BOOST_TEST_EQ(text(d), "[0,1,2,3,4]");
     }
     {
         // A container popped comes whole, and literals and copies are pushed.
         wd::document d = document_of(wd::array{wd::object{{"a", wd::array{1}}}});
         const wd::document other = document_of(wd::array{7});
-        BOOST_TEST_EQ(d.root().push(wd::array{8}, other, other[0], nullptr, true).value(), 6U);
+        wd::value root = d.root();
+        BOOST_TEST_EQ(root.push(wd::array{8}, other, other[0], nullptr, true).value(), 6U);
         BOOST_TEST_EQ(text(d), R"([{"a":[1]},[8],[7],7,null,true])");
-        BOOST_TEST_EQ(text(d.root().shift()), R"({"a":[1]})");
+        BOOST_TEST_EQ(text(root.shift()), R"({"a":[1]})");
         // An element that reads undefined is pushed as null, as JSON.stringify writes it.
-        BOOST_TEST_EQ(d.root().push(other["absent"]).value(), 6U);
+        BOOST_TEST_EQ(root.push(other["absent"]).value(), 6U);
         BOOST_TEST_EQ(text(d), "[[8],[7],7,null,true,null]");
     }
 }
 
 void reverse_reverses() {
     wd::document d = five();
-    BOOST_TEST(d.root().reverse().has_value());
+    wd::value root = d.root();
+    BOOST_TEST(root.reverse().has_value());
     BOOST_TEST_EQ(text(d), "[4,3,2,1,0]");
     wd::document even = document_of(wd::array{1, wd::array{2}, "3", nullptr});
-    BOOST_TEST(even.root().reverse().has_value());
+    wd::value even_root = even.root();
+    BOOST_TEST(even_root.reverse().has_value());
     BOOST_TEST_EQ(text(even), R"([null,"3",[2],1])");
 }
 
@@ -335,36 +342,43 @@ void concat_spreads_arrays() {
 void at_counts_from_the_end() {
     wd::document d = five();
     const wd::document& c = d;
-    BOOST_TEST_EQ(text(c.root().at(-1)), "4");
-    BOOST_TEST_EQ(text(c.root().at(-3)), "2");
-    BOOST_TEST_EQ(text(c.root().at(0)), "0");
-    BOOST_TEST(c.root().at(5).is_undefined());
-    BOOST_TEST(c.root().at(-6).is_undefined());
-    BOOST_TEST(c.root().at(-5).value_or(std::int64_t{-1}) == 0);
-    BOOST_TEST(c.root().at(int64_min).is_undefined());
-    BOOST_TEST(c.root().at(int64_max).is_undefined());
+    const wd::const_value read = c.root();
+    BOOST_TEST_EQ(text(read.at(-1)), "4");
+    BOOST_TEST_EQ(text(read.at(-3)), "2");
+    BOOST_TEST_EQ(text(read.at(0)), "0");
+    BOOST_TEST(read.at(5).is_undefined());
+    BOOST_TEST(read.at(-6).is_undefined());
+    BOOST_TEST(read.at(-5).value_or(std::int64_t{-1}) == 0);
+    BOOST_TEST(read.at(int64_min).is_undefined());
+    BOOST_TEST(read.at(int64_max).is_undefined());
     BOOST_TEST_EQ(text(d), "[0,1,2,3,4]");
 
     // Through a handle that writes, the element is written; out of range, nothing is.
-    BOOST_TEST(d.root().at(-1).set(9).has_value());
+    wd::value root = d.root();
+    wd::value last = root.at(-1);
+    BOOST_TEST(last.set(9).has_value());
     BOOST_TEST_EQ(text(d), "[0,1,2,3,9]");
-    BOOST_TEST(d.root().at(5).set(9).error() == wd::errc::type);
-    BOOST_TEST(d.root().at(-6).set(9).error() == wd::errc::type);
+    wd::value past_end = root.at(5);
+    BOOST_TEST(past_end.set(9).error() == wd::errc::type);
+    wd::value before_start = root.at(-6);
+    BOOST_TEST(before_start.set(9).error() == wd::errc::type);
     BOOST_TEST_EQ(text(d), "[0,1,2,3,9]");
 }
 
 void set_length_truncates_and_fills() {
     {
         wd::document d = five();
-        BOOST_TEST(d.root().set_length(2).has_value());
+        wd::value root = d.root();
+        BOOST_TEST(root.set_length(2).has_value());
         BOOST_TEST_EQ(text(d), "[0,1]");
     }
     wd::document d = five();
-    BOOST_TEST(d.root().set_length(7).has_value());
+    wd::value root = d.root();
+    BOOST_TEST(root.set_length(7).has_value());
     BOOST_TEST_EQ(text(d), "[0,1,2,3,4,null,null]");
     BOOST_TEST(d[7].set(9).has_value());
     BOOST_TEST_EQ(text(d), "[0,1,2,3,4,null,null,9]");
-    BOOST_TEST(d.root().set_length(0).has_value());
+    BOOST_TEST(root.set_length(0).has_value());
     BOOST_TEST_EQ(text(d), "[]");
 }
 
@@ -383,12 +397,13 @@ void an_empty_array() {
     BOOST_TEST_EQ(text(d.root().splice(-1)), "[]");
     BOOST_TEST_EQ(text(d.root().slice(-1)), "[]");
     BOOST_TEST_EQ(text(d.root().concat()), "[]");
-    BOOST_TEST(d.root().at(0).is_undefined());
-    BOOST_TEST(d.root().at(-1).is_undefined());
-    BOOST_TEST(d.root().reverse().has_value());
-    BOOST_TEST(d.root().set_length(0).has_value());
+    wd::value root = d.root();
+    BOOST_TEST(root.at(0).is_undefined());
+    BOOST_TEST(root.at(-1).is_undefined());
+    BOOST_TEST(root.reverse().has_value());
+    BOOST_TEST(root.set_length(0).has_value());
     BOOST_TEST_EQ(text(d), "[]");
-    BOOST_TEST_EQ(d.root().unshift(1).value(), 1U);
+    BOOST_TEST_EQ(root.unshift(1).value(), 1U);
     BOOST_TEST_EQ(text(d), "[1]");
 }
 
@@ -438,8 +453,9 @@ void anything_but_an_array_is_a_type_error() {
     wd::document list = five();
     wd::document gone = make_document();
     const wd::document holder = std::move(gone);
+    wd::value list_root = list.root();
     // NOLINTBEGIN(bugprone-use-after-move,clang-analyzer-cplusplus.Move): the state it leaves
-    BOOST_TEST(list.root().push(1, gone).error() == wd::errc::type);
+    BOOST_TEST(list_root.push(1, gone).error() == wd::errc::type);
     // NOLINTEND(bugprone-use-after-move,clang-analyzer-cplusplus.Move)
     BOOST_TEST_EQ(text(list), "[0,1,2,3,4]");
 }
@@ -448,10 +464,11 @@ void anything_but_an_array_is_a_type_error() {
 void a_value_refused_changes_nothing() {
     wd::document d = five();
     const std::string invalid("\xff");
-    BOOST_TEST(d.root().push(5, invalid).error() == wd::errc::type);
-    BOOST_TEST(d.root().unshift(invalid).error() == wd::errc::type);
-    BOOST_TEST(d.root().splice(0, 2, 5, invalid).error() == wd::errc::type);
-    BOOST_TEST(d.root().concat(5, invalid).error() == wd::errc::type);
+    wd::value root = d.root();
+    BOOST_TEST(root.push(5, invalid).error() == wd::errc::type);
+    BOOST_TEST(root.unshift(invalid).error() == wd::errc::type);
+    BOOST_TEST(root.splice(0, 2, 5, invalid).error() == wd::errc::type);
+    BOOST_TEST(root.concat(5, invalid).error() == wd::errc::type);
     BOOST_TEST_EQ(text(d), "[0,1,2,3,4]");
 }
 
@@ -518,8 +535,9 @@ wd::result<wd::document> splice_strings(wd::basic_value<wd::default_traits, Stor
 // they were.
 void splice_in_every_size() {
     wd::document source = document_of(wd::array{});
+    wd::value source_root = source.root();
     for (std::int64_t i = 0; i < 100; ++i) {
-        webcpp::test::require(BOOST_TEST(source.root().push(i).has_value()));
+        webcpp::test::require(BOOST_TEST(source_root.push(i).has_value()));
     }
     std::array<std::string, 20> inserted;
     for (std::size_t i = 0; i < inserted.size(); ++i) {
@@ -539,7 +557,8 @@ void splice_in_every_size() {
             continue;
         }
         wd::basic_document<wd::default_traits, wd::external>& doc = *made;
-        if (!doc.root().set(source).has_value()) {
+        auto root = doc.root();
+        if (!root.set(source).has_value()) {
             BOOST_TEST_EQ(held, 0U);
             continue;
         }

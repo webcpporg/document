@@ -61,7 +61,8 @@ Document make_document() {
 template <class Document = wd::document, class T>
 Document document_of(const T& v) {
     auto d = make_document<Document>();
-    webcpp::test::require(BOOST_TEST(d.root().set(v).has_value()));
+    auto root = d.root();
+    webcpp::test::require(BOOST_TEST(root.set(v).has_value()));
     return d;
 }
 
@@ -301,7 +302,8 @@ void a_lone_surrogate_under_js_traits() {
 
 void an_undefined_root() {
     wd::document doc = make_document();
-    BOOST_TEST(doc.root().set(wd::undefined).has_value());
+    wd::value root = doc.root();
+    BOOST_TEST(root.set(wd::undefined).has_value());
     BOOST_TEST_EQ(wd::stringify(doc), "");
     BOOST_TEST_EQ(wd::stringify(doc, 2), "");
     BOOST_TEST_EQ(doc.stringify(), "");
