@@ -4,40 +4,33 @@
 # accompanying file LICENSE_1_0.txt or copy at
 # https://www.boost.org/LICENSE_1_0.txt)
 #
-# document's JavaScript API (webcpp-document.mjs), built by Emscripten and
-# tested by Node, which runs the tests from a package directory of the build:
-# the Emscripten module, the wrapper that imports it, the tests and the oracle's
-# cases they replay, copied beside one another.
+# document's JavaScript API (webcpp-document.mjs), built by Emscripten: the
+# module that binding.cpp declares, the wrapper that imports it, and the
+# package directory of the build in which Node and the browser find them
+# beside one another, with the tests and the oracle's cases they replay.
 #
-#   b2 toolset=emscripten libs/document/js//js-tests
-#     builds the package and runs its tests
 #   b2 toolset=emscripten libs/document/js//package
-#     builds the package only
+#     builds the package into js/package
 #
-# Every target here is explicit: no default build and no lane runs them.
+# The tests are not here: libs/document/test/js declares them, as the own
+# lane js, which runs them on this package (b2 declared-lanes), and is the
+# only Jamfile that compiles binding.cpp for the lint and the CI. Every target
+# here is explicit.
 
 project : requirements <library>/webcpp/document//document ;
 
-import common ;
-import notfile ;
-import webcpp ;
-
-webcpp.targets emscripten ;
-
-# Node runs the tests and the driver of the example; package.json and
-# package-lock.json pin Playwright, which drives headless Chromium, and
-# node-modules installs them.
-webcpp.original node ;
-
-path-constant HERE : . ;
-path-constant PACKAGE : package ;
+import make ;
 
 # The module: wasm32 with embind, as an ES module that the wrapper imports
 # beside it. It exports the classes that binding.cpp declares, which
-# webcpp-document.mjs wraps.
+# webcpp-document.mjs wraps. binding.cpp and binding.hpp (which the shared
+# module uses too) never throw into JavaScript nor use the library's sugar that
+# throws, so the module also builds and passes its tests with
+# exception-handling=off, where Boost's handler is linked in. It is built into
+# the build directory, where each variant has a place of its own, and
+# installed into the package from there.
 exe webcpp-document-core : binding.cpp
-  : <location>package
-    <toolset>emscripten:<linkflags>"--bind"
+  : <toolset>emscripten:<linkflags>"--bind"
     <toolset>emscripten:<linkflags>"-sMODULARIZE=1"
     <toolset>emscripten:<linkflags>"-sEXPORT_ES6=1"
     <toolset>emscripten:<linkflags>"-sENVIRONMENT=web,worker,node"
@@ -46,11 +39,31 @@ exe webcpp-document-core : binding.cpp
     <toolset>emscripten:<linkflags>"-sALLOW_MEMORY_GROWTH=1"
     <toolset>emscripten:<linkflags>"-sMAXIMUM_MEMORY=4GB"
     <toolset>emscripten:<linkflags>"-sFILESYSTEM=0"
+    <exception-handling>off:<source>/webcpp//throw_exception
   ;
 explicit webcpp-document-core ;
 
-# The files beside the module: its wrapper, and the package.json that makes the
-# package an ES module, as the wrapper's import of the module needs.
+# The module is a .js and a .wasm that Emscripten's link writes together, of
+# which b2 knows the .js: the .wasm is copied beside it by a target of its own.
+# Both are copied again at every build: a copy is as old as the build it copied,
+# and a build of another variant (exception-handling=off, then the default) is
+# older than the copy of the one before it, which b2 would take for a copy that
+# is up to date.
+explicit package-module ;
+install package-module : webcpp-document-core : <location>package ;
+always package-module ;
+
+make webcpp-document-core.wasm : webcpp-document-core : @copy-wasm : <location>package ;
+explicit webcpp-document-core.wasm ;
+always webcpp-document-core.wasm ;
+
+actions copy-wasm
+{
+    cp -f "$(>:S=.wasm)" "$(<)"
+}
+
+# Its wrapper and the package.json that makes the package an ES module, as the
+# wrapper's import of the module needs.
 explicit package-files ;
 install package-files : webcpp-document.mjs package.json : <location>package ;
 
@@ -71,30 +84,10 @@ explicit package-example ;
 install package-example : [ glob example/image-worker.html example/page.mjs example/worker.mjs ]
   : <location>package/example ;
 
-alias package : webcpp-document-core package-files package-tests package-cases package-expected
-  package-example ;
+alias package : package-module webcpp-document-core.wasm package-files package-tests
+  package-cases package-expected package-example ;
 explicit package ;
 
-# Runs every test file of the package with node, which reports each failing test
-# and fails. Always run again: a test is never up to date.
-notfile js-tests : @run-tests : package-tests : <dependency>package ;
-always js-tests ;
-explicit js-tests ;
-
-actions run-tests
-{
-    set -e
-    node --expose-gc --test "$(>)"
-}
-
-# Loads the example page in headless Chromium, cross-origin isolated as the
-# benchmarks are, and checks what the worker answered. Always run again.
-notfile js-chrome : @run-chrome : : <dependency>package-example <dependency>node-modules ;
-always js-chrome ;
-explicit js-chrome ;
-
-actions run-chrome
-{
-    set -e
-    node "$(HERE)/example/run.mjs" "$(PACKAGE)"
-}
+# Documents shared between workers through one SharedArrayBuffer: a second
+# build of binding.cpp, with threads (shared/Jamfile).
+build-project shared ;

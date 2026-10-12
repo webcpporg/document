@@ -26,8 +26,13 @@ loads:
 [source,bash]
 ----
 b2 toolset=emscripten libs/document/js//package
-b2 toolset=emscripten libs/document/js//js-tests
+b2 toolset=emscripten libs/document/test/js//js-tests
 ----
+
+The tests are the own lane `js` of the library (`libs/document/test/js`), which runs on
+Emscripten's toolset: `js-tests` and `shared-tests` run Node's test runner on the packages,
+`npm-package-test` tests the npm package as a user receives it, and `js-chrome` and `shared-chrome`
+run the examples in headless Chromium.
 
 [#document-js-documents]
 === Documents
@@ -242,6 +247,127 @@ self.onmessage = ({ data }) => {
 A headless Chromium runs the example and fails unless the Worker answered what the document holds
 and the transfer detached the buffer. How the transfer compares with `postMessage` of an object is
 measured in <<document-benchmarks>>.
+
+[#document-js-shared]
+=== Documents shared between workers
+
+The transfer above gives each Worker a copy of the image, and one Worker's copy is its own. A second
+build of the module, `js/shared/webcpp-document-shared.mjs`, shares documents instead: its
+WebAssembly memory is one `SharedArrayBuffer`, and every Worker the program creates can join it.
+Several Workers then read the same document at once, in place: nothing is transferred and nothing
+is copied, and the image a Worker reads is at the address, in that memory, where the page parsed it.
+It is the `shared_document` of <<document-sharing>>, taught from JavaScript.
+
+Every document of this module is in the memory's pool, whose blocks are the room of an image, and a
+`Document` is one reference to a document, as a `std::shared_ptr` is: `useCount` counts the
+references of every Worker, and the last one given up, by `free()` or by the collector, gives the
+block back. A write is every holder's, since they read the same bytes. `makeMutable()` first makes
+the document the writer's own: a copy in a block of its own when others hold it, the same block when
+none does, while the others go on reading the original (<<document-sharing-cow>>).
+
+The page starts the module when it imports the file, and hands a Worker two things in a message:
+`connection()`, which the Worker joins, and a token for the document. The Worker awaits
+`join(connection)`, which runs the module on the shared memory in that Worker, and then adopts the
+token. The page, `js/shared/example/page.mjs`, parses a document and gives its token to four
+Workers:
+
+.Copied from js/shared/example/page.mjs
+[listing]
+----
+const free = pool.available
+const doc = Document.parse('{"user":{"name":"Ada","langs":["C","Note G"]},"price":1.50}')
+const address = doc.image().byteOffset
+say(`page: parsed into one block of the pool, use count ${doc.useCount}`)
+
+const workers = Array.from({ length: 4 }, start)
+const adopted = await Promise.all(workers.map(worker =>
+    worker.send({ command: 'adopt', connection: connection(), token: doc.share() })))
+----
+
+and a Worker, `js/shared/example/reader.mjs`, joins, adopts, and writes on a copy of its own:
+
+.Copied from js/shared/example/reader.mjs
+[listing]
+----
+const commands = {
+    async adopt({ connection, token }) {
+        await join(connection)
+        doc = SharedDocument.adopt(token)
+        return describe()
+    },
+    // The document made this worker's own, a copy in a block of its own, then changed.
+    write({ name }) {
+        doc.makeMutable()
+        doc.set(['user', 'name'], name)
+        return describe()
+    },
+    free() {
+        doc.free()
+        return {}
+    },
+}
+----
+
+A Worker that is done calls `leave()`: it drops every reference it holds, gives its slot back and may
+join again. A Worker that calls `free()` on a document drops that reference alone.
+
+A token is what `share()` returns: a small object, `{ offset, ticket, generation }`, that
+`postMessage` clones, and that keeps one reference to the document until a thread adopts it.
+`SharedDocument.adopt(token)` takes the reference over, once; `SharedDocument.drop(token)` gives it
+back without adopting it, as a receiver does that does not want the document. A token that was
+adopted or dropped is spent, and `adopt` and `drop` refuse it with a `TypeError`, even when its
+block holds another document by then, as does anything that is not a token:
+
+.Copied from js/shared/test/sharing.test.mjs
+[listing]
+----
+const doc = Document.parse(text)
+const token = doc.share()
+SharedDocument.drop(token)
+assert.equal(doc.useCount, 1)
+assert.throws(() => SharedDocument.adopt(token), TypeError)
+assert.throws(() => SharedDocument.drop(token), TypeError)
+----
+
+A headless Chromium runs the example, and fails unless the page prints these lines, in which the four
+Workers read the page's own address and the one that wrote does not:
+
+.Copied from js/shared/example/shared-workers.expected
+[listing]
+----
+cross-origin isolated: true
+page: parsed into one block of the pool, use count 1
+worker 1: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+worker 2: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+worker 3: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+worker 4: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+page: use count 5, blocks in use 1
+worker 4: makeMutable, then set: reads Grace, at the page's address: false
+page: reads Ada, use count 4, blocks in use 2
+page: every worker freed its reference, use count 1
+page: freed, every block back in the pool: true
+----
+
+A `SharedArrayBuffer` exists only in a page that is cross-origin isolated, which the server asks of
+the browser with two headers on the page and on every file it loads: `Cross-Origin-Opener-Policy:
+same-origin` and `Cross-Origin-Embedder-Policy: require-corp`. Without them the module does not
+start. Node needs neither.
+
+The memory is laid out once, by the thread that starts the module, and has limits:
+
+* The memory is fixed at 128 MiB and does not grow, as growing a shared memory would make every
+  Worker refresh its views of it. A full heap is an error, a `RangeError`, and not an abort.
+* The pool has 64 blocks of 512 KiB. A document is one block, so an image can be no larger than the
+  room of a block: a change past it is a `RangeError`, and so is `makeMutable()` or
+  `Document.parse` when no block is free. `pool.available`, `pool.blocks` and `pool.blockBytes` tell
+  what is left.
+* At most 32 Workers are joined at once; a thirty-third `join` is a `RangeError` until one leaves.
+  At most 1024 tokens are in flight at once.
+* A Worker that is terminated without calling `leave()` keeps its references and its slot for the life
+  of the memory: its documents are not given back. A Worker that is done calls `leave()` first.
+* `join.js`, the Emscripten library that lets a Worker the program creates run the module, reads
+  internals of Emscripten 6.0.11 (`createWasm`, `wasmMemory`, `updateMemoryViews`), so the module is
+  tied to that version of Emscripten until it is checked against another.
 
 [#document-js-streams]
 === Streams

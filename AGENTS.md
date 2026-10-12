@@ -12,6 +12,12 @@ specific to document.
   the heap before it allocates, so a full heap is an error value. Only the sugar (`v = x`, `as<T>()`,
   `as_string()`, `as_bool()`, `parse_or_throw`) throws, and each carries the constraint
   `detail::exceptions_enabled`, so a build without exceptions refuses a call to it.
+- **The JavaScript API** (`js/`) is built by `js/Jamfile`, `js/shared/Jamfile` and `js/npm/Jamfile`
+  into the build directory, and installed into `js/package` from there. `test/js/Jamfile` tests it
+  as the own lane `js` (`b2 toolset=emscripten libs/document/test/js//js`), so that the lint
+  compiles `js/binding.cpp`, `js/binding.hpp` and `js/shared/binding.cpp` and the CI runs the
+  tests. The C++ names are snake_case; the JavaScript names (`NativeDocument`, `getDecimal`) appear
+  only in the `EMSCRIPTEN_BINDINGS` registrations, which the wrappers and the tests use.
 - **One image.** A 64-byte header, then Boost.Interprocess's `rbtree_best_fit` heap, used directly;
   every pointer in it an `offset_ptr<..., std::int64_t, std::uint64_t, 8>`.
 

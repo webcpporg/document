@@ -1,0 +1,11 @@
+cross-origin isolated: true
+page: parsed into one block of the pool, use count 1
+worker 1: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+worker 2: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+worker 3: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+worker 4: reads Ada and C, Note G, at the page's address: true, in a SharedArrayBuffer: true
+page: use count 5, blocks in use 1
+worker 4: makeMutable, then set: reads Grace, at the page's address: false
+page: reads Ada, use count 4, blocks in use 2
+page: every worker freed its reference, use count 1
+page: freed, every block back in the pool: true

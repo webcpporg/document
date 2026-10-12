@@ -1,0 +1,94 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+#
+# Documents shared between workers (webcpp-document-shared.mjs): a second
+# module, with Emscripten's Wasm Workers, whose memory is one SharedArrayBuffer.
+# A worker the program creates joins that memory and runs the same module on
+# it, so that every worker reads the same image in place. The package
+# directory of the build holds the module beside its wrapper, its tests and
+# its example, as js/Jamfile does; libs/document/test/js runs the tests and
+# the example, in the own lane js.
+#
+#   b2 toolset=emscripten libs/document/js/shared//package
+#     builds the package only
+#
+# Every target here is explicit.
+
+import make ;
+
+path-constant HERE : . ;
+
+# The module: the shared documents binding.cpp declares, with the helpers of
+# js/binding.hpp, compiled for shared memory, with Wasm Workers on pthreads:
+# each worker that joins runs as a Wasm Worker with a pthread of its own, as
+# Emscripten's libc and its allocator's locks need. Wasm Workers alone (without
+# -pthread) cannot link C++ exceptions in Emscripten 6.0.11: libc++abi's
+# fallback_malloc.o asks for pthread_mutex_lock, which that libc lacks.
+# Boost.JSON's definitions are compiled here too, with the same flags: an
+# object compiled without atomics cannot be linked into a shared memory, and
+# /webcpp//boost_json is built single-threaded (Jamroot), so its archive is
+# never opened.
+#
+# The memory is fixed, 128 MiB, as growing a shared memory would make every
+# worker refresh its views of it; a full heap is then an error value, not an
+# abort. join.js is the runtime of a worker that joins the memory. The module
+# builds and passes its tests with exception-handling=off too, where Boost's
+# handler is linked in. It is built into the build directory, where each
+# variant has a place of its own, and installed into the package from there.
+exe webcpp-document-shared-core : binding.cpp ../../../../tools/boost_json.cpp
+  : <toolset>emscripten:<cxxflags>"-pthread -sWASM_WORKERS"
+    <toolset>emscripten:<linkflags>"-pthread -sWASM_WORKERS"
+    <toolset>emscripten:<linkflags>"--bind"
+    <toolset>emscripten:<linkflags>"-sMODULARIZE=1"
+    <toolset>emscripten:<linkflags>"-sEXPORT_ES6=1"
+    <toolset>emscripten:<linkflags>"-sENVIRONMENT=web,worker,node"
+    <toolset>emscripten:<linkflags>"-sINVOKE_RUN=0"
+    <toolset>emscripten:<linkflags>"--no-entry"
+    <toolset>emscripten:<linkflags>"-sINITIAL_MEMORY=128MB"
+    <toolset>emscripten:<linkflags>"-sABORTING_MALLOC=0"
+    <toolset>emscripten:<linkflags>"-sFILESYSTEM=0"
+    <toolset>emscripten:<linkflags>"--js-library $(HERE)/join.js"
+    <dependency>join.js
+    <exception-handling>off:<source>/webcpp//throw_exception
+  ;
+explicit webcpp-document-shared-core ;
+
+# The module is a .js and a .wasm that Emscripten's link writes together, of
+# which b2 knows the .js: the .wasm is copied beside it by a target of its own.
+# Both are copied again at every build, as js/Jamfile says of its own.
+explicit package-module ;
+install package-module : webcpp-document-shared-core : <location>package ;
+always package-module ;
+
+make webcpp-document-shared-core.wasm : webcpp-document-shared-core : @copy-wasm
+  : <location>package ;
+explicit webcpp-document-shared-core.wasm ;
+always webcpp-document-shared-core.wasm ;
+
+actions copy-wasm
+{
+    cp -f "$(>:S=.wasm)" "$(<)"
+}
+
+# Its wrapper and js's package.json, which makes the package an ES module, as
+# the wrapper's import of the module needs.
+explicit package-files ;
+install package-files : webcpp-document-shared.mjs ../package.json : <location>package ;
+
+explicit package-tests ;
+install package-tests : [ glob test/*.test.mjs ] : <location>package/test ;
+
+explicit package-workers ;
+install package-workers : [ glob test/*.worker.mjs ] : <location>package/test ;
+
+# The example page and its scripts.
+explicit package-example ;
+install package-example : [ glob example/*.html example/page.mjs example/reader.mjs ]
+  : <location>package/example ;
+
+alias package : package-module webcpp-document-shared-core.wasm package-files package-tests
+  package-workers package-example ;
+explicit package ;

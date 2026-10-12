@@ -5,14 +5,14 @@
 # https://www.boost.org/LICENSE_1_0.txt)
 #
 # The npm package @webcpp/document: the module built for release, staged with
-# its wrapper, its declarations and its manifest into a directory of the build,
-# and tested as a user receives it.
+# its wrapper, its declarations and its manifest into a directory of the build.
+# libs/document/test/js tests it as a user receives it, in the own lane js.
 #
 #   b2 toolset=emscripten libs/document/js/npm//npm-package
 #     builds the module with -O3 and stages the package into
 #     <build dir>/webcpp/bin/libs/document/js/npm/package, never into the
 #     source tree
-#   b2 toolset=emscripten libs/document/js/npm//npm-package-test
+#   b2 toolset=emscripten libs/document/test/js//npm-package-test
 #     packs the staged directory, installs the tarball into a fresh directory
 #     and runs the smoke test and the type check there
 #
@@ -20,32 +20,28 @@
 # (README.md of this directory, and .github/workflows/npm.yml). Every target
 # here is explicit.
 
-import common ;
 import make ;
-import notfile ;
 import path ;
 import project ;
-import webcpp ;
-
-webcpp.targets emscripten ;
 
 path-constant HERE : . ;
 
-# The staging and the test directories, absolute: --emit-tsd is told where to
+# The staging and the core directories, absolute: --emit-tsd is told where to
 # write, and emcc runs from the directory b2 was started in. The build directory
-# is the project's own, which --build-dir moves.
+# is the project's own, which --build-dir moves. libs/document/test/js reads
+# STAGE to test the staged package.
 local build = [ path.root [ project.attribute $(__name__) build-dir ] [ path.pwd ] ] ;
 path-constant STAGE : $(build)/package ;
-path-constant TESTS : $(build)/package-test ;
 path-constant TSD : $(build)/core ;
 
 # The module as the package ships it: the build of js/Jamfile in its release
 # variant, a .wasm beside the .js that finds it through new URL(...,
 # import.meta.url) as Emscripten writes it for an ES module, which bundlers
-# resolve, and the declarations embind writes for its classes.
+# resolve, and the declarations embind writes for its classes. It is built into
+# the build directory, where each variant has a place of its own, and installed
+# from there beside the declarations.
 exe webcpp-document-core : ../binding.cpp
   : <variant>release
-    <location>$(build)/core
     <toolset>emscripten:<linkflags>"-O3"
     <toolset>emscripten:<linkflags>"--bind"
     <toolset>emscripten:<linkflags>"-sMODULARIZE=1"
@@ -60,12 +56,31 @@ exe webcpp-document-core : ../binding.cpp
   ;
 explicit webcpp-document-core ;
 
+# The module is a .js and a .wasm that Emscripten's link writes together, of
+# which b2 knows the .js: the .wasm is copied beside it by a target of its own.
+# Both are copied again at every build, as js/Jamfile says of its own, into the
+# directory that --emit-tsd writes the declarations to, where stage.mjs reads
+# the three.
+explicit core ;
+install core : webcpp-document-core : <location>$(build)/core ;
+always core ;
+
+make webcpp-document-core.wasm : webcpp-document-core : @copy-wasm
+  : <location>$(build)/core ;
+explicit webcpp-document-core.wasm ;
+always webcpp-document-core.wasm ;
+
+actions copy-wasm
+{
+    cp -f "$(>:S=.wasm)" "$(<)"
+}
+
 # The staged package: stage.mjs copies the module, the wrapper, the
 # declarations, the README and the licence, and writes the manifest from
 # package.json (the template) with the version of the dev package one level up.
 # Always run again: it is a copy.
 make package.stamp
-  : webcpp-document-core ../webcpp-document.mjs webcpp-document.d.mts package.json README.md
+  : core webcpp-document-core.wasm ../webcpp-document.mjs webcpp-document.d.mts package.json README.md
     ../../LICENSE_1_0.txt stage.mjs ../package.json
   : @stage ;
 explicit package.stamp ;
@@ -85,17 +100,3 @@ actions stage
 
 alias npm-package : package.stamp ;
 explicit npm-package ;
-
-# The tests, run on the tarball that npm pack makes of the staged package
-# (test/run.mjs says what they prove). The TypeScript they use is the dev
-# package's, pinned by package-lock.json.
-notfile npm-package-test : @run-package-tests : npm-package
-  : <dependency>..//node-modules ;
-always npm-package-test ;
-explicit npm-package-test ;
-
-actions run-package-tests
-{
-    set -e
-    node "$(HERE)/test/run.mjs" "$(STAGE)" "$(TESTS)" "$(HERE)/../node_modules/.bin/tsc" "$(HERE)/test"
-}

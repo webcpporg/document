@@ -7,7 +7,8 @@
 // Drives the example page in headless Chromium, through Playwright (package.json pins it, as the
 // benchmarks pin it): node run.mjs <package directory>. The package is served cross-origin
 // isolated, as the benchmarks serve it. It prints the page's result and fails unless the worker
-// answered what the document holds and the transfer detached the buffer.
+// answered what the document holds and the transfer detached the buffer. The browser is the Chrome
+// that the environment variable CHROME names, else Playwright's own Chromium.
 
 import { createServer } from 'node:http'
 import { existsSync, readFileSync } from 'node:fs'
@@ -34,7 +35,7 @@ const server = createServer((request, response) => {
 })
 await new Promise(listening => server.listen(0, '127.0.0.1', listening))
 
-const browser = await chromium.launch()
+const browser = await chromium.launch(process.env.CHROME ? { executablePath: process.env.CHROME } : {})
 try {
     const page = await browser.newPage()
     const errors = []

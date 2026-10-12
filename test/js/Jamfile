@@ -1,0 +1,80 @@
+# Copyright (c) 2026 WebCpp.org
+#
+# Distributed under the Boost Software License, Version 1.0. (See
+# accompanying file LICENSE_1_0.txt or copy at
+# https://www.boost.org/LICENSE_1_0.txt)
+
+# The tests of document's JavaScript API, whose modules ../../js builds with
+# Emscripten (js/binding.cpp for one thread, js/shared/binding.cpp for
+# documents shared between workers, js/npm for the package as it ships). They
+# are driven tests (webcpp.drive): each builds the module it checks, which the
+# lint and the CI therefore compile, and runs Node on the package directory of
+# that module's build (run.mjs):
+#
+#   js-tests       Node's test runner on the package: the wrapper, the corpus
+#                  the oracle's cases make, finalization, images and streams
+#   shared-tests   the same for the module of documents shared between workers
+#   npm-package-test  the staged npm package, packed, installed from its
+#                  tarball into a fresh directory, and type checked there
+#   js-chrome      the example page in headless Chromium, through Playwright
+#   shared-chrome  the example of workers sharing one image, in Chromium
+#
+# They run as the own lane js, on emscripten:
+#
+#   b2 toolset=emscripten libs/document/test/js//js
+#
+# Playwright and TypeScript are pinned by ../../js/package.json and its
+# package-lock.json, which node-modules installs. The browser is the Chrome that
+# the environment variable CHROME names, which the CI's chrome action sets (the
+# Chrome of trystero's interop lane), else Playwright's own Chromium.
+
+import modules ;
+import path ;
+import project ;
+import webcpp ;
+
+webcpp.targets emscripten ;
+
+webcpp.original node : ../../js ;
+
+path-constant JS : ../../js ;
+
+# The staged npm package, and the directory its test works in: STAGE is where
+# ../../js/npm stages it, in that project's build directory.
+local npm = [ project.find ../../js/npm : [ project.attribute $(__name__) location ] ] ;
+local stage = [ modules.peek $(npm) : STAGE ] ;
+local build = [ path.root [ project.attribute $(__name__) build-dir ] [ path.pwd ] ] ;
+
+# A driven test passes a script the path of the linked program, which none of
+# these reads: they read the package, installed beside it by a dependency.
+# Node's own test runner finds the files of its pattern.
+webcpp.drive js-tests : ../../js//webcpp-document-core
+  : <dependency>../../js//package <webcpp-drive-timeout>300
+  : run.mjs : --expose-gc --test $(JS)/package/test/*.test.mjs : emscripten ;
+
+webcpp.drive shared-tests : ../../js/shared//webcpp-document-shared-core
+  : <dependency>../../js/shared//package <webcpp-drive-timeout>300
+  : run.mjs : --expose-gc --test $(JS)/shared/package/test/*.test.mjs : emscripten ;
+
+# Loads the example page in headless Chromium, cross-origin isolated as the
+# benchmarks are, and checks what the worker answered.
+webcpp.drive js-chrome : ../../js//webcpp-document-core
+  : <dependency>../../js//package <webcpp-drive-timeout>300
+  : run.mjs : $(JS)/example/run.mjs $(JS)/package : emscripten ;
+
+# Loads the example page in headless Chromium, cross-origin isolated, and
+# compares the lines it prints with example/shared-workers.expected.
+webcpp.drive shared-chrome : ../../js/shared//webcpp-document-shared-core
+  : <dependency>../../js/shared//package <webcpp-drive-timeout>300
+  : run.mjs : $(JS)/shared/example/run.mjs $(JS)/shared/package
+    $(JS)/shared/example/shared-workers.expected : emscripten ;
+
+# Tests the staged package on the tarball that npm pack makes of it
+# (../../js/npm/test/run.mjs says what the tests prove). The TypeScript they
+# use is the dev package's, pinned by package-lock.json.
+webcpp.drive npm-package-test : ../../js/npm//webcpp-document-core
+  : <dependency>../../js/npm//npm-package <webcpp-drive-timeout>600
+  : run.mjs : $(JS)/npm/test/run.mjs $(stage) $(build)/package-test
+    $(JS)/node_modules/.bin/tsc $(JS)/npm/test : emscripten ;
+
+webcpp.lane js : js-tests shared-tests npm-package-test js-chrome shared-chrome : emscripten ;
