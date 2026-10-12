@@ -88,8 +88,8 @@ No suite times them, so the page takes them from the case the image is built for
 | - | the image copied into a transferable `ArrayBuffer`, transferred, copied into the Worker's memory and opened there in place | `postMessage` of the object, which clones it
 |===
 
-A `*` marks the closest form of an operation an implementation has no direct form of, as the
-survey names it; the results' tables carry the same mark. Rows 15 to 17 have no `*`: each
+A `+*+` marks the closest form of an operation an implementation has no direct form of, as the
+survey names it; the results' tables carry the same mark. Rows 15 to 17 have no `+*+`: each
 implementation has its own form of sending a document, and a `-` marks one that has none. Every array method of document but
 `slice` is a loop by hand: document has the methods that change an array (`push`, `pop`, `splice`
 and the others) and `slice` and `concat`, not the callbacks of `map` or `filter`. A loop that builds
