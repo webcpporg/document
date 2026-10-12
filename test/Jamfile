@@ -37,3 +37,5 @@ webcpp.run number : number_test.cpp ;
 webcpp.run traits : traits_test.cpp ;
 # The heap, its allocator and strings, the regions and the image's header.
 webcpp.run heap : heap_test.cpp ;
+# The selectors' grammar and matcher, apart from any parser.
+webcpp.run selector_grammar : selector_grammar_test.cpp ;
