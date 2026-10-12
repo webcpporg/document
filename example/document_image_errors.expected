@@ -1,0 +1,13 @@
+js_traits: incompatible_document, an image of another format, Boost, layout, byte order or traits
+format version 2: incompatible_document, an image of another format, Boost, layout, byte order or traits
+garbage: not_a_document, not a document's image
+zeroed memory: not_a_document, not a document's image
+misaligned buffer: not_a_document, not a document's image
+truncated, unsealed: not_a_document, not a document's image
+size: not_a_document, not a document's image
+container offset: not_a_document, not a document's image
+truncated, sealed: damaged_document, a sealed image whose bytes do not match its seal
+one byte changed: damaged_document, a sealed image whose bytes do not match its seal
+verify::none, accepted: {"user":"ada","langs":["Analytical","Note G"]}
+reused memory: damaged_document, a sealed image whose bytes do not match its seal
+opened, sealed true: {"user":"Ada","langs":["Analytical","Note G"]}

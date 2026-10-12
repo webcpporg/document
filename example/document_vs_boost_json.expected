@@ -1,0 +1,21 @@
+1. Key order
+  document:   {"1":4,"2":2,"b":1,"a":3}
+  Boost.JSON: {"b":1,"2":2,"a":3,"1":4}
+2. Erase keeps the order of the other members
+  document:   {"b":2,"c":3,"d":4}
+  Boost.JSON: {"d":4,"b":2,"c":3}
+3. Exact numbers
+  document:   [0.1000000000000000000000000000000001,1.2345678901234567890123e+22]
+  Boost.JSON: [1E-1,1.2345678901234568E22]
+4. Array methods
+  document:   unshift(0) -> 5; splice(1, 2, "x") removes [1,2]; a = [0,"x",3,4]
+  Boost.JSON: no splice or unshift; insert and erase make the edit, without the removed values: a = [0,"x",3,4]
+5. An image copied to another buffer and opened in place
+  document:   {"user":"Ada","langs":["Analytical","Note G"]}
+  Boost.JSON: {"user":"Ada","langs":["Analytical","Note G"]}
+6. Repeated keys
+  document:   {"1":4,"2":2,"b":3}
+  Boost.JSON: {"b":3,"2":2,"1":4}
+7. Errors are values
+  document:   parse("[1,") -> malformed JSON text; push on a number -> a value of another kind
+  Boost.JSON: parse("[1,", ec) -> incomplete JSON

@@ -1,0 +1,21 @@
+NDJSON, taken with next():
+{"id":1,"tags":["a","b"]}
+{"id":2,"note":"first\nsecond"}
+[3,4.5]
+null
+concatenated, pushed to a callback:
+{"a":1}
+{"b":2}
+[1]
+[2]
+{"c":[3]}
+5 documents
+NDJSON with a bad line, skipped:
+{"ok":1}
+error at line 2: malformed JSON text
+[2]
+"three"
+rfc7464 records:
+{"a":1}
+{"b":[2]}
+"three"

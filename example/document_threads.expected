@@ -1,0 +1,15 @@
+queue: 3 received, 3 with the image the producer sent, 0 failed to parse
+{"id":1,"name":"Ada"}
+[1,2,3]
+{"id":3,"tags":["queue","thread"]}
+pool: 7 blocks of 2048 bytes
+stored: use_count 1, 6 of 7 blocks free
+with 4 readers: use_count 5
+after the readers: use_count 1, 6 of 7 blocks free
+reader 0: Ada was born in 1815
+reader 1: Ada was born in 1815
+reader 2: Ada was born in 1815
+reader 3: Ada was born in 1815
+writer: Lovelace was born in 1815
+after the writer: Ada was born in 1815, use_count 1, 6 of 7 blocks free
+last copy dropped: 7 of 7 blocks free

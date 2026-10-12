@@ -1,0 +1,6 @@
+1 {"name":"Ada","tags":["math"],"n":1500}
+2 [1,2.5,null,true,"x"]
+3 "plain text"
+4 {"z":1,"a":2}
+5 {"last":true}
+eof after 5 documents

@@ -1,0 +1,14 @@
+NDJSON, read in a coroutine:
+{"id":1,"tags":["a","b"]}
+{"id":2,"ok":false}
+[3,null]
+"last"
+eof
+concatenated JSON, read with a callback:
+{"a":1}
+{"b":[true,null]}
+[1]
+[2]
+{"c":"x"}
+42
+eof

@@ -1,0 +1,33 @@
+insert name: true
+insert name again: false, name = Ada
+insert_or_assign name: false, name = Augusta Ada
+try_emplace born: true
+find born: 1815
+contains born: true, find nope is end: true
+erase born: 1, contains born: false
+name = "Augusta Ada"
+langs = ["Analytical","Note G"]
+known = true
+born = 1815
+push_back(4) -> [1,2,3,4]
+emplace_back(5) -> [1,2,3,4,5]
+insert(begin + 1, 9) -> [1,9,2,3,4,5]
+erase(begin + 1) -> [1,2,3,4,5]
+erase returns the element after: 2
+resize(3) -> [1,2,3]
+front 1, back 3
+at(2) = 3
+at(10) is errc::range: true
+resize(5) -> [1,2,3,null,null]
+prices above 5: 3
+prices above 5, doubled: 16 24 40
+first out of stock: pear
+JavaScript order: user_3 admin user_1 guest user_9 user user_2 owner user_7 user_5 user_4 user_8 user_6
+by_key order: admin guest owner user user_1 user_2 user_3 user_4 user_5 user_6 user_7 user_8 user_9
+prefix user_: 9 keys, from user_1 to user_9
+equal_range user_5: 1 member, user_5
+lower_bound p: user
+keys from g up to v: 12
+without reserve, 10000 insertions grew the image: true
+reserve grew the image: true
+after the reserve, 10000 insertions grew it: false

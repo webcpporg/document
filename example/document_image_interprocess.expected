@@ -1,0 +1,6 @@
+available before the consumer: 4
+{"name":"Ada","born":1815,"langs":["Analytical"]}: use count 1
+{"name":"Grace","langs":["COBOL"]}: use count 1
+{"name":"Alan","n":1500}: use count 1
+refused: a sealed image whose bytes do not match its seal
+available after the consumer: 8

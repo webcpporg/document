@@ -23,3 +23,18 @@ webcpp.example document_traits.cpp ;
 webcpp.example document_image.cpp ;
 # The core in a build without exceptions, whatever the build asks.
 webcpp.example document_no_exceptions.cpp : <exception-handling>off ;
+
+# The library's main uses: streams of documents read by hand, with Boost.Asio, with
+# Boost.Cobalt and with xactor's driver; images on the wire, between processes and
+# between threads; what an image refuses; the containers' interface; and what a
+# document does that Boost.JSON does not.
+webcpp.example document_stream_sync.cpp ;
+webcpp.example document_stream_asio.cpp : <exception-handling>on : native ;
+webcpp.example document_stream_cobalt.cpp : <exception-handling>on <library>/webcpp//boost_cobalt : native ;
+webcpp.example document_stream_xactor.cpp : <library>/webcpp/xactor//xactor : native wasip2 wasip3 ;
+webcpp.example document_image_asio.cpp : <exception-handling>on : native ;
+webcpp.example document_image_interprocess.cpp : <exception-handling>on : native ;
+webcpp.example document_threads.cpp : : native ;
+webcpp.example document_image_errors.cpp ;
+webcpp.example document_containers.cpp ;
+webcpp.example document_vs_boost_json.cpp ;
