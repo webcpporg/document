@@ -298,21 +298,27 @@ void every_change_clears_the_seal() {
     };
     changed("set a member", [](wd::document& d) { return d["name"].set("x").has_value(); });
     changed("add a member", [](wd::document& d) { return d["added"].set(1).has_value(); });
-    changed("erase a member", [](wd::document& d) { return d.root().erase("name").has_value(); });
+    changed("erase a member", [](wd::document& d) {
+        auto root = d.root();
+        return root.erase("name").has_value();
+    });
     changed("set an element", [](wd::document& d) { return d["list"][1].set(9).has_value(); });
     changed("push", [](wd::document& d) { return d["list"].push(5).has_value(); });
     changed("reverse", [](wd::document& d) { return d["list"].reverse().has_value(); });
     changed("splice", [](wd::document& d) { return d["list"].splice(1, 2).has_value(); });
     changed("set_length", [](wd::document& d) { return d["list"].set_length(1).has_value(); });
-    changed("set the root", [](wd::document& d) { return d.root().set(true).has_value(); });
+    changed("set the root", [](wd::document& d) {
+        auto root = d.root();
+        return root.set(true).has_value();
+    });
     changed("grow", [](wd::document& d) {
         // Larger than the image: the owned image grows.
         return d["big"].set(std::string(8192, 'b')).has_value();
     });
     changed("shrink_to_fit", [](wd::document& d) {
-        return d["big"].set(std::string(8192, 'b')).has_value() &&
-               d.root().erase("big").has_value() && d.seal().has_value() &&
-               d.shrink_to_fit().has_value();
+        auto root = d.root();
+        return d["big"].set(std::string(8192, 'b')).has_value() && root.erase("big").has_value() &&
+               d.seal().has_value() && d.shrink_to_fit().has_value();
     });
 
     // A change that fails for want of room, in an external image, changes nothing.

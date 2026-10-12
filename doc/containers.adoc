@@ -62,7 +62,7 @@ include::{examples}/document_containers.expected[lines=12..21]
 [#document-containers-ranges]
 === Ranges
 
-An object and an array are `std::ranges::bidirectional_range`s, so the standard algorithms and the
+An object and an array are each a `std::ranges::bidirectional_range`, so the standard algorithms and the
 views over them read their members as they read a vector or a map:
 
 [source]
@@ -76,7 +76,7 @@ include::{examples}/document_containers.expected[lines=22..24]
 ----
 
 What a change leaves valid is more than the standard containers leave: an insertion, and any growth
-of the image, keeps every iterator and handle valid and invalidates only the `std::string_view`s read
+of the image, keeps every iterator and handle valid and invalidates only the views (`std::string_view`) read
 from a value; an erase invalidates the iterators to the erased member and its subtree. A range reads
 the document as it is when each step is taken, so changing the container it walks is undefined, as it
 is for a standard container.

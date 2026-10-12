@@ -13,6 +13,7 @@
 #include <webcpp/document.hpp>
 #include <webcpp/xactor.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <iostream>
@@ -65,9 +66,8 @@ public:
 
     /** The callback the parser hands each document to, and each dropped line's error. */
     auto hand(xactor::turn<message>& turn) {
-        return [this, &turn](wd::result<wd::document>&& made) {
-            return relay(turn, std::move(made));
-        };
+        return
+            [this, &turn](wd::result<wd::document>&& made) { return relay(turn, std::move(made)); };
     }
 
     xactor::result<void> handle(xactor::turn<message>& turn,
@@ -89,8 +89,8 @@ private:
         if (made.has_value()) {
             return turn.send(consumer_, parsed{.value = std::move(*made)});
         }
-        return turn.send(consumer_, rejected{.reason = made.error().message(),
-                                             .line = stream_.error_line()});
+        return turn.send(consumer_,
+                         rejected{.reason = made.error().message(), .line = stream_.error_line()});
     }
 
     /** Keeps the failure of a call of the parser; the documents it completed went on already. */
@@ -104,13 +104,14 @@ private:
     xactor::actor_ref consumer_;
     wd::stream_parser stream_;
 };
+
 // end::parser[]
 
 // tag::consumer[]
 /** Prints each document with stringify, and each line the parser dropped. */
 class consumer final : public xactor::actor_logic<message> {
 public:
-    xactor::result<void> handle(xactor::turn<message>&,
+    xactor::result<void> handle([[maybe_unused]] xactor::turn<message>& turn,
                                 const xactor::envelope<message>& cause) override {
         if (const auto* got = std::get_if<parsed>(&cause.payload)) {
             std::cout << got->value.stringify() << '\n';
@@ -121,6 +122,7 @@ public:
         return {};
     }
 };
+
 // end::consumer[]
 
 }  // namespace
@@ -140,7 +142,7 @@ int main() {
 
     // Two documents and a line that is not JSON, in chunks cut inside a string, a number and a
     // line; a third document with an exponent, and a last one with no newline after it.
-    const std::string_view pieces[] = {
+    const std::array<std::string_view, 7> pieces{
         R"({"name":"Ad)",
         R"(a","born":181)",
         "5}\n{\"name\":\"Gr",

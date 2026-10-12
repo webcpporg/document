@@ -57,7 +57,7 @@ struct names {
 
 names names_for(std::string_view pid) {
     const std::string stem = "wcpp_img_" + std::string(pid);
-    return {stem, stem + "_q"};
+    return {.segment = stem, .queue = stem + "_q"};
 }
 
 // Removes what a run may have left under the names; a name that is not there is no error.
@@ -70,15 +70,18 @@ void remove_names(const names& run) {
 class remover {
 public:
     explicit remover(names run) : run_(std::move(run)) {}
+
     remover(const remover&) = delete;
     remover& operator=(const remover&) = delete;
     remover(remover&&) = delete;
     remover& operator=(remover&&) = delete;
+
     ~remover() { remove_names(run_); }
 
 private:
     names run_;
 };
+
 // end::names[]
 
 // tag::produce[]
@@ -131,8 +134,8 @@ int produce(const char* program) {
                              sizeof(std::uint64_t));
 
     // Three documents parsed or built in place, and a fourth whose sealed image is then damaged.
-    wd::result<wd::shared_document<>> ada = sealed_from_text(
-        pool, R"({"name":"Ada","born":1815,"langs":["Analytical"]})");
+    wd::result<wd::shared_document<>> ada =
+        sealed_from_text(pool, R"({"name":"Ada","born":1815,"langs":["Analytical"]})");
     wd::result<wd::shared_document<>> grace =
         sealed_from_text(pool, R"({"name":"Grace","langs":["COBOL"]})");
     wd::result<wd::shared_document<>> alan = wd::shared_document<>::create(pool);
@@ -141,9 +144,7 @@ int produce(const char* program) {
         std::cout << "error: a document could not be made\n";
         return 1;
     }
-    if (alan->root()
-            .set(wd::object{{"name", "Alan"}, {"n", 1500}})
-            .has_error() ||
+    if (alan->root().set(wd::object{{"name", "Alan"}, {"n", 1500}}).has_error() ||
         alan->seal().has_error()) {
         std::cout << "error: a document could not be made\n";
         return 1;
@@ -173,6 +174,7 @@ int produce(const char* program) {
     std::cout << "available after the consumer: " << pool.available() << '\n';
     return 0;
 }
+
 // end::produce[]
 
 // tag::consume[]
@@ -215,6 +217,7 @@ int consume(const char* segment, const char* queue_name) {
         }
     }
 }
+
 // end::consume[]
 
 }  // namespace
@@ -226,4 +229,5 @@ int main(int argc, char* argv[]) {
     }
     return produce(argv[0]);
 }
+
 // end::main[]

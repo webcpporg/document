@@ -28,6 +28,7 @@ namespace {
 void report_error(const wd::stream_parser& p, const boost::system::error_code& error) {
     std::cout << "error at line " << p.error_line() << ": " << error.message() << '\n';
 }
+
 // end::report[]
 
 // tag::take[]
@@ -46,12 +47,14 @@ void take_ready(wd::stream_parser& p, wd::on_error policy) {
             }
             continue;
         }
-        if (!taken->has_value()) {
+        const std::optional<wd::document>& held = *taken;
+        if (!held.has_value()) {
             return;
         }
-        std::cout << (*taken)->stringify() << '\n';
+        std::cout << held->stringify() << '\n';
     }
 }
+
 // end::take[]
 
 // tag::pieces[]
@@ -72,6 +75,7 @@ bool write_in_pieces(wd::stream_parser& p, std::string_view text, wd::on_error p
     }
     return true;
 }
+
 // end::pieces[]
 
 // tag::lines[]
@@ -100,6 +104,7 @@ bool read_ndjson() {
     take_ready(p, options.on_error);
     return true;
 }
+
 // end::lines[]
 
 // tag::concatenated[]
@@ -136,6 +141,7 @@ bool push_concatenated() {
     std::cout << p.documents() << " documents\n";
     return true;
 }
+
 // end::concatenated[]
 
 // tag::skip[]
@@ -160,6 +166,7 @@ bool skip_bad_line() {
     take_ready(p, options.on_error);
     return true;
 }
+
 // end::skip[]
 
 // tag::rfc7464[]
@@ -186,6 +193,7 @@ bool read_rfc7464() {
     take_ready(p, options.on_error);
     return true;
 }
+
 // end::rfc7464[]
 
 }  // namespace

@@ -41,7 +41,7 @@ class queue {
 public:
     void push(T value) {
         {
-            const std::lock_guard lock(mutex_);
+            const std::scoped_lock lock(mutex_);
             items_.push_back(std::move(value));
         }
         ready_.notify_one();
@@ -49,7 +49,7 @@ public:
 
     void close() {
         {
-            const std::lock_guard lock(mutex_);
+            const std::scoped_lock lock(mutex_);
             closed_ = true;
         }
         ready_.notify_all();
@@ -73,6 +73,7 @@ private:
     std::deque<T> items_;
     bool closed_ = false;
 };
+
 // end::queue[]
 
 // tag::exchange[]
@@ -112,7 +113,7 @@ exchanged through_a_queue(std::array<std::string_view, 3> texts) {
                 continue;
             }
             const std::byte* image = parsed->image().data();
-            arrivals.push(parcel{std::move(*parsed), image});
+            arrivals.push(parcel{.doc = std::move(*parsed), .image = image});
         }
         arrivals.close();
     });
@@ -120,6 +121,7 @@ exchanged through_a_queue(std::array<std::string_view, 3> texts) {
     consumer.join();
     return result;
 }
+
 // end::exchange[]
 
 // tag::readers[]
@@ -131,9 +133,10 @@ std::string describe(const wd::shared_document<>& doc) {
 }
 
 // A reader holds its copy until it returns, then drops it in its own thread.
-void reader_task(wd::shared_document<> holder, std::string& out) {
+void reader_task(const wd::shared_document<>& holder, std::string& out) {
     out = describe(holder);
 }
+
 // end::readers[]
 
 // tag::copy_on_write[]
@@ -149,6 +152,7 @@ void writer_task(wd::shared_document<> holder, std::string& out) {
     }
     out = describe(holder);
 }
+
 // end::copy_on_write[]
 
 }  // namespace
@@ -158,15 +162,14 @@ int main() {
     const exchanged received = through_a_queue(
         {R"({"id":1,"name":"Ada"})", "[1,2,3]", R"({"id":3,"tags":["queue","thread"]})"});
     std::cout << "queue: " << received.documents.size() << " received, " << received.same_image
-              << " with the image the producer sent, " << received.failed
-              << " failed to parse\n";
+              << " with the image the producer sent, " << received.failed << " failed to parse\n";
     for (const wd::document& doc : received.documents) {
         std::cout << doc.stringify() << '\n';
     }
 
     // The second and third regions share one document, stored in a pool over a buffer the program
     // owns: 16-aligned, as a pool requires.
-    alignas(16) std::array<std::byte, 16 * 1024> buffer{};
+    alignas(16) std::array<std::byte, std::size_t{16} * 1024> buffer{};
     const wd::result<wd::shared_pool> formatted = wd::shared_pool::format(buffer, 2048);
     wd::result<wd::document> parsed = wd::parse(R"({"name":"Ada","born":1815})");
     if (formatted.has_error() || parsed.has_error()) {
@@ -208,8 +211,8 @@ int main() {
     for (std::thread& reader : readers) {
         reader.join();
     }
-    std::cout << "after the readers: use_count " << shared.use_count() << ", "
-              << pool.available() << " of " << pool.blocks() << " blocks free\n";
+    std::cout << "after the readers: use_count " << shared.use_count() << ", " << pool.available()
+              << " of " << pool.blocks() << " blocks free\n";
     for (std::size_t i = 0; i < reader_count; ++i) {
         std::cout << "reader " << i << ": " << read[i] << '\n';
     }

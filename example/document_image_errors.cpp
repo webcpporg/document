@@ -134,11 +134,8 @@ bool refusals() {
     // A header that names a container outside the heap is refused before anything is read there.
     bytes = copy_into(storage, image);
     set_field(bytes, offsetof(wd::image_header, container), std::uint64_t{image.size()});
-    if (!refused("container offset", wd::open(bytes))) {
-        return false;
-    }
+    return refused("container offset", wd::open(bytes));
     // end::container[]
-    return true;
 }
 
 /** A sealed image cut short, changed or written over, refused; and the same image accepted. */

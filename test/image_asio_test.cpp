@@ -93,8 +93,11 @@ constexpr std::size_t block_bytes = 16384;
 
 // The documents the writer sends, each parsed from JSON text and shrunk to its size.
 std::vector<wd::document> sources() {
-    const std::vector<std::string> texts{R"({"id":1})", R"({"tags":["a","b"],"name":"\u00e9"})",
-                                         wide_array()};
+    const std::vector<std::string> texts{
+        R"({"id":1})",
+        R"({"tags":["a","b"],"name":"\u00e9"})",
+        wide_array(),
+    };
     std::vector<wd::document> documents;
     for (const std::string& text : texts) {
         auto parsed = wd::parse(text);
@@ -116,8 +119,7 @@ wd::image_pool make_pool(std::size_t blocks) {
 bool same(const leased& got, const wd::document& source) {
     const auto got_image = got.image();
     const auto source_image = source.image();
-    return got.sealed() &&
-           std::equal(got_image.begin(), got_image.end(), source_image.begin(), source_image.end()) &&
+    return got.sealed() && std::ranges::equal(got_image, source_image) &&
            wd::stringify(got.get()) == wd::stringify(source);
 }
 
@@ -180,22 +182,21 @@ public:
 
 private:
     void read_next() {
-        wd::async_read_image(socket_, pool_,
-                             [this](boost::system::error_code ec, leased image) {
-                                 if (ec == asio::error::eof) {
-                                     read.emplace_back("eof");
-                                     return;
-                                 }
-                                 if (index_ == sources_.size()) {
-                                     read.emplace_back("more than the sources");
-                                     return;
-                                 }
-                                 read.push_back(outcome(ec, image, sources_[index_++]));
-                                 // The lease goes back when `image` is destroyed, at the return.
-                                 if (read.size() < 100) {
-                                     asio::post(socket_.get_executor(), [this] { read_next(); });
-                                 }
-                             });
+        wd::async_read_image(socket_, pool_, [this](boost::system::error_code ec, leased image) {
+            if (ec == asio::error::eof) {
+                read.emplace_back("eof");
+                return;
+            }
+            if (index_ == sources_.size()) {
+                read.emplace_back("more than the sources");
+                return;
+            }
+            read.push_back(outcome(ec, image, sources_[index_++]));
+            // The lease goes back when `image` is destroyed, at the return.
+            if (read.size() < 100) {
+                asio::post(socket_.get_executor(), [this] { read_next(); });
+            }
+        });
     }
 
     tcp::socket& socket_;
@@ -213,11 +214,13 @@ struct completion {
 // Starts one read and drains the context until it completes.
 completion read_once(asio::io_context& io, tcp::socket& socket, wd::image_pool& pool) {
     std::optional<completion> done;
-    wd::async_read_image(socket, pool,
-                         [&done](boost::system::error_code ec, leased image) {
-                             done.emplace(completion{ec, std::move(image)});
-                         });
+    wd::async_read_image(socket, pool, [&done](boost::system::error_code ec, leased image) {
+        done.emplace(completion{.ec = ec, .image = std::move(image)});
+    });
     drain_until(io, [&done] { return done.has_value(); });
+    if (!done.has_value()) {
+        return {};  // Unreached: drain_until has failed the test.
+    }
     return std::move(*done);
 }
 
@@ -242,9 +245,12 @@ batch_result write_once(asio::io_context& io, tcp::socket& socket,
     std::optional<batch_result> done;
     wd::async_write_images(socket, documents,
                            [&done](boost::system::error_code ec, std::size_t bytes) {
-                               done.emplace(batch_result{ec, bytes});
+                               done.emplace(batch_result{.ec = ec, .bytes = bytes});
                            });
     drain_until(io, [&done] { return done.has_value(); });
+    if (!done.has_value()) {
+        return {};  // Unreached: drain_until has failed the test.
+    }
     return *done;
 }
 
@@ -255,7 +261,7 @@ asio::awaitable<void> write_batch_in_coroutine(tcp::socket& socket,
                                                batch_result& written) {
     auto [ec, bytes] =
         co_await wd::async_write_images(socket, documents, asio::as_tuple(asio::use_awaitable));
-    written = batch_result{ec, bytes};
+    written = batch_result{.ec = ec, .bytes = bytes};
     socket.shutdown(tcp::socket::shutdown_send);
 }
 
@@ -270,8 +276,7 @@ asio::awaitable<void> write_in_coroutine(tcp::socket& socket,
 
 // The reader in a coroutine: each image awaited with as_tuple(use_awaitable), then eof.
 asio::awaitable<void> read_in_coroutine(tcp::socket& socket, wd::image_pool& pool,
-                                        const std::vector<wd::document>& sources,
-                                        outcomes& read) {
+                                        const std::vector<wd::document>& sources, outcomes& read) {
     for (const wd::document& source : sources) {
         auto [ec, image] =
             co_await wd::async_read_image(socket, pool, asio::as_tuple(asio::use_awaitable));
@@ -279,7 +284,7 @@ asio::awaitable<void> read_in_coroutine(tcp::socket& socket, wd::image_pool& poo
     }
     auto [ec, image] =
         co_await wd::async_read_image(socket, pool, asio::as_tuple(asio::use_awaitable));
-    read.push_back(ec == asio::error::eof ? "eof" : "more than the sources");
+    read.emplace_back(ec == asio::error::eof ? "eof" : "more than the sources");
 }
 #endif
 
@@ -294,8 +299,7 @@ void a_callback_reads_images() {
     callback_reader reader(c.reader, pool, documents);
     writer.start();
     reader.start();
-    drain_until(io,
-                [&reader] { return !reader.read.empty() && reader.read.back() == "eof"; });
+    drain_until(io, [&reader] { return !reader.read.empty() && reader.read.back() == "eof"; });
     BOOST_TEST((reader.read == outcomes{"same", "same", "same", "eof"}));
     BOOST_TEST_EQ(writer.sent, documents.size());
     BOOST_TEST(!writer.error);
@@ -322,7 +326,7 @@ void backpressure() {
     BOOST_TEST(same(second.image, documents[1]));
     BOOST_TEST_EQ(pool.available(), 0U);
 
-    completion refused = read_once(io, c.reader, pool);
+    const completion refused = read_once(io, c.reader, pool);
     BOOST_TEST(refused.ec == wd::errc::capacity);
     BOOST_TEST(refused.image.empty());
 
@@ -335,7 +339,7 @@ void backpressure() {
     second.image = wd::leased_document<>();
     third.image = wd::leased_document<>();
     c.writer.shutdown(tcp::socket::shutdown_send);
-    completion end = read_once(io, c.reader, pool);
+    const completion end = read_once(io, c.reader, pool);
     BOOST_TEST(end.ec == asio::error::eof);
     BOOST_TEST(end.image.empty());
     BOOST_TEST_EQ(pool.available(), 2U);
@@ -354,7 +358,7 @@ void flipped_in_transit() {
     asio::write(c.writer, asio::buffer(sent.data(), sent.size()));
     c.writer.shutdown(tcp::socket::shutdown_send);
     wd::image_pool pool = make_pool(2);
-    completion damaged = read_once(io, c.reader, pool);
+    const completion damaged = read_once(io, c.reader, pool);
     BOOST_TEST(damaged.ec == wd::errc::damaged_document);
     BOOST_TEST(damaged.image.empty());
     BOOST_TEST_EQ(pool.available(), 2U);
@@ -369,7 +373,7 @@ void cut_short() {
     asio::write(c.writer, asio::buffer(image.data(), image.size() - 10));
     c.writer.shutdown(tcp::socket::shutdown_send);
     wd::image_pool pool = make_pool(2);
-    completion cut = read_once(io, c.reader, pool);
+    const completion cut = read_once(io, c.reader, pool);
     BOOST_TEST(cut.ec == wd::errc::not_a_document);
     BOOST_TEST(cut.image.empty());
 }
@@ -387,11 +391,11 @@ void a_batch_is_written_in_one_call() {
     BOOST_TEST_EQ(written.bytes, image_bytes(documents));
     c.writer.shutdown(tcp::socket::shutdown_send);
     for (const wd::document& source : documents) {
-        completion got = read_once(io, c.reader, pool);
+        const completion got = read_once(io, c.reader, pool);
         webcpp::test::require(BOOST_TEST(!got.ec));
         BOOST_TEST(same(got.image, source));
     }
-    completion end = read_once(io, c.reader, pool);
+    const completion end = read_once(io, c.reader, pool);
     BOOST_TEST(end.ec == asio::error::eof);
     BOOST_TEST_EQ(pool.available(), 4U);
 }
@@ -406,7 +410,7 @@ void an_empty_batch_writes_nothing() {
     BOOST_TEST_EQ(written.bytes, 0U);
     c.writer.shutdown(tcp::socket::shutdown_send);
     wd::image_pool pool = make_pool(1);
-    completion end = read_once(io, c.reader, pool);
+    const completion end = read_once(io, c.reader, pool);
     BOOST_TEST(end.ec == asio::error::eof);
     BOOST_TEST(end.image.empty());
 }
@@ -417,13 +421,13 @@ void a_seal_failure_writes_nothing() {
     asio::io_context io;
     connection c(io);
     std::vector<wd::document> documents = sources();
-    wd::document kept = std::move(documents[1]);
+    const wd::document kept = std::move(documents[1]);
     const batch_result written = write_once(io, c.writer, documents);
     BOOST_TEST(written.ec == wd::errc::type);
     BOOST_TEST_EQ(written.bytes, 0U);
     c.writer.shutdown(tcp::socket::shutdown_send);
     wd::image_pool pool = make_pool(1);
-    completion end = read_once(io, c.reader, pool);
+    const completion end = read_once(io, c.reader, pool);
     BOOST_TEST(end.ec == asio::error::eof);
     BOOST_TEST(end.image.empty());
 }

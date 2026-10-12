@@ -465,12 +465,12 @@ void refused_streams() {
     const std::vector<std::byte> other_traits(js->image().begin(), js->image().end());
     refused_then_reset(other_traits, wd::errc::incompatible_document);
 
-    // Another format version, another byte order, another Boost.
+    // Another format version, another byte order, reserved bytes that are not zero.
     refused_then_reset(edited_image([](wd::image_header& h) { h.version = 2; }),
                        wd::errc::incompatible_document);
     refused_then_reset(edited_image([](wd::image_header& h) { h.byte_order = 0x04030201; }),
                        wd::errc::incompatible_document);
-    refused_then_reset(edited_image([](wd::image_header& h) { ++h.boost_version; }),
+    refused_then_reset(edited_image([](wd::image_header& h) { h.reserved_4 = 1; }),
                        wd::errc::incompatible_document);
 
     // Garbage, a size below the header's, and a size no block holds.
@@ -708,8 +708,6 @@ void the_pool() {
     BOOST_TEST_EQ(pool.available(), 1U);
 }
 
-}  // namespace
-
 // The empty lease: a default leased document holds no block and no document, as a moved-from one
 // does, and assigning a lease to it gives back the block it held.
 void an_empty_lease() {
@@ -729,6 +727,7 @@ void an_empty_lease() {
 
     empty = std::move(held);
     BOOST_TEST(!empty.empty());
+    // NOLINTNEXTLINE(bugprone-use-after-move): the state a move leaves
     BOOST_TEST(held.empty());
     BOOST_TEST_EQ(pool.available(), 0U);
 
@@ -736,6 +735,8 @@ void an_empty_lease() {
     BOOST_TEST(empty.empty());
     BOOST_TEST_EQ(pool.available(), 1U);
 }
+
+}  // namespace
 
 int main() {
     several_images_in_one_write();

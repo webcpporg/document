@@ -63,7 +63,7 @@ inline constexpr std::uint64_t header_bytes = 64;
  the header, the heap's own header and as many bytes again, which the region reserves after it,
  rounded up to the heap's alignment, then the block's size word.
 
- Tip: it repeats `rbtree_best_fit`'s layout, which the image's Boost version pins.
+ Tip: it repeats `rbtree_best_fit`'s layout, which the format test pins.
 */
 inline constexpr std::uint64_t first_block_offset =
     header_bytes +
@@ -298,7 +298,7 @@ struct heap_costs {
  Measures a heap's @ref heap_costs in a heap of a scratch buffer on the stack: the smallest block
  by allocating one, the bytes no block can use by asking for the largest block it holds.
 
- Tip: the numbers follow the Boost version of the build, which an image pins in its header, and a
+ Tip: the numbers follow the Boost release of the build, whose layout the format test pins, and a
  test compares the sizes they predict with the heap's own.
 */
 inline heap_costs measure_heap_costs() noexcept {
@@ -312,7 +312,7 @@ inline heap_costs measure_heap_costs() noexcept {
     h->deallocate(smallest);
     // The largest request the heap accepts takes its one block whole.
     for (std::uint64_t payload = free_at_start; payload != 0; --payload) {
-        void* largest = h->allocate(payload);
+        const void* largest = h->allocate(payload);
         if (largest != nullptr) {
             const std::uint64_t usable = free_at_start - h->get_free_memory();
             costs.overhead = scratch_bytes - usable;

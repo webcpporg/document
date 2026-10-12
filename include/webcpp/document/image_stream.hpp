@@ -29,7 +29,6 @@
 
 #include <boost/assert.hpp>
 #include <boost/system/error_code.hpp>
-#include <boost/version.hpp>
 
 #include <algorithm>
 #include <concepts>
@@ -585,8 +584,8 @@ private:
 
  Sans-IO: the bytes come from any source, copied by @ref write, or read straight into the block by
  the source itself, through @ref prepare and @ref commit. The first 64 bytes of each image are
- checked as its header before a byte more is taken: its magic, format version, byte order, Boost
- version, the layout tag of `Traits`, and a size within a block. The rest of the image follows into
+ checked as its header before a byte more is taken: its magic, format version, byte order, reserved
+ bytes, the layout tag of `Traits`, and a size within a block. The rest of the image follows into
  the same block, and the image is opened there, a sealed one checked against its seal, and its
  heap checked. A refusal stops the reader with its error until @ref reset, since the stream has
  lost its framing; the documents completed before it are still delivered.
@@ -740,8 +739,8 @@ public:
      the room holds, which changes nothing; the error that stops the reader:
      @ref errc::not_a_document for bytes that are not an image's or an image whose heap is not
      sound, @ref errc::incompatible_document for an image of another format version, byte order,
-     Boost version or traits, @ref errc::damaged_document for a sealed image whose bytes do not
-     match its seal, and @ref errc::capacity for an image larger than a block.
+     reserved bytes that are not zero or traits, @ref errc::damaged_document for a sealed image
+     whose bytes do not match its seal, and @ref errc::capacity for an image larger than a block.
     */
     result<std::size_t> commit(std::size_t bytes) noexcept {
         if (error_.failed()) {
@@ -871,8 +870,7 @@ private:
         if (header.size < header_bytes) {
             return errc::not_a_document;
         }
-        if (header.boost_version != BOOST_VERSION ||
-            header.layout != detail::layout_tag<Traits>()) {
+        if (header.reserved_4 != 0 || header.layout != detail::layout_tag<Traits>()) {
             return errc::incompatible_document;
         }
         if (header.size > state_->block_bytes()) {

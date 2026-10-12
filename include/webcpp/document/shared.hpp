@@ -408,7 +408,7 @@ public:
      @return Success; @ref errc::range for an offset that is no block's image, or a block no one
      holds, which changes nothing.
     */
-    result<void> drop(std::uint64_t offset) const noexcept {
+    [[nodiscard]] result<void> drop(std::uint64_t offset) const noexcept {
         const auto held = block_at(offset);
         if (!held.has_value()) {
             return held.error();

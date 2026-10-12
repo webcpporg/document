@@ -13,6 +13,7 @@
 #include <emscripten/bind.h>
 #include <emscripten/val.h>
 
+#include <malloc.h>
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -51,7 +52,9 @@ Outcome failed(boost::system::error_code error) {
     return out;
 }
 
-Outcome failed(wd::errc error) { return failed(wd::make_error_code(error)); }
+Outcome failed(wd::errc error) {
+    return failed(wd::make_error_code(error));
+}
 
 // The outcome of an operation whose result has no value.
 Outcome outcome_of(const wd::result<void>& done) {
@@ -98,18 +101,12 @@ Handle walk(Handle handle, std::span<const step> path) {
 template <class Handle>
 val to_javascript(const Handle& handle) {
     switch (handle.kind()) {
-        case wd::kind::undefined:
-            return val::undefined();
-        case wd::kind::null:
-            return val::null();
-        case wd::kind::boolean:
-            return val(handle.as_bool());
-        case wd::kind::string:
-            return val(std::string(handle.as_string()));
-        case wd::kind::number:
-            return val::global("Number")(val(handle.stringify(0)));
-        default:
-            return val::global("JSON").call<val>("parse", val(handle.stringify(0)));
+        case wd::kind::undefined: return val::undefined();
+        case wd::kind::null: return val::null();
+        case wd::kind::boolean: return val(handle.as_bool());
+        case wd::kind::string: return val(std::string(handle.as_string()));
+        case wd::kind::number: return val::global("Number")(val(handle.stringify(0)));
+        default: return val::global("JSON").call<val>("parse", val(handle.stringify(0)));
     }
 }
 
@@ -121,24 +118,13 @@ val view_of(std::span<const std::byte> bytes) {
 
 // The buffer of wasm memory, which a view of address 0 names.
 val wasm_memory_buffer() {
-    return val(emscripten::typed_memory_view(0, static_cast<const std::uint8_t*>(nullptr)))["buffer"];
+    return val(
+        emscripten::typed_memory_view(0, static_cast<const std::uint8_t*>(nullptr)))["buffer"];
 }
-
-// The NativeDocument objects alive, counted by every construction and destruction (a move counts
-// as both, so it nets to none). A debugging count for the tests of the garbage collector, which
-// frees a document it finds unreachable: it is the only mutable state in this file.
-std::int64_t live_native_documents = 0;
-
-struct live_counted {
-    live_counted() { ++live_native_documents; }
-    live_counted(const live_counted&) { ++live_native_documents; }
-    live_counted& operator=(const live_counted&) = default;
-    ~live_counted() { --live_native_documents; }
-};
 
 // A document of either storage: owned, or external over the bytes it was opened from. Empty until
 // it holds one, as a stream's next() gives it when no document is complete yet.
-class NativeDocument : private live_counted {
+class NativeDocument {
 public:
     NativeDocument() = default;
 
@@ -157,8 +143,7 @@ public:
     NativeDocument& operator=(NativeDocument&&) = delete;
 
     NativeDocument(NativeDocument&& other) noexcept
-        : live_counted(other),
-          code_(other.code_),
+        : code_(other.code_),
           message_(std::move(other.message_)),
           storage_(std::move(other.storage_)),
           copy_(std::exchange(other.copy_, nullptr)) {}
@@ -180,15 +165,16 @@ public:
     }
 
     [[nodiscard]] val image() const {
-        return with_document(
-            [](const auto& document) { return view_of(document.image()); },
-            view_of({}));
+        return with_document([](const auto& document) { return view_of(document.image()); },
+                             view_of({}));
     }
 
     Outcome get(const val& path) const {
         const auto steps = steps_of(path);
         return with_document(
-            [&](const auto& document) { return succeeded(to_javascript(walk(document.root(), steps))); },
+            [&](const auto& document) {
+                return succeeded(to_javascript(walk(document.root(), steps)));
+            },
             failed(wd::errc::type));
     }
 
@@ -207,7 +193,8 @@ public:
         const std::string key = steps.back().key;
         return with_mutable_document([&](auto& document) {
             auto erased = walk(document.root(), parent).erase(std::string_view(key));
-            return erased.has_value() ? succeeded(val(erased.unsafe_value())) : failed(erased.error());
+            return erased.has_value() ? succeeded(val(erased.unsafe_value()))
+                                      : failed(erased.error());
         });
     }
 
@@ -240,8 +227,9 @@ public:
         return with_document(
             [&](const auto& document) {
                 auto length = walk(document.root(), steps).length();
-                return length.has_value() ? succeeded(val(static_cast<double>(length.unsafe_value())))
-                                          : failed(length.error());
+                return length.has_value()
+                           ? succeeded(val(static_cast<double>(length.unsafe_value())))
+                           : failed(length.error());
             },
             failed(wd::errc::type));
     }
@@ -277,8 +265,8 @@ public:
     }
 
     [[nodiscard]] std::string stringify(std::uint32_t indent) const {
-        return with_document(
-            [&](const auto& document) { return document.stringify(indent); }, std::string());
+        return with_document([&](const auto& document) { return document.stringify(indent); },
+                             std::string());
     }
 
     Outcome seal() {
@@ -302,16 +290,14 @@ public:
 
     Outcome pop(const val& path) {
         const auto steps = steps_of(path);
-        return with_mutable_document([&](auto& document) {
-            return removed_outcome(walk(document.root(), steps).pop());
-        });
+        return with_mutable_document(
+            [&](auto& document) { return removed_outcome(walk(document.root(), steps).pop()); });
     }
 
     Outcome shift(const val& path) {
         const auto steps = steps_of(path);
-        return with_mutable_document([&](auto& document) {
-            return removed_outcome(walk(document.root(), steps).shift());
-        });
+        return with_mutable_document(
+            [&](auto& document) { return removed_outcome(walk(document.root(), steps).shift()); });
     }
 
     Outcome unshift(const val& path, const std::string& json) {
@@ -426,7 +412,8 @@ private:
     }
 
     template <class Document>
-    static Outcome set_outcome(Document& document, const std::vector<step>& steps, const val& json) {
+    static Outcome set_outcome(Document& document, const std::vector<step>& steps,
+                               const val& json) {
         auto place = walk(document.root(), steps);
         if (json.isUndefined()) {
             return outcome_of(place.set(wd::undefined));
@@ -493,7 +480,8 @@ public:
     Outcome write(const val& chunk) {
         const auto length = chunk["byteLength"].as<std::size_t>();
         std::string bytes(length, '\0');
-        val view(emscripten::typed_memory_view(length, reinterpret_cast<std::uint8_t*>(bytes.data())));
+        val view(
+            emscripten::typed_memory_view(length, reinterpret_cast<std::uint8_t*>(bytes.data())));
         view.call<void>("set", chunk);
         const auto written = parser_.write(bytes);
         return written.has_value() ? succeeded() : failed(written.error());
@@ -535,7 +523,11 @@ NativeDocument* parse_text(const std::string& text) {
     return new NativeDocument(NativeDocument::parse(text));
 }
 
-double live_documents() { return static_cast<double>(live_native_documents); }
+// The bytes of the wasm heap the allocator has handed out and not taken back: the tests of the
+// garbage collector read it to see the memory of a document it frees.
+double heap_bytes_in_use() {
+    return static_cast<double>(mallinfo().uordblks);
+}
 
 // Opens the bytes in place when they are a 16-aligned view of wasm memory, else from a copy.
 NativeDocument* open_bytes(const val& bytes) {
@@ -588,7 +580,9 @@ EMSCRIPTEN_BINDINGS(webcpp_document) {
         .function("next", &NativeStream::next, emscripten::return_value_policy::take_ownership())
         .function("finish", &NativeStream::finish);
 
-    emscripten::function("parseText", &parse_text, emscripten::return_value_policy::take_ownership());
-    emscripten::function("openBytes", &open_bytes, emscripten::return_value_policy::take_ownership());
-    emscripten::function("liveDocuments", &live_documents);
+    emscripten::function("parseText", &parse_text,
+                         emscripten::return_value_policy::take_ownership());
+    emscripten::function("openBytes", &open_bytes,
+                         emscripten::return_value_policy::take_ownership());
+    emscripten::function("heapBytesInUse", &heap_bytes_in_use);
 }

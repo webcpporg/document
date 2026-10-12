@@ -399,7 +399,7 @@ public:
         header.magic = image_magic;
         header.version = format_version;
         header.byte_order = byte_order_mark;
-        header.boost_version = BOOST_VERSION;
+        header.reserved_4 = 0;
         header.layout = layout_tag<Traits>();
         header.size = r.size();
         header.container = container_offset;
@@ -874,73 +874,9 @@ public:
         BOOST_ASSERT(std::cmp_equal(static_cast<std::byte*>(block) - to.data(), container_offset));
         auto* nodes = new (block) nodes_type(allocator<node_type>(&h));
 
-        std::uint64_t next_id = root_id;
-        const auto copy = [&](const node_type& original, std::uint64_t parent, std::uint8_t group,
-                              std::uint64_t ordinal) -> bool {
-            const std::uint64_t needed =
-                c.node + c.heap.block(original.key.size) + c.heap.block(original.text.size);
-            if (h.get_free_memory() < c.heap.slack + needed) {
-                return false;
-            }
-            const byte_string key = make_probed(h, original.key.view());
-            const byte_string text = make_probed(h, original.text.view());
-            scalar_type scalar = original.scalar;
-            if (original.kind == kind_t::object) {
-                // The counts follow the members as they are copied, not as they were once set.
-                std::uint64_t members = 0;
-                std::uint64_t inserted = 0;
-                for (const node_type* m = from.first_child(original.id); m != nullptr;
-                     m = from.next_sibling(*m)) {
-                    ++members;
-                    inserted += m->group == key_group ? 1 : 0;
-                }
-                scalar = {};
-                set_word(scalar, next_insertion_at, sorted_keys ? 0 : inserted);
-                set_word(scalar, key_count_at, members);
-            }
-            [[maybe_unused]] const bool placed =
-                nodes->emplace(next_id++, parent, group, ordinal, key, original.kind,
-                               original.number, scalar, text)
-                    .second;
-            BOOST_ASSERT(placed);
-            return true;
-        };
-
-        // What walks the source: the next child to copy, where it goes, and the number the next
-        // member that is not an index takes.
-        struct frame {
-            const node_type* child;
-            std::uint64_t parent;
-            std::uint64_t next_insertion;
-        };
-        std::vector<frame> stack;
-        if (!copy(*root, 0, index_group, 0)) {
+        compaction copier{from, c, h, nodes};
+        if (!copier.copy_tree(*root)) {
             return errc::capacity;
-        }
-        if (const node_type* first = from.first_child(root_id)) {
-            stack.push_back({first, root_id, 0});
-        }
-        while (!stack.empty()) {
-            frame& top = stack.back();
-            if (top.child == nullptr) {
-                stack.pop_back();
-                continue;
-            }
-            const node_type& child = *top.child;
-            top.child = from.next_sibling(child);
-            const std::uint64_t parent = top.parent;
-            const std::uint64_t id = next_id;
-            // An element and an array-index key keep the index they are; the other members are
-            // numbered as they come, and under `sorted` by their ids.
-            const bool indexed = child.group == index_group;
-            const std::uint64_t ordinal =
-                indexed ? child.ordinal : (sorted_keys ? id : top.next_insertion++);
-            if (!copy(child, parent, indexed ? index_group : key_group, ordinal)) {
-                return errc::capacity;
-            }
-            if (const node_type* first = from.first_child(child.id)) {
-                stack.push_back({first, id, 0});
-            }
         }
         BOOST_ASSERT(h.get_free_memory() == c.heap.slack);
 
@@ -948,11 +884,11 @@ public:
         header.magic = image_magic;
         header.version = format_version;
         header.byte_order = byte_order_mark;
-        header.boost_version = BOOST_VERSION;
+        header.reserved_4 = 0;
         header.layout = layout_tag<Traits>();
         header.size = to.size();
         header.container = container_offset;
-        header.next_id = next_id;
+        header.next_id = copier.next_id;
         std::memcpy(to.data(), &header, sizeof header);
         tree t;
         t.region_ = &to;
@@ -986,6 +922,9 @@ private:
         std::uint64_t node = 0;
     };
 
+    // The scratch heap is sized for what is built in it, so no allocation fails; were one to, the
+    // allocator would report it by boost::throw_exception, as the library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
     /**
      Measures @ref costs in a scratch heap on the stack, by building in it what a tree does: a
      container and a node. The block sizes of Boost.MultiIndex's nodes are not public, and this way
@@ -1011,6 +950,8 @@ private:
         nodes->~nodes_type();
         return c;
     }
+
+    // NOLINTEND(bugprone-exception-escape)
 
     /** The node of this tree. */
     using node_type = node<Traits>;
@@ -1046,6 +987,135 @@ private:
     static constexpr std::uint8_t set_aside(std::uint8_t group) noexcept {
         return static_cast<std::uint8_t>(group + 2);
     }
+
+    // The walk keeps its stack on the process heap, whose exhaustion ends the program, as the
+    // library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
+    /**
+     What @ref compact_to builds a compact image with: the source tree, the costs of its blocks,
+     the heap and the container of the image, and the id the next node takes.
+    */
+    struct compaction {
+        /** The tree copied from. */
+        const tree& from;
+
+        /** What the blocks of the image take. */
+        const costs& c;
+
+        /** The image's heap. */
+        heap& h;
+
+        /** The image's container. */
+        nodes_type* nodes;
+
+        /** The id the next node copied takes. */
+        std::uint64_t next_id = root_id;
+
+        /**
+         What walks the source: the next child to copy, where it goes, and the number the next
+         member that is not an index takes.
+        */
+        struct frame {
+            /** The next child to copy. */
+            const node_type* child;
+
+            /** The id its parent took in the image. */
+            std::uint64_t parent;
+
+            /** The number the next member that is not an index takes. */
+            std::uint64_t next_insertion;
+        };
+
+        /**
+         The scalar a copy of `original` takes: its own, but for an object, whose counts follow the
+         members as they are copied, not as they were once set.
+        */
+        [[nodiscard]] scalar_type scalar_of(const node_type& original) const noexcept {
+            if (original.kind != kind_t::object) {
+                return original.scalar;
+            }
+            std::uint64_t members = 0;
+            std::uint64_t inserted = 0;
+            for (const node_type* m = from.first_child(original.id); m != nullptr;
+                 m = from.next_sibling(*m)) {
+                ++members;
+                inserted += m->group == key_group ? 1 : 0;
+            }
+            scalar_type scalar{};
+            set_word(scalar, next_insertion_at, sorted_keys ? 0 : inserted);
+            set_word(scalar, key_count_at, members);
+            return scalar;
+        }
+
+        /**
+         The ordinal of `child`, which takes the id `id`: an element and an array-index key keep
+         the index they are; the other members are numbered as they come, and under `sorted` by
+         their ids.
+        */
+        [[nodiscard]] static std::uint64_t ordinal_of(const node_type& child, std::uint64_t id,
+                                                      frame& top) noexcept {
+            if (child.group == index_group) {
+                return child.ordinal;
+            }
+            if (sorted_keys) {
+                return id;
+            }
+            return top.next_insertion++;
+        }
+
+        /** Copies one node, its key and its text, if the heap has room for all three. */
+        [[nodiscard]] bool copy(const node_type& original, std::uint64_t parent, std::uint8_t group,
+                                std::uint64_t ordinal) noexcept {
+            const std::uint64_t needed =
+                c.node + c.heap.block(original.key.size) + c.heap.block(original.text.size);
+            if (h.get_free_memory() < c.heap.slack + needed) {
+                return false;
+            }
+            const byte_string key = make_probed(h, original.key.view());
+            const byte_string text = make_probed(h, original.text.view());
+            const scalar_type scalar = scalar_of(original);
+            [[maybe_unused]] const bool placed =
+                nodes
+                    ->emplace(next_id++, parent, group, ordinal, key, original.kind,
+                              original.number, scalar, text)
+                    .second;
+            BOOST_ASSERT(placed);
+            return true;
+        }
+
+        /** Copies `root` and everything under it in document order, on a stack of its own. */
+        [[nodiscard]] bool copy_tree(const node_type& root) noexcept {
+            if (!copy(root, 0, index_group, 0)) {
+                return false;
+            }
+            std::vector<frame> stack;
+            if (const node_type* first = from.first_child(root_id)) {
+                stack.push_back({first, root_id, 0});
+            }
+            while (!stack.empty()) {
+                frame& top = stack.back();
+                if (top.child == nullptr) {
+                    stack.pop_back();
+                    continue;
+                }
+                const node_type& child = *top.child;
+                top.child = from.next_sibling(child);
+                const std::uint64_t parent = top.parent;
+                const std::uint64_t id = next_id;
+                const std::uint64_t ordinal = ordinal_of(child, id, top);
+                if (!copy(child, parent, child.group == index_group ? index_group : key_group,
+                          ordinal)) {
+                    return false;
+                }
+                if (const node_type* first = from.first_child(child.id)) {
+                    stack.push_back({first, id, 0});
+                }
+            }
+            return true;
+        }
+    };
+
+    // NOLINTEND(bugprone-exception-escape)
 
     /** A node an operation writes: a new one, or one already there whose value it replaces. */
     struct staged {

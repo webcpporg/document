@@ -124,7 +124,7 @@ private:
 asio::awaitable<void> read_in_coroutine(tcp::socket& socket, wd::stream_parser& parser,
                                         outcomes& read) {
     std::string storage;
-    auto buffer = asio::dynamic_buffer(storage);
+    const auto buffer = asio::dynamic_buffer(storage);
     for (;;) {
         auto [ec, d] = co_await wd::async_read_document(socket, buffer, parser,
                                                         asio::as_tuple(asio::use_awaitable));
@@ -247,7 +247,7 @@ void completions() {
     wd::stream_parser parser(options_of(wd::framing::lines, wd::on_error::stop));
     BOOST_TEST_EQ(parser.write("[1]\n[2]\n").value(), 2U);
     std::string storage;
-    auto buffer = asio::dynamic_buffer(storage);
+    const auto buffer = asio::dynamic_buffer(storage);
     outcomes read;
     const auto record = [&read, &parser](boost::system::error_code ec, const wd::document& d) {
         read.push_back(ec == asio::error::eof ? "eof" : outcome(ec, d, parser));
@@ -259,7 +259,7 @@ void completions() {
 
     // Bytes the buffer already holds are the parser's before any read.
     std::string held = "[3]\n";
-    auto filled = asio::dynamic_buffer(held);
+    const auto filled = asio::dynamic_buffer(held);
     wd::async_read_document(c.reader, filled, parser, record);
     wd::async_read_document(c.reader, filled, parser, record);
     drain_until(io, [&read] { return read.size() == 3; });
@@ -391,18 +391,25 @@ public:
         : string_(&s), max_(max) {}
 
     [[nodiscard]] std::size_t size() const noexcept { return std::min(string_->size(), max_); }
+
     [[nodiscard]] std::size_t max_size() const noexcept { return max_; }
+
     [[nodiscard]] std::size_t capacity() const noexcept {
         return std::min(string_->capacity(), max_);
     }
+
     [[nodiscard]] const_buffers_type data(std::size_t pos, std::size_t n) const noexcept {
         return asio::buffer(asio::buffer(*string_) + pos, n);
     }
+
     mutable_buffers_type data(std::size_t pos, std::size_t n) noexcept {
         return asio::buffer(asio::buffer(*string_) + pos, n);
     }
+
     void grow(std::size_t n) { string_->resize(size() + n); }
+
     void shrink(std::size_t n) { string_->resize(n > size() ? 0 : size() - n); }
+
     void consume(std::size_t n) { string_->erase(0, std::min(n, string_->size())); }
 
 private:
@@ -420,23 +427,49 @@ struct counts {
     std::size_t prepares = 0;
 };
 
-class counting_buffer
-    : public asio::dynamic_string_buffer<char, std::char_traits<char>, std::allocator<char>> {
+class counting_buffer {
     using base = asio::dynamic_string_buffer<char, std::char_traits<char>, std::allocator<char>>;
 
 public:
-    counting_buffer(std::string& s, counts& seen) : base(s), seen_(&seen) {}
+    using const_buffers_type = base::const_buffers_type;
+    using mutable_buffers_type = base::mutable_buffers_type;
+
+    counting_buffer(std::string& s, counts& seen) : base_(s), seen_(&seen) {}
+
+    [[nodiscard]] std::size_t size() const noexcept { return base_.size(); }
+
+    [[nodiscard]] std::size_t max_size() const noexcept { return base_.max_size(); }
+
+    [[nodiscard]] std::size_t capacity() const noexcept { return base_.capacity(); }
+
+    [[nodiscard]] const_buffers_type data() const noexcept { return base_.data(); }
+
+    [[nodiscard]] const_buffers_type data(std::size_t pos, std::size_t n) const noexcept {
+        return base_.data(pos, n);
+    }
+
+    mutable_buffers_type data(std::size_t pos, std::size_t n) noexcept {
+        return base_.data(pos, n);
+    }
 
     void grow(std::size_t n) {
         ++seen_->grows;
-        base::grow(n);
-    }
-    mutable_buffers_type prepare(std::size_t n) {
-        ++seen_->prepares;
-        return base::prepare(n);
+        base_.grow(n);
     }
 
+    void shrink(std::size_t n) { base_.shrink(n); }
+
+    mutable_buffers_type prepare(std::size_t n) {
+        ++seen_->prepares;
+        return base_.prepare(n);
+    }
+
+    void commit(std::size_t n) { base_.commit(n); }
+
+    void consume(std::size_t n) { base_.consume(n); }
+
 private:
+    base base_;
     counts* seen_;
 };
 

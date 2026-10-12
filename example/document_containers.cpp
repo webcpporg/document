@@ -12,6 +12,7 @@
 // tag::includes[]
 #include <webcpp/document.hpp>
 
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <iterator>
@@ -36,13 +37,11 @@ int fail(const Result& r) {
 void step(std::string_view what, const wd::document& doc) {
     std::cout << what << " -> " << doc.stringify() << '\n';
 }
+
 // end::helpers[]
 
-}  // namespace
-
-int main() {
-    std::cout << std::boolalpha;
-
+/** Inserts, finds and erases the members of an object, printing each step. */
+int object_section() {
     // tag::object[]
     // An object is a sorted map: insert and try_emplace answer the member and whether it was
     // inserted, and insert_or_assign assigns to it as JavaScript's o[key] = v does.
@@ -57,28 +56,28 @@ int main() {
     }
     const wd::object_ref obj = *as_object;
 
-    auto name = obj.insert("name", "Ada");
+    const auto name = obj.insert("name", "Ada");
     if (name.has_error()) {
         return fail(name);
     }
     std::cout << "insert name: " << name->second << '\n';
 
     // A key that is there keeps its value.
-    auto again = obj.insert("name", "Grace");
+    const auto again = obj.insert("name", "Grace");
     if (again.has_error()) {
         return fail(again);
     }
     std::cout << "insert name again: " << again->second
               << ", name = " << doc["name"].value_or(std::string_view("nobody")) << '\n';
 
-    auto assigned = obj.insert_or_assign("name", "Augusta Ada");
+    const auto assigned = obj.insert_or_assign("name", "Augusta Ada");
     if (assigned.has_error()) {
         return fail(assigned);
     }
     std::cout << "insert_or_assign name: " << assigned->second
               << ", name = " << doc["name"].value_or(std::string_view("nobody")) << '\n';
 
-    auto born = obj.try_emplace("born", 1815);
+    const auto born = obj.try_emplace("born", 1815);
     if (born.has_error()) {
         return fail(born);
     }
@@ -87,10 +86,11 @@ int main() {
     // find answers the member's iterator, or the end; contains answers whether the key is there.
     const wd::object_ref::iterator found = obj.find("born");
     std::cout << "find born: " << found->second.value_or(std::int64_t{0}) << '\n';
+    const wd::object_ref::iterator missing = obj.find("nope");
     std::cout << "contains born: " << obj.contains("born")
-              << ", find nope is end: " << (obj.find("nope") == obj.end()) << '\n';
+              << ", find nope is end: " << (missing == obj.end()) << '\n';
 
-    auto erased = obj.erase("born");
+    const auto erased = obj.erase("born");
     if (erased.has_error()) {
         return fail(erased);
     }
@@ -98,15 +98,15 @@ int main() {
 
     // A new key comes last, and so does a key erased and inserted again: the members iterate in
     // JavaScript's order, which is the order they were added in.
-    auto langs = obj.insert("langs", wd::array{"Analytical", "Note G"});
+    const auto langs = obj.insert("langs", wd::array{"Analytical", "Note G"});
     if (langs.has_error()) {
         return fail(langs);
     }
-    auto known = obj.insert("known", true);
+    const auto known = obj.insert("known", true);
     if (known.has_error()) {
         return fail(known);
     }
-    auto born_again = obj.insert("born", 1815);
+    const auto born_again = obj.insert("born", 1815);
     if (born_again.has_error()) {
         return fail(born_again);
     }
@@ -114,7 +114,11 @@ int main() {
         std::cout << key << " = " << handle.stringify() << '\n';
     }
     // end::object[]
+    return 0;
+}
 
+/** Pushes, inserts, erases and resizes an array, and reads its ends and its elements. */
+int array_section() {
     // tag::array[]
     // An array is a vector: push_back, emplace_back, insert, erase and resize change it as
     // std::vector does, and at checks the index.
@@ -129,19 +133,19 @@ int main() {
     }
     const wd::array_ref list = *as_array;
 
-    auto pushed = list.push_back(4);
+    const auto pushed = list.push_back(4);
     if (pushed.has_error()) {
         return fail(pushed);
     }
     step("push_back(4)", list_doc);
 
-    auto emplaced = list.emplace_back(5);
+    const auto emplaced = list.emplace_back(5);
     if (emplaced.has_error()) {
         return fail(emplaced);
     }
     step("emplace_back(5)", list_doc);
 
-    auto placed = list.insert(std::ranges::next(list.begin(), 1), 9);
+    const auto placed = list.insert(std::ranges::next(list.begin(), 1), 9);
     if (placed.has_error()) {
         return fail(placed);
     }
@@ -154,7 +158,7 @@ int main() {
     std::cout << "erase returns the element after: " << next_element.value_or(std::int64_t{0})
               << '\n';
 
-    auto shrunk = list.resize(3);
+    const auto shrunk = list.resize(3);
     if (shrunk.has_error()) {
         return fail(shrunk);
     }
@@ -162,23 +166,27 @@ int main() {
     std::cout << "front " << list.front().value_or(std::int64_t{0}) << ", back "
               << list.back().value_or(std::int64_t{0}) << '\n';
 
-    wd::result<wd::value> third = list.at(2);
+    const wd::result<wd::value> third = list.at(2);
     if (third.has_error()) {
         return fail(third);
     }
     std::cout << "at(2) = " << third->value_or(std::int64_t{0}) << '\n';
     // An index past the end is an error value, not an undefined element.
-    wd::result<wd::value> beyond = list.at(10);
+    const wd::result<wd::value> beyond = list.at(10);
     std::cout << "at(10) is errc::range: "
               << (beyond.has_error() && beyond.error() == wd::errc::range) << '\n';
 
-    auto grown = list.resize(5);
+    const auto grown = list.resize(5);
     if (grown.has_error()) {
         return fail(grown);
     }
     step("resize(5)", list_doc);
     // end::array[]
+    return 0;
+}
 
+/** Counts, filters and finds the members of an object and of an array. */
+int ranges_section() {
     // tag::ranges[]
     // An object and an array are ranges: the standard algorithms and the views over them read
     // their members, as they read a vector.
@@ -187,7 +195,7 @@ int main() {
         return fail(shop_made);
     }
     wd::document& shop = *shop_made;
-    auto shop_set = shop.root().set(wd::object{
+    const auto shop_set = shop.root().set(wd::object{
         {"prices", wd::array{3, 8, 12, 5, 20}},
         {"stock", wd::object{{"apple", 4}, {"pear", 0}, {"plum", 7}}},
     });
@@ -208,10 +216,10 @@ int main() {
     const auto above_five = [](const wd::value& v) { return v.value_or(std::int64_t{0}) > 5; };
     const auto doubled_value = [](const wd::value& v) { return 2 * v.value_or(std::int64_t{0}); };
     std::cout << "prices above 5: " << std::ranges::count_if(prices, above_five) << '\n';
-    auto doubled = prices | std::views::filter(above_five) |
-                         std::views::transform(doubled_value);
     std::cout << "prices above 5, doubled:";
-    for (const std::int64_t twice : doubled) {
+    // The view is built and iterated in one statement: a filter view has no const iteration.
+    for (const std::int64_t twice :
+         prices | std::views::filter(above_five) | std::views::transform(doubled_value)) {
         std::cout << ' ' << twice;
     }
     std::cout << '\n';
@@ -220,7 +228,11 @@ int main() {
         stock, [](const auto& member) { return member.second.value_or(std::int64_t{0}) == 0; });
     std::cout << "first out of stock: " << empty->first << '\n';
     // end::ranges[]
+    return 0;
+}
 
+/** Prints a catalog in JavaScript's order and in key order, and the ranges of its keys. */
+int by_key_section() {
     // tag::by_key[]
     // by_key is the same object in key order, by UTF-16 code units, with bounds for ranges of keys.
     // A JavaScript program sorts every key to get any of these; here the tree keeps them sorted.
@@ -234,11 +246,12 @@ int main() {
         return fail(as_catalog);
     }
     const wd::object_ref catalog_obj = *as_catalog;
-    const std::string_view names[] = {"user_3", "admin",  "user_1", "guest", "user_9",
-                                      "user",   "user_2", "owner",  "user_7", "user_5",
-                                      "user_4", "user_8", "user_6"};
+    const std::array<std::string_view, 13> names{
+        "user_3", "admin",  "user_1", "guest",  "user_9", "user",   "user_2",
+        "owner",  "user_7", "user_5", "user_4", "user_8", "user_6",
+    };
     for (const std::string_view key : names) {
-        auto added = catalog_obj.insert(key, true);
+        const auto added = catalog_obj.insert(key, true);
         if (added.has_error()) {
             return fail(added);
         }
@@ -269,7 +282,11 @@ int main() {
     const std::ranges::subrange between(keys.lower_bound("g"), keys.lower_bound("v"));
     std::cout << "keys from g up to v: " << std::ranges::distance(between) << '\n';
     // end::by_key[]
+    return 0;
+}
 
+/** Inserts a batch into two objects, one of which reserved its image before the batch. */
+int reserve_section() {
     // tag::reserve[]
     // The batch's size is known, so the image is reserved once, before the insertions: they then
     // move nothing. Without the reservation, the same insertions grow the image.
@@ -287,7 +304,7 @@ int main() {
     }
     const std::uint64_t plain_before = plain.capacity();
     for (std::int64_t i = 0; i < batch; ++i) {
-        auto added = as_plain->insert("k" + std::to_string(i), i);
+        const auto added = as_plain->insert("k" + std::to_string(i), i);
         if (added.has_error()) {
             return fail(added);
         }
@@ -305,21 +322,42 @@ int main() {
         return fail(as_reserved);
     }
     const std::uint64_t reserved_before = reserved.capacity();
-    auto reservation = reserved.reserve(static_cast<std::uint64_t>(batch) * bytes_per_member);
+    const auto reservation = reserved.reserve(static_cast<std::uint64_t>(batch) * bytes_per_member);
     if (reservation.has_error()) {
         return fail(reservation);
     }
     const std::uint64_t reserved_capacity = reserved.capacity();
     std::cout << "reserve grew the image: " << (reserved_capacity != reserved_before) << '\n';
     for (std::int64_t i = 0; i < batch; ++i) {
-        auto added = as_reserved->insert("k" + std::to_string(i), i);
+        const auto added = as_reserved->insert("k" + std::to_string(i), i);
         if (added.has_error()) {
             return fail(added);
         }
     }
-    std::cout << "after the reserve, " << batch << " insertions grew it: "
-              << (reserved.capacity() != reserved_capacity) << '\n';
+    std::cout << "after the reserve, " << batch
+              << " insertions grew it: " << (reserved.capacity() != reserved_capacity) << '\n';
     // end::reserve[]
+    return 0;
+}
+
+}  // namespace
+
+int main() {
+    std::cout << std::boolalpha;
+
+    if (const int code = object_section(); code != 0) {
+        return code;
+    }
+    if (const int code = array_section(); code != 0) {
+        return code;
+    }
+    if (const int code = ranges_section(); code != 0) {
+        return code;
+    }
+    if (const int code = by_key_section(); code != 0) {
+        return code;
+    }
+    return reserve_section();
 }
 
 // end::program[]

@@ -6,11 +6,11 @@
 
 // Images on the wire, from a source the program trusts: a server sends three documents' sealed
 // images with async_write_image, and a client reads them with async_read_image into a pool of two
-// blocks, each opened in place, with no parsing and no allocation on the receiving side. A coroutine
-// reads the first stream and a callback the second; each prints its document with stringify while
-// the image is held in its block, and the blocks the pool has free then. A third stream carries
-// the three images in one gather write, with async_write_images. The context is drained with poll
-// and restart, so the output does not depend on timing.
+// blocks, each opened in place, with no parsing and no allocation on the receiving side. A
+// coroutine reads the first stream and a callback the second; each prints its document with
+// stringify while the image is held in its block, and the blocks the pool has free then. A third
+// stream carries the three images in one gather write, with async_write_images. The context is
+// drained with poll and restart, so the output does not depend on timing.
 
 #include <webcpp/document.hpp>
 #include <webcpp/document/asio.hpp>
@@ -77,6 +77,7 @@ std::vector<wd::document> documents() {
     sent.push_back(document_of(alan));
     return sent;
 }
+
 // end::documents[]
 
 // tag::pool[]
@@ -84,6 +85,7 @@ std::vector<wd::document> documents() {
 wd::image_pool pool_of_two() {
     return wd::image_pool::create(block_bytes, 2).value();
 }
+
 // end::pool[]
 
 // tag::link[]
@@ -100,6 +102,7 @@ struct link {
     tcp::socket server;
     tcp::socket client;
 };
+
 // end::link[]
 
 // tag::drain[]
@@ -123,6 +126,7 @@ bool drain_until(asio::io_context& io, Done done) {
     }
     return true;
 }
+
 // end::drain[]
 
 // tag::held[]
@@ -134,6 +138,7 @@ void print_held(const wd::leased_document<>& image, const wd::image_pool& pool) 
     std::cout << image.get().stringify() << ": " << (image.sealed() ? "sealed" : "not sealed")
               << ", blocks available: " << pool.available() << '\n';
 }
+
 // end::held[]
 
 // tag::coroutine[]
@@ -183,6 +188,7 @@ bool images_in_coroutine(asio::io_context& io, tcp::acceptor& acceptor,
     asio::co_spawn(io, receive_in_coroutine(c.client, pool, done), asio::detached);
     return drain_until(io, [&done] { return done; });
 }
+
 // end::coroutine[]
 
 // tag::callback[]
@@ -270,6 +276,7 @@ bool images_with_callback(asio::io_context& io, tcp::acceptor& acceptor,
     receiver.start();
     return drain_until(io, [&done] { return done; });
 }
+
 // end::callback[]
 
 // tag::batch[]
@@ -286,18 +293,18 @@ bool images_in_one_write(asio::io_context& io, tcp::acceptor& acceptor,
     link c(io, acceptor);
     wd::image_pool pool = pool_of_two();
     bool done = false;
-    wd::async_write_images(c.server, sent,
-                           [&c](boost::system::error_code ec, std::size_t bytes) {
-                               if (ec) {
-                                   std::cout << "error: " << ec.message() << '\n';
-                               } else {
-                                   std::cout << "written: " << bytes << " bytes\n";
-                               }
-                               c.server.shutdown(tcp::socket::shutdown_send);
-                           });
+    wd::async_write_images(c.server, sent, [&c](boost::system::error_code ec, std::size_t bytes) {
+        if (ec) {
+            std::cout << "error: " << ec.message() << '\n';
+        } else {
+            std::cout << "written: " << bytes << " bytes\n";
+        }
+        c.server.shutdown(tcp::socket::shutdown_send);
+    });
     asio::co_spawn(io, receive_in_coroutine(c.client, pool, done), asio::detached);
     return drain_until(io, [&done] { return done; });
 }
+
 // end::batch[]
 
 }  // namespace

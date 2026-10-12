@@ -75,7 +75,7 @@ result<basic_document<Traits, external>> format(std::span<std::byte> buffer) noe
  @param check Whether a sealed image's bytes are checked against its seal.
  @return The document; @ref errc::not_a_document for bytes that are not an image or a buffer that
  is not 16-aligned, @ref errc::incompatible_document for an image of another format version,
- Boost version, layout, byte order or traits, @ref errc::damaged_document for a sealed image
+ reserved bytes, layout, byte order or traits, @ref errc::damaged_document for a sealed image
  whose bytes do not match its seal.
  @see "Images", in the guide.
 */

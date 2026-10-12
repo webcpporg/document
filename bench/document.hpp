@@ -104,7 +104,8 @@ void count(const wd::basic_const_value<Traits, Storage>& v, statistics& s) {
 
 // NOLINTEND(misc-no-recursion)
 
-/** The Statistics of a document, owned or opened in a buffer, as an answer; an error for no document. */
+/** The Statistics of a document, owned or opened in a buffer, as an answer; an error for no
+ * document. */
 template <class Traits, class Storage>
 json::value statistics_of(const std::optional<wd::basic_document<Traits, Storage>>& d) {
     if (!d) {
@@ -279,13 +280,11 @@ benchmark deep_copy(const std::string& name, const document<Traits>& d) {
 
 /** Frees a buffer that an image was copied into, 16-aligned as an image must be. */
 struct aligned_delete {
-    void operator()(std::byte* p) const noexcept {
-        ::operator delete(p, std::align_val_t{16});
-    }
+    void operator()(std::byte* p) const noexcept { ::operator delete(p, std::align_val_t{16}); }
 };
 
 /** The buffer of a received image. */
-using image_buffer = std::unique_ptr<std::byte[], aligned_delete>;
+using image_buffer = std::unique_ptr<std::byte, aligned_delete>;
 
 /** A buffer of `size` bytes, 16-aligned. */
 inline image_buffer allocate_image(std::size_t size) {
@@ -314,7 +313,8 @@ received<Traits> receive(std::span<const std::byte> image, wd::verify check) {
     return r;
 }
 
-/** A copy of `d`, sealed, which the receiver checks against its seal; nothing when it cannot be made. */
+/** A copy of `d`, sealed, which the receiver checks against its seal; nothing when it cannot be
+ * made. */
 template <class Traits>
 std::shared_ptr<document<Traits>> sealed_copy(const document<Traits>& d) {
     auto copy = d.clone();
@@ -350,7 +350,8 @@ benchmark send_receive(const std::string& name, const document<Traits>& d) {
     };
 }
 
-/** `send_receive_sealed`: a sealed image copied into the receiver's buffer, and opened there, its seal checked. */
+/** `send_receive_sealed`: a sealed image copied into the receiver's buffer, and opened there, its
+ * seal checked. */
 template <class Traits>
 benchmark send_receive_sealed(const std::string& name,
                               const std::shared_ptr<document<Traits>>& sealed) {
@@ -1023,7 +1024,7 @@ void add_documents(std::vector<benchmark>& out, const texts& t, const state<Trai
             out.push_back(traverse<Traits>(name, d));
             out.push_back(deep_copy<Traits>(name, d));
             out.push_back(send_receive<Traits>(name, d));
-            if (std::shared_ptr<document<Traits>> sealed = sealed_copy<Traits>(d)) {
+            if (const std::shared_ptr<document<Traits>> sealed = sealed_copy<Traits>(d)) {
                 out.push_back(send_receive_sealed<Traits>(name, sealed));
             }
         }

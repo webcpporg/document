@@ -55,6 +55,7 @@ struct link {
     tcp::socket server;
     tcp::socket client;
 };
+
 // end::link[]
 
 // tag::drain[]
@@ -78,6 +79,7 @@ bool drain_until(asio::io_context& io, Done done) {
     }
     return true;
 }
+
 // end::drain[]
 
 // tag::send[]
@@ -102,6 +104,7 @@ bool send_in_pieces(asio::io_context& io, tcp::socket& server, std::string_view 
     server.shutdown(tcp::socket::shutdown_send);
     return true;
 }
+
 // end::send[]
 
 // tag::coroutine[]
@@ -111,10 +114,10 @@ bool send_in_pieces(asio::io_context& io, tcp::socket& server, std::string_view 
 */
 asio::awaitable<void> read_in_coroutine(tcp::socket& client, wd::stream_parser& parser) {
     std::string storage;
-    auto buffer = asio::dynamic_buffer(storage);
+    const auto buffer = asio::dynamic_buffer(storage);
     for (;;) {
-        auto [ec, made] = co_await wd::async_read_document(
-            client, buffer, parser, asio::as_tuple(asio::use_awaitable));
+        auto [ec, made] = co_await wd::async_read_document(client, buffer, parser,
+                                                           asio::as_tuple(asio::use_awaitable));
         if (ec == asio::error::eof) {
             std::cout << "eof\n";
             co_return;
@@ -142,9 +145,10 @@ bool ndjson_in_coroutine(asio::io_context& io, tcp::acceptor& acceptor) {
         "\"last\"";
     bool done = false;
     asio::co_spawn(io, read_in_coroutine(c.client, parser),
-                   [&done](std::exception_ptr) { done = true; });
+                   [&done](const std::exception_ptr&) { done = true; });
     return send_in_pieces(io, c.server, text, parser) && drain_until(io, [&done] { return done; });
 }
+
 // end::coroutine[]
 
 // tag::callback[]
@@ -155,27 +159,25 @@ bool ndjson_in_coroutine(asio::io_context& io, tcp::acceptor& acceptor) {
 class callback_reader {
 public:
     callback_reader(tcp::socket& client, wd::stream_parser& parser, bool& done)
-        : client_(client), parser_(parser), done_(done),
-          buffer_(asio::dynamic_buffer(storage_)) {}
+        : client_(client), parser_(parser), done_(done), buffer_(asio::dynamic_buffer(storage_)) {}
 
     /** Starts the read of the next document. */
     void start() {
-        wd::async_read_document(
-            client_, buffer_, parser_,
-            [this](boost::system::error_code ec, const wd::document& made) {
-                if (ec == asio::error::eof) {
-                    std::cout << "eof\n";
-                    done_ = true;
-                    return;
-                }
-                if (ec) {
-                    std::cout << "error: " << ec.message() << '\n';
-                    done_ = true;
-                    return;
-                }
-                std::cout << made.stringify() << '\n';
-                asio::post(client_.get_executor(), [this] { start(); });
-            });
+        wd::async_read_document(client_, buffer_, parser_,
+                                [this](boost::system::error_code ec, const wd::document& made) {
+                                    if (ec == asio::error::eof) {
+                                        std::cout << "eof\n";
+                                        done_ = true;
+                                        return;
+                                    }
+                                    if (ec) {
+                                        std::cout << "error: " << ec.message() << '\n';
+                                        done_ = true;
+                                        return;
+                                    }
+                                    std::cout << made.stringify() << '\n';
+                                    asio::post(client_.get_executor(), [this] { start(); });
+                                });
     }
 
 private:
@@ -201,6 +203,7 @@ bool concatenated_with_callback(asio::io_context& io, tcp::acceptor& acceptor) {
     reader.start();
     return send_in_pieces(io, c.server, text, parser) && drain_until(io, [&done] { return done; });
 }
+
 // end::callback[]
 
 }  // namespace

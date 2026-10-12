@@ -42,9 +42,10 @@ void print_boost(std::string_view text) {
 /** The text Boost.JSON writes for `text` once parsed, or the error it reports without throwing. */
 std::string boost_text(std::string_view text) {
     boost::system::error_code ec;
-    json::value v = json::parse(text, ec);
+    const json::value v = json::parse(text, ec);
     return ec ? ec.message() : json::serialize(v);
 }
+
 // end::helpers[]
 
 /** Key order: the document writes keys as JavaScript does, Boost.JSON in the order they came. */
@@ -127,9 +128,10 @@ bool array_methods() {
     arr.insert(arr.begin(), 0);
     arr.erase(arr.begin() + 1, arr.begin() + 3);
     arr.insert(arr.begin() + 1, json::value("x"));
-    print_boost("no splice or unshift; insert and erase make the edit, without the removed "
-                "values: a = " +
-                json::serialize(arr));
+    print_boost(
+        "no splice or unshift; insert and erase make the edit, without the removed "
+        "values: a = " +
+        json::serialize(arr));
     // end::arrays[]
     return true;
 }
@@ -190,8 +192,8 @@ bool errors_are_values() {
     }
     const wd::result<std::uint64_t> pushed = number->root().push(1);
     std::cout << "7. Errors are values\n";
-    print_document("parse(\"[1,\") -> " + broken.error().message() +
-                   "; push on a number -> " + pushed.error().message());
+    print_document("parse(\"[1,\") -> " + broken.error().message() + "; push on a number -> " +
+                   pushed.error().message());
 
     // Boost.JSON's parse reports through error_code, but its value accessors (at, as_string)
     // throw, so this section stays with the error_code overload.

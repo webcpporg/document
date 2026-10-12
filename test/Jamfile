@@ -119,8 +119,20 @@ webcpp.run shared : shared_test.cpp ;
 webcpp.run shared_interprocess : shared_test.cpp
   : <exception-handling>on <define>WEBCPP_TEST_DOCUMENT_INTERPROCESS : native ;
 
-# The JavaScript API, built by Emscripten and tested by Node (js/Jamfile): its targets js-tests
-# and js-chrome, which need the emscripten toolset.
+# The JavaScript API, built by Emscripten and tested by Node (js/Jamfile): its
+# targets js-tests and js-chrome, which need the emscripten toolset.
 build-project ../js ;
-# Compact images: equal content gives equal bytes, the exact size, a caller's buffer.
+# Compact images: equal content gives equal bytes, the exact size, a caller's
+# buffer.
 webcpp.run compact : compact_test.cpp ;
+
+# The image format, watched: the compact image of a fixed document, under each
+# traits, equals the golden image of fixtures/format byte for byte, so that a
+# Boost release that changes the layout raises format_version instead of
+# passing unseen (webcpp.data gives wasmtime the fixtures' directory). To write
+# the golden images again, which is right only together with raising
+# format_version, run format_test with --write fixtures/format.
+.format-files = [ glob fixtures/format/*.image ] ;
+webcpp.run format : format_test.cpp
+  : <define>"\"WEBCPP_TEST_DOCUMENT_FIXTURES=\\\"$(fixtures)\\\"\"" <dependency>$(.format-files)
+    [ webcpp.data $(FIXTURES) ] ;

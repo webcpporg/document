@@ -7,9 +7,9 @@
 // A stream of documents after an HTTP header read with Boost.Beast, over a loopback TCP pair in one
 // program: the server answers a GET with a response header and an NDJSON body; the client reads the
 // header with Beast into a multi_buffer, then reads the documents with async_read_document from the
-// same multi_buffer. Beast reads the socket in blocks, so the first bytes of the body may already be
-// in that buffer; the document reader takes them as its own input, so none are lost or copied. The
-// context is drained with poll and restart, so the output does not depend on timing.
+// same multi_buffer. Beast reads the socket in blocks, so the first bytes of the body may already
+// be in that buffer; the document reader takes them as its own input, so none are lost or copied.
+// The context is drained with poll and restart, so the output does not depend on timing.
 
 #include <webcpp/document.hpp>
 #include <webcpp/document/asio.hpp>
@@ -57,6 +57,7 @@ struct connection {
     tcp::socket server;
     tcp::socket client;
 };
+
 // end::connection[]
 
 /**
@@ -108,8 +109,8 @@ asio::awaitable<void> serve(tcp::socket& socket) {
 
     beast::multi_buffer buffer;
     http::request<http::empty_body> request;
-    auto [read_ec, read_bytes] = co_await http::async_read(
-        socket, buffer, request, asio::as_tuple(asio::use_awaitable));
+    auto [read_ec, read_bytes] =
+        co_await http::async_read(socket, buffer, request, asio::as_tuple(asio::use_awaitable));
     if (read_ec) {
         std::cout << "server: " << read_ec.message() << '\n';
         co_return;
@@ -142,6 +143,7 @@ asio::awaitable<void> serve(tcp::socket& socket) {
     }
     socket.shutdown(tcp::socket::shutdown_send);
 }
+
 // end::server[]
 
 // tag::client[]
@@ -152,8 +154,8 @@ asio::awaitable<void> serve(tcp::socket& socket) {
 asio::awaitable<void> read_response(tcp::socket& socket) {
     http::request<http::empty_body> request{http::verb::get, "/documents", 11};
     request.set(http::field::host, "127.0.0.1");
-    auto [request_ec, request_bytes] = co_await http::async_write(socket, request,
-                                                   asio::as_tuple(asio::use_awaitable));
+    auto [request_ec, request_bytes] =
+        co_await http::async_write(socket, request, asio::as_tuple(asio::use_awaitable));
     if (request_ec) {
         std::cout << "client: " << request_ec.message() << '\n';
         co_return;
@@ -162,8 +164,8 @@ asio::awaitable<void> read_response(tcp::socket& socket) {
     // tag::header[]
     beast::multi_buffer buffer;
     http::response_parser<http::empty_body> header;
-    auto [header_ec, header_bytes] = co_await http::async_read_header(socket, buffer, header,
-                                                        asio::as_tuple(asio::use_awaitable));
+    auto [header_ec, header_bytes] = co_await http::async_read_header(
+        socket, buffer, header, asio::as_tuple(asio::use_awaitable));
     if (header_ec) {
         std::cout << "client: " << header_ec.message() << '\n';
         co_return;
@@ -194,6 +196,7 @@ asio::awaitable<void> read_response(tcp::socket& socket) {
     }
     // end::documents[]
 }
+
 // end::client[]
 
 }  // namespace
@@ -204,9 +207,10 @@ int main() {
     connection c(io, acceptor);
     bool server_done = false;
     bool client_done = false;
-    asio::co_spawn(io, serve(c.server), [&server_done](std::exception_ptr) { server_done = true; });
+    asio::co_spawn(io, serve(c.server),
+                   [&server_done](const std::exception_ptr&) { server_done = true; });
     asio::co_spawn(io, read_response(c.client),
-                   [&client_done](std::exception_ptr) { client_done = true; });
+                   [&client_done](const std::exception_ptr&) { client_done = true; });
     if (!drain_until(io, [&server_done, &client_done] { return server_done && client_done; })) {
         return 1;
     }

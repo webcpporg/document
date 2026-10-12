@@ -20,10 +20,10 @@ import createCore from './webcpp-document-core.js'
 
 const core = await createCore()
 
-// Counts of the module's own handles, for the tests of the garbage collector: liveDocuments is the
-// number of Document handles the module holds, freed or not yet collected.
+// Measurements of the module's memory, for the tests of the garbage collector: heapBytesInUse is
+// the bytes of the wasm heap the allocator has handed out and not taken back.
 export const diagnostics = Object.freeze({
-    liveDocuments: () => core.liveDocuments(),
+    heapBytesInUse: () => core.heapBytesInUse(),
 })
 
 // Frees the handles of documents and stream parsers that were never freed: a handle is held here

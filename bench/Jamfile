@@ -52,7 +52,8 @@ exe bench-module : bench.cpp
     <toolset>emscripten:<linkflags>-sENVIRONMENT=node,web,worker
     <toolset>emscripten:<linkflags>-sINVOKE_RUN=0
     <toolset>emscripten:<linkflags>-sFORCE_FILESYSTEM=1
-    # HEAPU8 and UTF8ToString are the Worker benchmarks' (bench.mjs): the image's bytes and the statistics' text.
+    # HEAPU8 and UTF8ToString are the Worker benchmarks' (bench.mjs): the
+    # image's bytes and the statistics' text.
     <toolset>emscripten:<linkflags>-sEXPORTED_RUNTIME_METHODS=FS,callMain,HEAPU8,UTF8ToString
   ;
 explicit bench-native bench-module ;

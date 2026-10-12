@@ -73,11 +73,11 @@ struct requirement {
  The transmission rows: Boost.JSON and document send and receive each file; document's sealed send
  and receive answers the same row, as "document sealed", so that its answer is checked too.
 */
-constexpr std::array<requirement, 3> transmission = {{
-    {"send_receive", "boost.json", "boost.json"},
-    {"send_receive", "document", "document"},
-    {"send_receive", "document", "document sealed"},
-}};
+constexpr auto transmission = std::to_array<requirement>({
+    {.op = "send_receive", .impl = "boost.json", .answered_as = "boost.json"},
+    {.op = "send_receive", .impl = "document", .answered_as = "document"},
+    {.op = "send_receive", .impl = "document", .answered_as = "document sealed"},
+});
 
 /** The files the transmission rows name, as their benchmarks name them. */
 constexpr std::array<std::string_view, 3> transmission_files = {"canada", "citm", "twitter"};
@@ -225,29 +225,37 @@ json::object built_with() {
     return meta;
 }
 
-/** One pass of every benchmark of every implementation; 1 when two answer differently. */
-int smoke(const options& o, const bench::texts& t, std::span<const bench::key_set> keys) {
-    std::map<std::pair<std::string, std::string>, std::vector<std::pair<std::string, json::value>>>
-        answers;
-    for (const std::string& name : o.implementations) {
-        const std::vector<bench::benchmark> all = benchmarks_of(name, t, keys);
-        if (all.empty()) {
-            std::cerr << "bench: " << name << " has no benchmarks: an unknown name, or data "
-                      << "it cannot read\n";
-            return 1;
-        }
-        for (const bench::benchmark& b : all) {
-            auto [first, answer] = bench::first_pass(b);
-            if (o.verbose) {
-                std::cout << name << " " << b.op << " " << b.dataset << " " << first * b.ops / 1e6
-                          << " ms\n";
-            }
-            // A sealed send and receive answers the row of the plain one, as "document sealed".
-            const bool sealed = b.op == "send_receive_sealed";
-            answers[{sealed ? "send_receive" : b.op, b.dataset}].emplace_back(
-                sealed ? name + " sealed" : name, std::move(answer));
-        }
+/** The answers of the benchmarks, by row: the operation and the dataset, each with the names and
+ the answers of the implementations that gave them. */
+using answers_by_row =
+    std::map<std::pair<std::string, std::string>, std::vector<std::pair<std::string, json::value>>>;
+
+/** Runs one pass of every benchmark of the implementation `name` and records each answer under
+ its row; false, after naming the implementation, when it has no benchmarks. */
+bool collect(std::string_view name, const options& o, const bench::texts& t,
+             std::span<const bench::key_set> keys, answers_by_row& answers) {
+    const std::vector<bench::benchmark> all = benchmarks_of(name, t, keys);
+    if (all.empty()) {
+        std::cerr << "bench: " << name << " has no benchmarks: an unknown name, or data "
+                  << "it cannot read\n";
+        return false;
     }
+    for (const bench::benchmark& b : all) {
+        auto [first, answer] = bench::first_pass(b);
+        if (o.verbose) {
+            std::cout << name << " " << b.op << " " << b.dataset << " " << first * b.ops / 1e6
+                      << " ms\n";
+        }
+        // A sealed send and receive answers the row of the plain one, as "document sealed".
+        const bool sealed = b.op == "send_receive_sealed";
+        answers[{sealed ? "send_receive" : b.op, b.dataset}].emplace_back(
+            sealed ? std::string(name) + " sealed" : std::string(name), std::move(answer));
+    }
+    return true;
+}
+
+/** Names each answer that differs from the first answer of its row; returns how many do. */
+std::size_t report_disagreements(const answers_by_row& answers) {
     std::size_t disagreements = 0;
     for (const auto& [row, given] : answers) {
         for (const auto& [name, answer] : given) {
@@ -259,26 +267,47 @@ int smoke(const options& o, const bench::texts& t, std::span<const bench::key_se
             }
         }
     }
-    // A row that is missing is a gap in the page, not a disagreement: the smoke names it too.
+    return disagreements;
+}
+
+/** Whether the row of the requirement `r` on `file` holds the answer `r` names. */
+bool answered(const answers_by_row& answers, const requirement& r, std::string_view file) {
+    const auto row = answers.find({std::string(r.op), std::string(file)});
+    return row != answers.end() && std::ranges::any_of(row->second, [&](const auto& given) {
+               return given.first == r.answered_as;
+           });
+}
+
+/** Names each transmission row that an implementation of the run did not answer; returns how
+ many were missing. */
+std::size_t report_missing(const options& o, const answers_by_row& answers) {
     std::size_t missing = 0;
     for (const requirement& r : transmission) {
         if (std::ranges::find(o.implementations, r.impl) == o.implementations.end()) {
             continue;
         }
         for (const std::string_view file : transmission_files) {
-            const auto row = answers.find({std::string(r.op), std::string(file)});
-            const bool answered =
-                row != answers.end() &&
-                std::ranges::any_of(row->second, [&](const auto& given) {
-                    return given.first == r.answered_as;
-                });
-            if (!answered) {
+            if (!answered(answers, r, file)) {
                 ++missing;
                 std::cout << "bench: " << r.op << " on " << file << ": " << r.answered_as
                           << " did not answer\n";
             }
         }
     }
+    return missing;
+}
+
+/** One pass of every benchmark of every implementation; 1 when two answer differently. */
+int smoke(const options& o, const bench::texts& t, std::span<const bench::key_set> keys) {
+    answers_by_row answers;
+    for (const std::string& name : o.implementations) {
+        if (!collect(name, o, t, keys, answers)) {
+            return 1;
+        }
+    }
+    const std::size_t disagreements = report_disagreements(answers);
+    // A row that is missing is a gap in the page, not a disagreement: the smoke names it too.
+    const std::size_t missing = report_missing(o, answers);
     std::cout << "bench: " << answers.size() << " benchmarks of " << o.implementations.size()
               << " implementations, " << disagreements << " disagreements, " << missing
               << " missing\n";
@@ -342,7 +371,8 @@ int wire(const options& o, const bench::texts& t) {
             std::cerr << "bench: " << name << " does not parse as a document\n";
             return 1;
         }
-        wd::basic_document<wd::default_traits, wd::owned> document = std::move(parsed).unsafe_value();
+        wd::basic_document<wd::default_traits, wd::owned> document =
+            std::move(parsed).unsafe_value();
         if (!document.shrink_to_fit().has_value()) {
             std::cerr << "bench: " << name << " cannot be shrunk\n";
             return 1;
@@ -390,9 +420,11 @@ transmission_state& transmission_of() {
 
 extern "C" {
 
-/** Parses one of the three files (0 canada, 1 citm, 2 twitter) and keeps it to send; its image's size, or 0. */
+/** Parses one of the three files (0 canada, 1 citm, 2 twitter) and keeps it to send; its image's
+ * size, or 0. */
 EMSCRIPTEN_KEEPALIVE std::size_t webcpp_bench_send(int file) {
-    constexpr std::array<const char*, 3> names = {"canada.json", "citm_catalog.json", "twitter.json"};
+    constexpr std::array<const char*, 3> names = {"canada.json", "citm_catalog.json",
+                                                  "twitter.json"};
     if (file < 0 || file >= static_cast<int>(names.size())) {
         return 0;
     }
@@ -416,7 +448,8 @@ EMSCRIPTEN_KEEPALIVE const std::byte* webcpp_bench_image() {
     return state.sent ? state.sent->image().data() : nullptr;
 }
 
-/** A 16-aligned buffer of `size` bytes for a received image; the image opened before is released. */
+/** A 16-aligned buffer of `size` bytes for a received image; the image opened before is released.
+ */
 EMSCRIPTEN_KEEPALIVE std::byte* webcpp_bench_receive(std::size_t size) {
     transmission_state& state = transmission_of();
     state.opened.reset();
@@ -424,7 +457,8 @@ EMSCRIPTEN_KEEPALIVE std::byte* webcpp_bench_receive(std::size_t size) {
     return state.buffer.get();
 }
 
-/** Opens the image received, in place and with its seal checked: 1 when it opens, 0 when it is refused. */
+/** Opens the image received, in place and with its seal checked: 1 when it opens, 0 when it is
+ * refused. */
 EMSCRIPTEN_KEEPALIVE int webcpp_bench_open(std::size_t size) {
     transmission_state& state = transmission_of();
     state.opened.reset();

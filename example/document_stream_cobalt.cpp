@@ -19,7 +19,7 @@
 #include <boost/cobalt/op.hpp>
 #include <boost/cobalt/result.hpp>
 #include <boost/cobalt/task.hpp>
-#include <boost/cobalt/this_coro.hpp>
+#include <boost/cobalt/this_thread.hpp>
 
 #include <algorithm>
 #include <array>
@@ -55,6 +55,7 @@ cobalt::task<void> send(tcp::socket& socket, std::string_view text) {
     }
     socket.shutdown(tcp::socket::shutdown_send);
 }
+
 // end::send[]
 
 // tag::read[]
@@ -65,7 +66,7 @@ cobalt::task<void> read(tcp::socket& socket) {
     options.framing = wd::framing::lines;
     wd::stream_parser parser(options);
     std::string storage;
-    auto buffer = asio::dynamic_buffer(storage);
+    const auto buffer = asio::dynamic_buffer(storage);
     std::size_t count = 0;
     for (;;) {
         auto next = co_await cobalt::as_result(
@@ -82,14 +83,15 @@ cobalt::task<void> read(tcp::socket& socket) {
     }
     std::cout << "eof after " << count << " documents\n";
 }
+
 // end::read[]
 
 }  // namespace
 
 // tag::main[]
 // The connection is made before the coroutines start: the listening socket holds it until accept.
-cobalt::main co_main(int /*argc*/, char* /*argv*/[]) {
-    const auto executor = co_await cobalt::this_coro::executor;
+cobalt::main co_main(int /*argc*/, char** /*argv*/) {
+    const auto executor = cobalt::this_thread::get_executor();
     tcp::acceptor acceptor(executor, tcp::endpoint(asio::ip::address_v4::loopback(), 0));
     tcp::socket writer(executor);
     tcp::socket reader(executor);
@@ -98,4 +100,5 @@ cobalt::main co_main(int /*argc*/, char* /*argv*/[]) {
     co_await cobalt::join(send(writer, stream), read(reader));
     co_return 0;
 }
+
 // end::main[]
