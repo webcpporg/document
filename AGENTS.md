@@ -26,17 +26,21 @@ specific to document.
 - The values of `errc` and `kind`, the category's identity `0x646f63756d656e74` ("document") and the
   image's header layout never change; a layout change raises the image's format version.
 - Boost.MultiIndex erases an element whose `modify` throws: a `modify` only swaps prepared values.
+- `asio.hpp` is the one header that includes Boost.Asio, which builds natively only: the
+  convenience header leaves it out, `test/Jamfile` compiles it alone natively, and every program
+  that includes it is declared `native`.
 
 ## The page
 
 - `doc/document.adoc` includes one file per section, in this order: `introduction.adoc`,
   `javascript.adoc`, `handles.adoc`, `numbers.adoc`, `strings.adoc`, `order.adoc`, `arrays.adoc`,
-  `stringify.adoc`, `parsing.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`,
+  `stringify.adoc`, `parsing.adoc`, `streams.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`,
   `exceptions.adoc`, `errors.adoc`, `testing.adoc`, then the reference and the changelog.
   `b2 libs/document/doc` builds it with the strict reference.
 - Each `@see "<title>"` of a Doc Comment names a section's title: "Introduction", "From
   JavaScript", "Handles", "Numbers", "Strings, dates and bytes", "Key order", "Arrays", "Writing
-  JSON", "Parsing", "Selectors", "Traits", "Images", "The sugar that throws", "Errors", "Testing".
+  JSON", "Parsing", "Streams of documents", "Selectors", "Traits", "Images", "The sugar that
+  throws", "Errors", "Testing".
   Renaming a section renames its `@see` lines in the same commit; doc-check fails otherwise.
 - The guide's programs are `example/document_<topic>.cpp`, each with its `.expected`, whose lines
   are what Node prints for the same JavaScript wherever the page does not say otherwise; check a

@@ -5,7 +5,8 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 /**
- Every public header of document: include this one header to use it.
+ Every public header of document but `<webcpp/document/asio.hpp>`, which brings Boost.Asio and
+ builds natively only: include this one header to use the rest.
 
  @see "Testing", in the guide.
 */
@@ -23,6 +24,7 @@
 #include <webcpp/document/number.hpp>
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/parser.hpp>
+#include <webcpp/document/stream.hpp>
 #include <webcpp/document/stringify.hpp>
 #include <webcpp/document/traits.hpp>
 #include <webcpp/document/value.hpp>

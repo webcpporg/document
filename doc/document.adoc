@@ -46,6 +46,8 @@ include::stringify.adoc[]
 
 include::parsing.adoc[]
 
+include::streams.adoc[]
+
 include::selectors.adoc[]
 
 include::traits.adoc[]

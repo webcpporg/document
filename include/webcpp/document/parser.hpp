@@ -344,6 +344,52 @@ private:
     template <class, class>
     friend class detail::handler;
 
+    template <class>
+    friend class basic_stream_parser;
+
+    /**
+     Feeds a part of the text and stops where the text's value ends, as a stream of documents
+     reads one document after another; returns how many bytes it used.
+
+     The part is not empty. Its bytes past `max_bytes` are not fed: a text not complete within the
+     limit is @ref errc::capacity.
+    */
+    result<std::size_t> write_part(std::string_view part) {
+        if (!failure_.has_value()) {
+            return failed().error();
+        }
+        const std::uint64_t room = options_.max_bytes - given_;
+        const std::string_view fed =
+            part.substr(0, static_cast<std::size_t>(std::min<std::uint64_t>(room, part.size())));
+        if (fed.empty()) {
+            failure_ = errc::capacity;
+            return failure_.error();
+        }
+        boost::system::error_code ec;
+        const std::size_t used = json_.write_some(true, fed.data(), fed.size(), ec);
+        given_ += used;
+        if (const result<void> settled = settle(ec, used); !settled.has_value()) {
+            return settled.error();
+        }
+        if (!json_.done() && fed.size() < part.size()) {
+            failure_ = errc::capacity;
+            return failure_.error();
+        }
+        return used;
+    }
+
+    /** Whether the text's value has ended, so that @ref take may take its document. */
+    [[nodiscard]] bool complete() const noexcept { return json_.done(); }
+
+    /** Takes the document of the value that ended, and makes the parser ready for another text. */
+    basic_document<Traits, Storage> take() noexcept {
+        // complete() holds, so on_document_begin made the document.
+        basic_document<Traits, Storage> made(
+            std::move(*document_));  // NOLINT(bugprone-unchecked-optional-access)
+        reset();
+        return made;
+    }
+
     /** Boost.JSON's options: numbers left as text, and the depth limit. */
     static boost::json::parse_options json_options(const parse_options& o) noexcept {
         boost::json::parse_options made;

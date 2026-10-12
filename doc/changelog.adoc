@@ -25,4 +25,5 @@ of every version are on webcpp's index page.
 * Added JavaScript's array methods, splice included, with its index rules.
 * Added stringify and stringify_to, writing JSON.stringify's exact bytes.
 * Added parse, an incremental parser, and selectors that stream in bounded memory.
+* Added streams of documents: NDJSON, JSON text sequences, concatenated JSON, and Asio.
 // end::unreleased[]

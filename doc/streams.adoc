@@ -1,0 +1,162 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-streams]
+== Streams of documents
+
+A stream of documents is a stream of bytes that holds JSON texts one after another: a socket that
+a server writes NDJSON to, a log file of JSON lines, the output of a program that prints indented
+documents. `wd::stream_parser`, `wd::basic_stream_parser<Traits>` for other traits, in
+`<webcpp/document/stream.hpp>`, takes the bytes in chunks of any size, split anywhere, down to one
+byte at a time, and delivers each document as soon as the bytes that end it are consumed. It reads
+one document at a time: at a document's end it delivers it and begins the next on the bytes that
+follow, in the same chunk, so a stream of any length needs the memory of the documents not yet
+taken and of the one being read.
+
+Each document is parsed as `wd::parse` parses one text (<<document-parsing>>), with the same key
+order, numbers and revivers, into a new owned document, and is held to the same limits on its own:
+`max_depth`, `max_document_bytes`, and `max_bytes`, which counts the bytes of one document from its
+first, not those of the stream (<<document-parsing-options>>). `wd::stream_options` holds those
+options, and two of its own: the framing, which says how the documents are told apart, and the
+policy on errors.
+
+[#document-streams-framings]
+=== Framings
+
+[cols="1,3",options="header"]
+|===
+| `wd::framing` | The stream
+
+| `concatenated`
+| Documents one after another, with any JSON whitespace between them, or none: indented JSON,
+  `{"a":1}    {"b":2}`, `{"a":1}{"b":2}`, `[1][2]` and `"x""y"` alike. A document ends where its
+  value closes; a top-level number ends at the next byte that cannot continue it, so `1 2` is two
+  documents and `12` one, however it is split. The default.
+
+| `lines`
+| NDJSON, also called JSON Lines: one document per line.
+
+| `rfc7464`
+| JSON text sequences, RFC 7464: each document in a record that the byte 0x1E opens.
+|===
+
+[#document-streams-lines]
+=== NDJSON
+
+A line of NDJSON holds one document, and a document ends at its line's `\n`. JSON never holds a raw
+`\n` inside a string, where it is always the escape `\n`, so a raw `\n` in the stream always ends a
+line. With `framing::lines`:
+
+* a document ends at its line's `\n`, or at `\r\n`: the `\r`, and any other JSON whitespace before
+  or after the document on its line, is ignored;
+* an empty line, or one of whitespace only, is ignored;
+* the last line may end without its `\n`: `finish()` closes it;
+* two documents on one line are an error for that line, and so is a document not complete at its
+  `\n`. Indented JSON is therefore not NDJSON: `{` alone on a line is an error, and so is each line
+  after it, until a line holds a whole document again.
+
+A document of a line is delivered at the line's `\n`, once the line is known to hold it alone.
+
+[#document-streams-rfc7464]
+=== JSON text sequences
+
+With `framing::rfc7464`, a record starts at 0x1E, the ASCII record separator, and ends before the
+next 0x1E or at the stream's end. Its document may span lines, indented, and is delivered as soon
+as its value closes; a top-level number closes at the `\n` that RFC 7464 puts after each text, at
+the next 0x1E, or at `finish()`. A record holds nothing but whitespace after its document; an empty
+record is ignored. Whitespace before the first record is ignored, and any other byte before it is
+an error.
+
+[#document-streams-errors]
+=== Errors
+
+A bad document is `errc::syntax` for malformed text, `errc::range` for a number the traits refuse,
+and `errc::capacity` past a limit, as in a parse (<<document-parsing-errors>>). What follows it is
+the policy's, `wd::on_error`:
+
+[cols="1,3",options="header"]
+|===
+| `wd::on_error` | What a bad document does
+
+| `stop`
+| It ends the stream: the documents before it are delivered, then every call returns its error,
+  until `reset()`. The default, and the only policy of `framing::concatenated`, which has no place
+  to go on from.
+
+| `skip`
+| It is dropped, and its error is delivered in its place, in the stream's order; the stream goes on
+  at the next line with `framing::lines`, and at the next 0x1E with `framing::rfc7464`.
+|===
+
+A parser asked to skip with `framing::concatenated` is refused: every call of it returns
+`boost::system::errc::invalid_argument`. After an error is delivered, `error_line()` and
+`error_offset()` say where it was found, the line counted from 1 and the offset in bytes from the
+stream's start, and `error_cause()` gives the code of Boost.JSON's parser behind it, which is
+`extra_data` for a second document on a line or in a record.
+
+`finish()` ends the stream: it closes a top-level number or a last line without its `\n`, and a
+document the end cuts short is `errc::syntax`. After it the parser takes no more bytes, which is
+`errc::syntax`, until `reset()`; an empty `write` and another `finish()` complete nothing.
+
+[#document-streams-sans-io]
+=== Without I/O
+
+The parser is sans-IO: it reads no socket and no file, so it serves any source, a socket read by
+hand, a file read in blocks, an actor's messages, or JavaScript that hands chunks to a {cpp}
+function compiled with Emscripten. Its documents come out in one of two ways:
+
+* `write(bytes)` queues each document it completes, and `next()` takes the oldest: a
+  `result<std::optional<document>>` that holds the document, nothing when none is complete, or an
+  error, delivered as the policy says;
+* `write(bytes, f)` and `finish(f)`, the push form, hand each document to `f` as it completes,
+  after any that `next()` has not taken: `f` takes a `result<document>`, the document or, with
+  `on_error::skip`, the error of one dropped, and returns `void` or `result<void>`, whose failure
+  ends the stream with that error.
+
+`write` and `finish` return how many documents, and dropped documents' errors, they completed.
+`line()` is the line of the last byte consumed, `offset()` the bytes consumed, and `documents()`
+the documents delivered so far. The core never throws, as the rest of document: an exception that
+`f` throws propagates, with the bytes up to the document it was given consumed.
+
+[#document-streams-asio]
+=== With Boost.Asio
+
+`<webcpp/document/asio.hpp>` reads a stream of documents from Boost.Asio's streams. It is the one
+header of document that includes Boost.Asio, which builds natively only, so `<webcpp/document.hpp>`
+leaves it out, and a program that uses it includes it and is built natively.
+
+`wd::async_read_document(stream, buffer, parser, token)` reads the next document of `stream`, an
+`AsyncReadStream` such as a socket or a pipe. It takes the parser's next document when the parser
+holds one, and otherwise reads from the stream into `buffer`, a `DynamicBuffer_v1` such as what
+`asio::dynamic_buffer` makes of a string, and writes what it read into the parser, until a document
+is complete. It is a composed operation that takes any completion token of Boost.Asio's, a callback,
+`asio::use_awaitable`, `asio::deferred` or `boost::cobalt::use_op` among them, and completes with
+`(boost::system::error_code, document)`:
+
+[cols="1,3",options="header"]
+|===
+| Error | The completion
+
+| none
+| The next document.
+
+| the error of a document dropped
+| With `on_error::skip`; the next call goes on with the stream.
+
+| the error that stopped the stream
+| With `on_error::stop`, every time, until the parser's `reset()`.
+
+| `asio::error::eof`
+| The stream ended, and the parser's `finish()` delivered every document it held; every later call
+  completes with it again.
+
+| another
+| The error of a read.
+|===
+
+On an error the document is empty. A completion is never called inside `async_read_document`: one
+that needs no read is dispatched to the handler's immediate executor, or posted to the stream's.
+One operation at a time reads a stream, its buffer and its parser, which outlive it.

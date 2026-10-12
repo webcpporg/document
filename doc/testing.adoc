@@ -101,6 +101,18 @@ document's tests are lightweight_test programs, one per subject, under `test/`, 
   million elements under `on` within 64 KB of image, the same deliveries however the text is
   split, and paths that parse back as selectors.
 
+| `stream`
+| Streams of documents: each framing on its own rows, NDJSON's rules one by one, indented records
+  and bad ones in JSON text sequences, errors skipped with their lines or stopping the stream until
+  a reset, the limits held per document, and every stream split at every byte and written one byte
+  at a time giving what one write gives, through `next()` and through the push form alike.
+
+| `stream_asio`
+| Natively only: `async_read_document` over a loopback TCP connection, the writer sending NDJSON
+  and concatenated JSON in odd-sized pieces, read with a callback and, with exceptions, in a
+  coroutine with `asio::use_awaitable`; a skipped line reported with its line, `eof` at the end,
+  and a completion that needs no read made after the call returns.
+
 | `array`
 | Each array method against Node's results, with JavaScript's index rules, on empty arrays and on
   anything but an array; a handle kept while pushes grow the image; and a splice into external
@@ -171,7 +183,8 @@ webcpp checkout, each of these builds and runs:
 
 `b2 libs/document/test`::
 The {n-tests-native} tests natively: the lightweight_test programs, and each of the {n-headers}
-public headers compiled alone.
+public headers compiled alone. `stream_asio`, and `asio.hpp` compiled alone, are built natively
+only, as Boost.Asio is (<<document-streams-asio>>).
 
 `b2 libs/document/example`::
 The {n-examples} examples, each built, run, and its output compared with the one beside it.

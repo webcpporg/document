@@ -6,7 +6,7 @@
 
 /**
  The declarations the public headers share before their definitions, with the default template
- arguments, given here once: the document, its handles, its parser, and what reaches their
+ arguments, given here once: the document, its handles, its parsers, and what reaches their
  insides.
 */
 
@@ -37,6 +37,9 @@ class basic_value;
 
 template <class Traits = default_traits, class Storage = owned>
 class basic_parser;
+
+template <class Traits = default_traits>
+class basic_stream_parser;
 
 namespace detail {
 

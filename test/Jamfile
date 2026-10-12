@@ -11,7 +11,13 @@ import webcpp ;
 
 webcpp.targets native emscripten wasip2 wasip3 ;
 
-webcpp.headers-alone document : ../include ;
+# Each public header compiles alone on every target, but asio.hpp, the one
+# that includes Boost.Asio, which builds natively only. "[^a]*" leaves it out,
+# and would leave out any other header whose name begins with an a, which the
+# lint then names as compiled alone nowhere.
+webcpp.headers-alone document : ../include
+  : document.hpp "document/[^a]*.hpp" document/detail/*.hpp ;
+webcpp.headers-alone document : ../include : document/asio.hpp : : native ;
 
 # config.hpp defines WEBCPP_DOCUMENT_NO_EXCEPTIONS exactly when webcpp has no
 # exceptions, and keeps it when a developer defines it in a build that has
@@ -67,6 +73,12 @@ webcpp.run parse_sugar : parse_test.cpp : <exception-handling>on <define>WEBCPP_
 webcpp.run streaming : streaming_test.cpp : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 # Selectors: values delivered as they complete.
 webcpp.run selector : selector_test.cpp ;
+# Streams of documents: each framing, each policy on errors, the limits per
+# document, and every stream split at every byte.
+webcpp.run stream : stream_test.cpp ;
+# async_read_document over a loopback TCP connection; natively only, as
+# asio.hpp builds.
+webcpp.run stream_asio : stream_asio_test.cpp : : native ;
 # JavaScript's array methods.
 webcpp.run array : array_test.cpp ;
 # The sugar that throws, and its refusal in a build without exceptions.
