@@ -53,8 +53,20 @@ exe webcpp-document-core : ../binding.cpp
     <toolset>emscripten:<linkflags>"-sMAXIMUM_MEMORY=4GB"
     <toolset>emscripten:<linkflags>"-sFILESYSTEM=0"
     <toolset>emscripten:<linkflags>"--emit-tsd=$(build)/core/webcpp-document-core.d.ts"
+    <dependency>core-directory.stamp
   ;
 explicit webcpp-document-core ;
+
+# The directory --emit-tsd writes to, made before the link: `install core`
+# makes it too, but only after the link, and b2 may run the link first.
+make core-directory.stamp : : @make-core-directory ;
+explicit core-directory.stamp ;
+
+actions make-core-directory
+{
+    mkdir -p "$(TSD)"
+    echo made > "$(<)"
+}
 
 # The module is a .js and a .wasm that Emscripten's link writes together, of
 # which b2 knows the .js: the .wasm is copied beside it by a target of its own.
