@@ -1,0 +1,12 @@
+lines, in chunks of 9 bytes:
+  chunk 3: {"id":1,"tags":["a","b"]}
+  chunk 6: {"id":2,"name":"Zoé"}
+  chunk 7: line 3 dropped, malformed JSON text
+  chunk 8: [3,4.5]
+  chunk 9: "last"
+concatenated, in chunks of 4 bytes:
+  chunk 2: {"a":1}
+  chunk 6: {"b":[2,3]}
+  chunk 7: [4]
+  chunk 8: "five"
+  chunk 10: 6

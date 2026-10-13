@@ -191,13 +191,14 @@ The {n-examples} examples, each built, run, and its output compared with the one
 
 `b2 libs/document/test libs/document/example toolset=emscripten`::
 The same on emscripten: {n-tests-emscripten} tests and {n-examples-emscripten} examples, each run
-by node, b2's toolset itself, except the {n-driven-emscripten} tests of the JavaScript API, which
-the own lane `js` runs.
+by node, b2's toolset itself, except the {n-driven-emscripten} driven programs, the tests of the
+JavaScript API and the example of <<document-streams-javascript>>, which the own lane `js` runs.
 
 `b2 libs/document/test/js//js toolset=emscripten`::
 The own lane `js` (<<document-js>>): Node's test runner on the module and on the module of shared
-documents, the npm package as a user receives it, and the two examples in headless Chromium. Each
-test builds the module it checks, so the lint and the CI compile it.
+documents, the npm package as a user receives it, and the two examples in headless Chromium, and
+Node over the example that binds a stream parser (`example/document_stream_js.cpp`). Each test
+builds the module it checks, so the lint and the CI compile it.
 
 `b2 libs/document/test libs/document/example toolset=clang-wasip2 testing.launcher=wasmtime`::
 The same for wasm32-wasip2: {n-tests-wasip2} tests and {n-examples-wasip2} examples, each run by

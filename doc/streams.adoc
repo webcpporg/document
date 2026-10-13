@@ -401,4 +401,48 @@ include::{examples}/document_stream_xactor.expected[]
 
 A sender written in JavaScript can feed the parser compiled from {cpp} chunk by chunk, and a
 `ReadableStream` such as a response body can be turned into an async iterable of documents. The
-module that does this is taught in <<document-js-streams>>.
+module that does this is taught in <<document-js-streams>>; the program below shows the same
+parser in a program of your own, compiled with Emscripten, which JavaScript drives through
+Embind.
+
+The class wraps a `stream_parser` and holds two JavaScript functions. JavaScript writes the bytes
+of the stream to it, and its callback runs once for each document that a chunk completes, with the
+text `stringify` writes, or for each line it drops, with the line and the message. Embind turns a
+`Uint8Array` into the `std::string` of `write`, so a chunk may end inside a character:
+
+[source]
+----
+include::{examples}/document_stream_js.cpp[tag=stream,indent=0]
+----
+
+[source]
+----
+include::{examples}/document_stream_js.cpp[tag=bindings,indent=0]
+----
+
+Node loads the module and sends two streams in chunks, one of NDJSON, whose bad line is dropped
+and reported while the stream goes on, and one concatenated, whose last number only `finish`
+closes. The fifth chunk of the NDJSON stream ends with the byte `0xC3`, the first of the two bytes
+of the `é` of `Zoé`:
+
+[listing]
+----
+include::{examples}/document_stream_js.mjs[tag=send,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_stream_js.mjs[tag=streams,indent=0]
+----
+
+Each line it prints says the chunk after which a document arrived. The last line of the NDJSON
+stream, and the last number of the other, arrive when `finish` ends the stream, as nothing before
+ends them:
+
+[listing]
+----
+include::{examples}/document_stream_js.expected[]
+----
+
+The program is a driven test: `webcpp.drive` builds it with Emscripten and runs Node over it, in the
+own lane `js` (<<document-js>>), where Node compares what it prints with these lines.

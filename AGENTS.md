@@ -56,6 +56,9 @@ specific to document.
   new output against Node before committing it. The page shows their regions by tag and their
   outputs by `lines=`: a change to a program's output checks the `lines=` ranges of the sections
   that show it.
+- `document_stream_js.cpp` is the one example that Node drives (`document_stream_js.mjs`, under
+  `webcpp.drive` in `example/Jamfile`), on emscripten only and in the own lane `js`: the script
+  compares what it prints with `document_stream_js.expected`, which it is given by path.
 - `document_javascript.cpp` shows the sugar and declares `<exception-handling>on`;
   `document_no_exceptions.cpp` declares `<exception-handling>off`. Every other example builds both
   ways.

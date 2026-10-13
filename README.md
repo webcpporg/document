@@ -42,7 +42,7 @@ a page, a Worker or Node: `Document.parse`, `get`, `set`, `push`, `splice`, `str
 
 `<webcpp/document.hpp>` includes every public header, whose names are in the namespace
 `webcpp::document`. document needs Boost 1.92 or newer (Interprocess, MultiIndex, Decimal, System,
-and JSON's parser) and webcpp's configuration, config. It runs natively, on emscripten, on
+Charconv, which reads and writes doubles, and JSON's parser) and webcpp's configuration, config. It runs natively, on emscripten, on
 wasm32-wasip2 and on wasm32-wasip3.
 
 ## A minimal example

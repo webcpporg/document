@@ -202,9 +202,24 @@ finds:
 * `image()` is a view of that memory and `byteLength` its size, so a program knows what a document
   costs, and a document that is to travel as bytes is already the bytes.
 
-The calls of `reserve`, `shrink_to_fit` and `compact` of the {cpp} library, which size and pack an
-image (<<document-images>>), are not in the module: a parsed document starts at 4096 bytes and
-grows as it needs.
+A parsed document starts at 4096 bytes and grows as it needs. `doc.capacity` is the number of bytes
+its image can hold before a change must move it, and `doc.reserve(bytes)` makes the image hold at
+least that many, so a program that knows how large a document will grow pays for the room once
+(<<document-images-reserve>>). A size that is not a non-negative integer, or that is past the document's
+limit, is a `RangeError`, and nothing changes. `shrink_to_fit` and `compact` of the {cpp} library,
+which pack an image, are not in the module.
+
+.Copied from js/test/api.test.mjs
+[listing]
+----
+const doc = Document.parse('{"a":1}')
+const before = doc.capacity
+assert.ok(before >= doc.byteLength)
+assert.equal(doc.reserve(before * 4), undefined)
+assert.ok(doc.capacity >= before * 4)
+assert.equal(doc.stringify(), '{"a":1}')
+doc.free()
+----
 
 [#document-js-worker]
 === An image sent to a Worker

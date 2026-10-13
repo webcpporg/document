@@ -12,6 +12,11 @@ project : requirements <library>/webcpp/document//document
 
 import webcpp ;
 
+# The driven example below is run by Node.
+webcpp.original node : ../js ;
+
+path-constant HERE : . ;
+
 webcpp.targets native emscripten wasip2 wasip3 ;
 
 # The guide's programs, each shown on the page with the output it prints.
@@ -45,3 +50,16 @@ webcpp.example document_threads.cpp : : native ;
 webcpp.example document_image_errors.cpp ;
 webcpp.example document_containers.cpp ;
 webcpp.example document_vs_boost_json.cpp ;
+
+# A stream read by C++ for JavaScript: Node sends chunks of bytes to a class
+# that document_stream_js.cpp binds with Embind, and compares what it
+# delivers with the expected output. A driven program, so it runs in the own
+# lane js, beside the tests of the JavaScript module.
+webcpp.drive document_stream_js : document_stream_js.cpp
+  : <toolset>emscripten:<linkflags>"--bind"
+    <toolset>emscripten:<linkflags>"-sMODULARIZE=1"
+    <toolset>emscripten:<linkflags>"-sENVIRONMENT=node"
+    <toolset>emscripten:<linkflags>"-sINVOKE_RUN=0"
+    <toolset>emscripten:<linkflags>"--no-entry"
+  : document_stream_js.mjs : $(HERE)/document_stream_js.expected : emscripten ;
+webcpp.lane js : document_stream_js : emscripten ;

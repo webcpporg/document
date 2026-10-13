@@ -135,10 +135,10 @@ writes for the same operations.
   GCC, on emscripten under node, and for wasm32-wasip2 and wasm32-wasip3 with the Clang of
   wasi-sdk, under wasmtime (<<document-testing>>).
 * *Boost 1.92 or newer:* Interprocess for the image's heap and its offsets, MultiIndex for the
-  tree's indices, Decimal for exact numbers, System for `result` and the error codes, and JSON for
-  its parser. document is header-only; of Boost, only JSON's parser is compiled, once, by webcpp's
-  build. A b2 project uses document through `/webcpp/document//document`, which brings all of
-  them.
+  tree's indices, Decimal for exact numbers, System for `result` and the error codes, Charconv for
+  reading and writing doubles, and JSON for its parser. document is header-only; of Boost, only
+  JSON's parser and Charconv are compiled, once, by webcpp's build. A b2 project uses document
+  through `/webcpp/document//document`, which brings all of them.
 * *webcpp's configuration,*
   link:{webcpp-libs}/config/{webcpp-page}#config-exceptions[config], whose
   `<webcpp/config.hpp>` every header of document includes first.
