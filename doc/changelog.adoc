@@ -16,6 +16,12 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+// end::unreleased[]
+
+[#document-changelog-0-1-0]
+=== webcpp 0.1.0
+
+// tag::0.1.0[]
 * Added the library: a JSON document that behaves as JavaScript does.
 * Added traits that choose the stored types, and JavaScript's key order.
 * Added handles, array methods and JavaScript-style sugar that throws, compiled only with exceptions.
@@ -26,4 +32,4 @@ of every version are on webcpp's index page.
 * Added sealed images, and Asio readers and writers that open them in place in pools of blocks.
 * Added shared documents, reference counted over shared memory, with copy on write.
 * Added a JavaScript module: exact decimals, key ranges, images, streams and Workers.
-// end::unreleased[]
+// end::0.1.0[]
