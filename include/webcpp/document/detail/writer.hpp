@@ -17,9 +17,9 @@
 #include <webcpp/document/config.hpp>
 
 #include <webcpp/document/detail/tree.hpp>
-#include <webcpp/document/detail/utf.hpp>
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/number.hpp>
+#include <webcpp/document/quote.hpp>
 #include <webcpp/document/traits.hpp>
 
 #include <algorithm>
@@ -336,88 +336,15 @@ private:
     }
 
     /**
-     QuoteJSONString of UTF-8 text, valid as the document holds it: the runs that need no escape
-     are written as they are.
+     QuoteJSONString of a key or a string: UTF-8, valid as the document holds it, or UTF-16.
     */
-    void quote(std::string_view text) {
-        put("\"");
-        std::size_t run = 0;
-        for (std::size_t i = 0; i < text.size() && status_; ++i) {
-            const auto unit = static_cast<unsigned char>(text[i]);
-            if (unit >= 0x20 && unit != '"' && unit != '\\') {
-                continue;
-            }
-            put(text.substr(run, i - run));
-            escape_into(unit);
-            run = i + 1;
-        }
-        put(text.substr(run));
-        put("\"");
-    }
-
-    /**
-     QuoteJSONString of UTF-16 text: transcoded to UTF-8 through a buffer, and a lone surrogate
-     written as `\\u` and its four lowercase hex digits, as JavaScript writes it since ES2019.
-    */
-    void quote(std::u16string_view units) {
-        // The longest a unit or a pair becomes: six characters, the escape of a lone surrogate.
-        constexpr std::size_t longest = 6;
-        std::array<char, 256> buffer{};
-        std::size_t used = 0;
-        put("\"");
-        for (std::size_t i = 0; i < units.size() && status_; ++i) {
-            if (buffer.size() - used < longest) {
-                put({buffer.data(), used});
-                used = 0;
-            }
-            const char16_t unit = units[i];
-            const bool pair =
-                high_surrogate(unit) && i + 1 < units.size() && low_surrogate(units[i + 1]);
-            if (pair) {
-                used += static_cast<std::size_t>(to_utf8(units.substr(i, 2), buffer.data() + used));
-                ++i;
-            } else if (high_surrogate(unit) || low_surrogate(unit)) {
-                used += unicode_escape(unit, buffer.data() + used);
-            } else if (unit >= 0x80) {
-                used += static_cast<std::size_t>(to_utf8(units.substr(i, 1), buffer.data() + used));
-            } else if (unit >= 0x20 && unit != u'"' && unit != u'\\') {
-                buffer[used++] = static_cast<char>(unit);
-            } else {
-                put({buffer.data(), used});
-                used = 0;
-                escape_into(unit);
-            }
-        }
-        put({buffer.data(), used});
-        put("\"");
-    }
-
-    /** Writes the escape of a unit below 0x20, `"` or `\\`. */
-    void escape_into(std::uint32_t unit) {
-        switch (unit) {
-            case '"': put("\\\""); return;
-            case '\\': put("\\\\"); return;
-            case '\b': put("\\b"); return;
-            case '\f': put("\\f"); return;
-            case '\n': put("\\n"); return;
-            case '\r': put("\\r"); return;
-            case '\t': put("\\t"); return;
-            default: break;
-        }
-        std::array<char, 6> text{};
-        put({text.data(), unicode_escape(unit, text.data())});
-    }
-
-    /** Writes `\\u` and the four lowercase hex digits of `unit` at `out`, and returns 6. */
-    static std::size_t unicode_escape(std::uint32_t unit, char* out) noexcept {
-        constexpr std::string_view hex = "0123456789abcdef";
-        out[0] = '\\';
-        out[1] = 'u';
-        out[2] = hex[(unit >> 12U) & 0xfU];
-        out[3] = hex[(unit >> 8U) & 0xfU];
-        out[4] = hex[(unit >> 4U) & 0xfU];
-        out[5] = hex[unit & 0xfU];
-        return 6;
+    template <class Text>
+    void quote(Text text) {
+        const auto pass = [this](std::string_view piece) {
+            put(piece);
+            return status_.has_value();
+        };
+        quote_json(text, pass);
     }
 
     /** Writes a line break and the spaces of `level` levels; nothing when writing compactly. */

@@ -25,6 +25,7 @@
 #include <webcpp/document/number.hpp>
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/parser.hpp>
+#include <webcpp/document/quote.hpp>
 #include <webcpp/document/shared.hpp>
 #include <webcpp/document/stream.hpp>
 #include <webcpp/document/stringify.hpp>

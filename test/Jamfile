@@ -68,6 +68,9 @@ webcpp.run image : image_test.cpp ;
 # grow there.
 webcpp.run stringify : stringify_test.cpp
   : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+# quote, a string alone as JSON.stringify quotes it, into the caller's string,
+# which alone allocates.
+webcpp.run quote : quote_test.cpp ;
 # parse, whole or in chunks, as JSON.parse reads; and the parse that throws. A
 # 64 MB string, an object of 100,000 keys and 800 KB of zeros outgrow
 # Emscripten's initial 16 MB, so its memory may grow.
