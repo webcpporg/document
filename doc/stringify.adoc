@@ -45,3 +45,29 @@ include::{examples}/document_streaming.expected[lines=12..13]
 
 The first sink writes a bar after each piece of 8 bytes; the second keeps the first piece, then
 fails, which stops the writing there.
+
+[#document-stringify-quote]
+=== A string alone, quoted
+
+`wd::quote(text, out)` is `JSON.stringify` of a string alone: it appends the string to `out` as a
+JSON string literal, its quotes included, with the bytes `stringify` writes of the same string,
+from the same code. `out` is a string of the program's own, a `std::string`, a `std::pmr::string`
+or any type with `append(const char*, std::size_t)`, and the only thing that allocates, so a JSON
+text of a fixed shape is written field by field into memory the program chooses, without a
+document:
+
+[source]
+----
+include::{examples}/document_streaming.cpp[tag=quote,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_streaming.expected[lines=14..15]
+----
+
+Text in a `std::string_view` is UTF-8, which `quote` checks: text that is not UTF-8, which no
+JavaScript string is, returns `wd::errc::type` and leaves `out` as it was, as the last line shows,
+which is {cpp}'s alone. Text in a `std::u16string_view` is UTF-16, any sequence of code units, with a
+lone surrogate written as `\u` and its four lowercase hex digits, as JavaScript writes it since
+ES2019; that overload has no failure of its own, and returns nothing.

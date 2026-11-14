@@ -16,6 +16,7 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* Added `quote`, which appends a string to a string of the caller's as `JSON.stringify` quotes it.
 // end::unreleased[]
 
 [#document-changelog-0-1-0]
