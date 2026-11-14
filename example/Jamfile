@@ -40,10 +40,9 @@ webcpp.example document_no_exceptions.cpp : <exception-handling>off ;
 # Boost.JSON does not.
 webcpp.example document_stream_sync.cpp ;
 webcpp.example document_stream_asio.cpp : <exception-handling>on : native ;
-# co_main needs asio's runner; the compiled Boost.Cobalt archive supplies no
-# entry point.
+# co_main needs Cobalt's runner, which /webcpp/cobalt//cobalt adds to its core.
 webcpp.example document_stream_cobalt.cpp
-  : <exception-handling>on <library>/webcpp/asio//cobalt : native ;
+  : <exception-handling>on <library>/webcpp/cobalt//cobalt : native ;
 webcpp.example document_stream_xactor.cpp : <library>/webcpp/xactor//xactor : native wasip2 wasip3 ;
 webcpp.example document_stream_beast.cpp : <exception-handling>on : native ;
 webcpp.example document_image_asio.cpp : <exception-handling>on : native ;
