@@ -29,6 +29,7 @@
 #include <webcpp/document/image.hpp>
 #include <webcpp/document/kind.hpp>
 #include <webcpp/document/number.hpp>
+#include <webcpp/document/storage.hpp>
 #include <webcpp/document/traits.hpp>
 
 #include <boost/assert.hpp>
@@ -46,6 +47,7 @@
 #include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <new>
 #include <optional>
 #include <ranges>
@@ -330,6 +332,9 @@ template <class Traits>
 inline constexpr std::uint64_t node_probe_bytes = sizeof(node<Traits>) + 128;
 
 template <class Traits>
+class tree_view;
+
+template <class Traits, class Allocator = std::allocator<std::byte>>
 class tree;
 
 template <class Traits>
@@ -362,8 +367,8 @@ struct item {
     /** How many entries. */
     std::size_t entry_count = 0;
 
-    /** The tree of a subtree to copy deeply, or null. */
-    const tree<Traits>* from = nullptr;
+    /** The tree of a subtree to copy deeply, of a document of any allocator, or null. */
+    const tree_view<Traits>* from = nullptr;
 
     /** The id of the subtree's node in `from`. */
     std::uint64_t from_id = 0;
@@ -408,112 +413,18 @@ constexpr std::uint32_t layout_tag() noexcept {
 }
 
 /**
- The tree of a document, a light handle on a region: it holds no pointer into the image, so it
- stays valid when the region grows and its bytes move.
+ The reading half of a tree: a light handle on the bytes of a region, whatever allocated them, which
+ finds nodes and walks them. It holds no pointer into the image, so it stays valid when the region
+ grows and its bytes move.
 
- Every operation that changes the tree either completes or changes nothing, and returns
- @ref errc::capacity when there is no room. Keys are given in UTF-8; with `utf16` the tree
- transcodes them before it stores or looks them up, and a key it cannot transcode finds nothing.
+ A deep copy reads its source through it, so that a value of a document of any allocator is copied
+ into a document of any other.
 */
 template <class Traits>
-class tree {
+class tree_view {
 public:
-    // An operation ends the program where the process heap, which holds what it stages, runs
-    // out, as the library tolerates, and where an allocation in the image fails after its probe
-    // passed, a bug of the document's, which the allocator reports by boost::throw_exception.
-    // NOLINTBEGIN(bugprone-exception-escape)
-    /**
-     Formats a region that holds an empty heap: the header, the container, a root holding `null`.
-    */
-    static result<tree> format(region& r) noexcept {
-        if (r.data() == nullptr || r.size() < smallest_image()) {
-            return errc::capacity;
-        }
-        // The container's block, the header node its constructor allocates, and the root.
-        const std::array<std::uint64_t, 3> sizes{
-            sizeof(nodes_type),
-            node_probe_bytes<Traits>,
-            node_probe_bytes<Traits>,
-        };
-        while (!probe(heap_of(r), sizes)) {
-            if (!r.grow(grown_size(r, sizes[0] + sizes[1] + sizes[2]))) {
-                return errc::capacity;
-            }
-        }
-        heap& h = heap_of(r);
-        void* block = h.allocate_aligned(sizeof(nodes_type), alignof(nodes_type));
-        if (block == nullptr) {
-            boost::throw_exception(std::bad_alloc());
-        }
-        std::memset(block, 0, sizeof(nodes_type));
-        // The container is the heap's first block, where attach requires it.
-        BOOST_ASSERT(std::cmp_equal(static_cast<std::byte*>(block) - r.data(), container_offset));
-        auto* nodes = new (block) nodes_type(allocator<node_type>(&h));
-        const byte_string empty;
-        const scalar_type zero{};
-        nodes->emplace(root_id, std::uint64_t{0}, index_group, std::uint64_t{0}, empty,
-                       kind_t::null, repr::none, zero, empty);
-
-        image_header header{};
-        header.magic = image_magic;
-        header.version = format_version;
-        header.byte_order = byte_order_mark;
-        header.reserved_4 = 0;
-        header.layout = layout_tag<Traits>();
-        header.size = r.size();
-        header.container = container_offset;
-        header.next_id = root_id + 1;
-        std::memcpy(r.data(), &header, sizeof header);
-        tree t;
-        t.region_ = &r;
-        return t;
-    }
-
-    // NOLINTEND(bugprone-exception-escape)
-
-    /**
-     Attaches to an image already in a region: checks its header, its heap's sanity, and that the
-     pointers it follows to the root lie inside the image.
-    */
-    static result<tree> attach(region& r) noexcept {
-        // Fewer bytes than a header and a heap would have the heap's check read past them.
-        if (r.data() == nullptr || r.size() < smallest_image() ||
-            reinterpret_cast<std::uintptr_t>(r.data()) % 16 != 0) {
-            return errc::not_a_document;
-        }
-        // A seal is checked by whoever opens the image, before it attaches.
-        const std::span<const std::byte> bytes(r.data(), static_cast<std::size_t>(r.size()));
-        if (const auto checked = check_image(bytes, layout_tag<Traits>(), verify::none);
-            !checked.has_value()) {
-            return checked.error();
-        }
-        image_header header{};
-        std::memcpy(&header, r.data(), sizeof header);
-        if (header.container != container_offset ||
-            header.size < container_offset + sizeof(nodes_type) || header.next_id <= root_id) {
-            return errc::not_a_document;
-        }
-        heap& h = heap_of(r);
-        if (h.get_size() > header.size - header_bytes || !h.check_sanity()) {
-            return errc::not_a_document;
-        }
-        tree t;
-        t.region_ = &r;
-        const node_type* root = t.first_by_id(header.size);
-        if (root == nullptr || root->id != root_id || root->parent != 0) {
-            return errc::not_a_document;
-        }
-        return t;
-    }
-
-    /** A tree attached to nothing, which reads as nothing and changes nothing. */
-    tree() noexcept = default;
-
-    /** Attaches the tree to `r`, the same image after the region that held it was moved. */
-    void rebind(region& r) noexcept { region_ = &r; }
-
-    /** The region it is attached to. */
-    [[nodiscard]] region& storage() const noexcept { return *region_; }
+    /** A tree attached to nothing, which reads as nothing. */
+    tree_view() noexcept = default;
 
     /** The root's id, @ref root_id. */
     [[nodiscard]] std::uint64_t root() const noexcept { return root_id; }
@@ -622,6 +533,381 @@ public:
         const nodes_type* nodes = nodes_of();
         return nodes == nullptr ? 0 : nodes->size();
     }
+
+    /**
+     The exact size of the image @ref compact_to builds from this tree: the header, the heap's own
+     bytes, the container's two blocks, and for each node its block and those of its key and text.
+
+     It reads every node and allocates nothing; 0 when the tree is attached to nothing.
+    */
+    [[nodiscard]] std::uint64_t compact_bytes() const noexcept {
+        const nodes_type* nodes = nodes_of();
+        if (nodes == nullptr) {
+            return 0;
+        }
+        const costs c = measure_costs();
+        std::uint64_t total = header_bytes + c.heap.overhead + c.container + c.header_node;
+        for (const node_type& n : nodes->template get<by_id>()) {
+            total = saturated_sum(total, c.node);
+            total = saturated_sum(total, c.heap.block(n.key.size));
+            total = saturated_sum(total, c.heap.block(n.text.size));
+        }
+        return total;
+    }
+
+    /**
+     The container of the nodes, for what walks its indices itself, both ways or by a bound; null
+     when the tree is attached to nothing.
+    */
+    [[nodiscard]] const container<Traits>* nodes() const noexcept { return nodes_of(); }
+
+protected:
+    /** The node of this tree. */
+    using node_type = node<Traits>;
+
+    /** The container of this tree's nodes. */
+    using nodes_type = container<Traits>;
+
+    /** A node's scalar. */
+    using scalar_type = std::array<std::byte, scalar_bytes<Traits>>;
+
+    /** The kinds of values, which a node's member `kind` hides inside it. */
+    using kind_t = webcpp::document::kind;
+
+    /** Whether keys and strings are stored as UTF-16 code units. */
+    static constexpr bool utf16_text = std::same_as<typename Traits::string, utf16>;
+
+    /** Whether objects walk their members by key. */
+    static constexpr bool sorted_keys = std::same_as<typename Traits::object, sorted>;
+
+    /** Where an array's length is in its scalar. */
+    static constexpr std::size_t length_at = 0;
+
+    /** Where an object's next insertion number is in its scalar. */
+    static constexpr std::size_t next_insertion_at = 0;
+
+    /** Where an object's key count is in its scalar. */
+    static constexpr std::size_t key_count_at = 8;
+
+    /**
+     What a compact image's blocks take, measured once per call: the heap's, the container's, the
+     container's header node and a node.
+    */
+    struct costs {
+        /** The heap's own. */
+        heap_costs heap;
+
+        /** The block of the container itself. */
+        std::uint64_t container = 0;
+
+        /** The block of the container's header node, which its constructor takes. */
+        std::uint64_t header_node = 0;
+
+        /** The block of each node. */
+        std::uint64_t node = 0;
+    };
+
+    // The scratch heap is sized for what is built in it, so no allocation fails; were one to, the
+    // allocator would report it by boost::throw_exception, as the library tolerates.
+    // NOLINTBEGIN(bugprone-exception-escape)
+    /**
+     Measures @ref costs in a scratch heap on the stack, by building in it what a tree does: a
+     container and a node. The block sizes of Boost.MultiIndex's nodes are not public, and this way
+     none is repeated here.
+    */
+    static costs measure_costs() noexcept {
+        constexpr std::size_t scratch_bytes = 2048;
+        alignas(16) std::array<std::byte, scratch_bytes> scratch{};
+        heap* h = new (scratch.data()) heap(scratch.size(), sizeof(heap));
+        costs c;
+        c.heap = measure_heap_costs();
+        std::uint64_t free_memory = h->get_free_memory();
+        void* block = h->allocate_aligned(sizeof(nodes_type), alignof(nodes_type));
+        BOOST_ASSERT(block != nullptr);
+        c.container = std::exchange(free_memory, h->get_free_memory()) - free_memory;
+        auto* nodes = new (block) nodes_type(allocator<node_type>(h));
+        c.header_node = std::exchange(free_memory, h->get_free_memory()) - free_memory;
+        const byte_string empty;
+        const scalar_type zero{};
+        nodes->emplace(root_id, std::uint64_t{0}, index_group, std::uint64_t{0}, empty,
+                       kind_t::null, repr::none, zero, empty);
+        c.node = std::exchange(free_memory, h->get_free_memory()) - free_memory;
+        nodes->~nodes_type();
+        return c;
+    }
+
+    // NOLINTEND(bugprone-exception-escape)
+
+    /**
+     The node of the smallest id, which is the root, read through the two pointers that reach it,
+     the container's header node and the first node of the index by id, each first checked to lie
+     inside the image's `size` bytes; null when either does not, or when the tree has no node.
+    */
+    [[nodiscard]] const node_type* first_by_id(std::uint64_t size) const noexcept {
+        const auto& ids = nodes_of()->template get<by_id>();
+        const auto begin = reinterpret_cast<std::uintptr_t>(region_->data());
+        const auto within = [begin, size](const auto* p) {
+            const auto at = reinterpret_cast<std::uintptr_t>(p);
+            constexpr std::uint64_t bytes = sizeof(*p);
+            return at >= begin + header_bytes && at % alignof(decltype(*p)) == 0 && bytes <= size &&
+                   at - begin <= size - bytes;
+        };
+        // get_node gives an iterator's node without reading it, which no other member does.
+        const auto end = ids.end();
+        if (!within(end.get_node())) {
+            return nullptr;
+        }
+        const auto first = ids.begin();
+        if (first == end || !within(first.get_node())) {
+            return nullptr;
+        }
+        return &*first;
+    }
+
+    /** The fewest bytes that hold a header and an empty heap. */
+    static std::uint64_t smallest_image() noexcept {
+        return header_bytes + heap::get_min_size(sizeof(heap));
+    }
+
+    /** `a + b`, or the largest value when that overflows. */
+    static std::uint64_t saturated_sum(std::uint64_t a, std::uint64_t b) noexcept {
+        return a > std::numeric_limits<std::uint64_t>::max() - b
+                   ? std::numeric_limits<std::uint64_t>::max()
+                   : a + b;
+    }
+
+    /** The bytes as a `std::string_view`, as the index by key holds keys. */
+    static std::string_view as_chars(std::span<const std::byte> bytes) noexcept {
+        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    }
+
+    /** Eight bytes of a scalar, from `at`. */
+    static std::uint64_t word(const scalar_type& s, std::size_t at) noexcept {
+        return load_little(s.data() + at, 8);
+    }
+
+    /** Writes eight bytes of a scalar, from `at`. */
+    static void set_word(scalar_type& s, std::size_t at, std::uint64_t value) noexcept {
+        store_little(value, s.data() + at, 8);
+    }
+
+    /** Whether `n` is a node of kind `k`. */
+    static bool is_kind(const node_type* n, kind_t k) noexcept {
+        return n != nullptr && n->kind == k;
+    }
+
+    /** The node of `id` in `nodes`, or null. */
+    static const node_type* find_in(const nodes_type& nodes, std::uint64_t id) noexcept {
+        const auto& ids = nodes.template get<by_id>();
+        const auto it = ids.find(id);
+        return it == ids.end() ? nullptr : &*it;
+    }
+
+    /** The child of `object` whose key is `key`, in the traits' encoding, or null. */
+    static const node_type* member_in(const nodes_type& nodes, std::uint64_t object,
+                                      std::string_view key) noexcept {
+        const auto& keys = nodes.template get<by_key>();
+        const auto it = keys.find(std::make_tuple(object, key));
+        return it == keys.end() ? nullptr : &*it;
+    }
+
+    /** The element `index` of `array`, or null. */
+    static const node_type* element_in(const nodes_type& nodes, std::uint64_t array,
+                                       std::uint64_t index) noexcept {
+        const auto& order = nodes.template get<by_order>();
+        const auto it = order.find(std::make_tuple(array, index_group, index));
+        return it == order.end() ? nullptr : &*it;
+    }
+
+    /** The first child of `parent` in `index`, or null. */
+    template <class Index>
+    static const node_type* first_of(const Index& index, std::uint64_t parent) noexcept {
+        const auto it = index.lower_bound(std::make_tuple(parent));
+        return it == index.end() || it->parent != parent ? nullptr : &*it;
+    }
+
+    /** The node after `child` in `index`, when it has the same parent, or null. */
+    template <class Index>
+    static const node_type* next_of(const Index& index, const node_type& child) noexcept {
+        auto it = index.iterator_to(child);
+        ++it;
+        return it == index.end() || it->parent != child.parent ? nullptr : &*it;
+    }
+
+    /** The container of the attached image, or null when the tree is attached to nothing. */
+    [[nodiscard]] nodes_type* nodes_of() const noexcept {
+        if (region_ == nullptr || region_->data() == nullptr) {
+            return nullptr;
+        }
+        std::uint64_t offset = 0;
+        std::memcpy(&offset, region_->data() + offsetof(image_header, container), sizeof offset);
+        return std::launder(reinterpret_cast<nodes_type*>(region_->data() + offset));
+    }
+
+    /** The header of the attached image. */
+    [[nodiscard]] image_header read_header() const noexcept {
+        image_header header{};
+        std::memcpy(&header, region_->data(), sizeof header);
+        return header;
+    }
+
+    /** The bytes of the image it reads, or null when it is attached to nothing. */
+    region_bytes* region_ = nullptr;
+};
+
+/**
+ The tree of a document, a light handle on a region: it holds no pointer into the image, so it
+ stays valid when the region grows and its bytes move.
+
+ Every operation that changes the tree either completes or changes nothing, and returns
+ @ref errc::capacity when there is no room. Keys are given in UTF-8; with `utf16` the tree
+ transcodes them before it stores or looks them up, and a key it cannot transcode finds nothing.
+
+ @tparam Traits The traits.
+ @tparam Allocator The allocator of the region, which grows an owned image and, rebound, holds what
+ an operation stages before it changes anything.
+*/
+template <class Traits, class Allocator>
+class tree : public tree_view<Traits> {
+    /** The reading half. */
+    using view = tree_view<Traits>;
+
+    using typename view::costs;
+    using typename view::kind_t;
+    using typename view::node_type;
+    using typename view::nodes_type;
+    using typename view::scalar_type;
+    using view::as_chars;
+    using view::element_in;
+    using view::find_in;
+    using view::first_by_id;
+    using view::is_kind;
+    using view::key_count_at;
+    using view::length_at;
+    using view::measure_costs;
+    using view::member_in;
+    using view::next_insertion_at;
+    using view::nodes_of;
+    using view::read_header;
+    using view::saturated_sum;
+    using view::set_word;
+    using view::smallest_image;
+    using view::sorted_keys;
+    using view::utf16_text;
+    using view::word;
+
+public:
+    /** The region of this tree's allocator. */
+    using region_type = basic_region<Allocator>;
+
+    using view::count;
+    using view::element;
+    using view::find;
+    using view::first_child;
+    using view::member;
+    using view::next_sibling;
+
+    // An operation ends the program where the process heap, which holds what it stages, runs
+    // out, as the library tolerates, and where an allocation in the image fails after its probe
+    // passed, a bug of the document's, which the allocator reports by boost::throw_exception.
+    // NOLINTBEGIN(bugprone-exception-escape)
+    /**
+     Formats a region that holds an empty heap: the header, the container, a root holding `null`.
+    */
+    static result<tree> format(region_type& r) noexcept {
+        if (r.data() == nullptr || r.size() < smallest_image()) {
+            return errc::capacity;
+        }
+        // The container's block, the header node its constructor allocates, and the root.
+        const std::array<std::uint64_t, 3> sizes{
+            sizeof(nodes_type),
+            node_probe_bytes<Traits>,
+            node_probe_bytes<Traits>,
+        };
+        while (!probe(heap_of(r), sizes)) {
+            if (!r.grow(grown_size(r, sizes[0] + sizes[1] + sizes[2]))) {
+                return errc::capacity;
+            }
+        }
+        heap& h = heap_of(r);
+        void* block = h.allocate_aligned(sizeof(nodes_type), alignof(nodes_type));
+        if (block == nullptr) {
+            boost::throw_exception(std::bad_alloc());
+        }
+        std::memset(block, 0, sizeof(nodes_type));
+        // The container is the heap's first block, where attach requires it.
+        BOOST_ASSERT(std::cmp_equal(static_cast<std::byte*>(block) - r.data(), container_offset));
+        auto* nodes = new (block) nodes_type(allocator<node_type>(&h));
+        const byte_string empty;
+        const scalar_type zero{};
+        nodes->emplace(root_id, std::uint64_t{0}, index_group, std::uint64_t{0}, empty,
+                       kind_t::null, repr::none, zero, empty);
+
+        image_header header{};
+        header.magic = image_magic;
+        header.version = format_version;
+        header.byte_order = byte_order_mark;
+        header.reserved_4 = 0;
+        header.layout = layout_tag<Traits>();
+        header.size = r.size();
+        header.container = container_offset;
+        header.next_id = root_id + 1;
+        std::memcpy(r.data(), &header, sizeof header);
+        tree t;
+        t.region_ = &r;
+        return t;
+    }
+
+    // NOLINTEND(bugprone-exception-escape)
+
+    /**
+     Attaches to an image already in a region: checks its header, its heap's sanity, and that the
+     pointers it follows to the root lie inside the image.
+    */
+    static result<tree> attach(region_type& r) noexcept {
+        // Fewer bytes than a header and a heap would have the heap's check read past them.
+        if (r.data() == nullptr || r.size() < smallest_image() ||
+            reinterpret_cast<std::uintptr_t>(r.data()) % 16 != 0) {
+            return errc::not_a_document;
+        }
+        // A seal is checked by whoever opens the image, before it attaches.
+        const std::span<const std::byte> bytes(r.data(), static_cast<std::size_t>(r.size()));
+        if (const auto checked = check_image(bytes, layout_tag<Traits>(), verify::none);
+            !checked.has_value()) {
+            return checked.error();
+        }
+        image_header header{};
+        std::memcpy(&header, r.data(), sizeof header);
+        if (header.container != container_offset ||
+            header.size < container_offset + sizeof(nodes_type) || header.next_id <= root_id) {
+            return errc::not_a_document;
+        }
+        heap& h = heap_of(r);
+        if (h.get_size() > header.size - header_bytes || !h.check_sanity()) {
+            return errc::not_a_document;
+        }
+        tree t;
+        t.region_ = &r;
+        const node_type* root = t.first_by_id(header.size);
+        if (root == nullptr || root->id != root_id || root->parent != 0) {
+            return errc::not_a_document;
+        }
+        return t;
+    }
+
+    /** A tree attached to nothing, which reads as nothing and changes nothing. */
+    tree() noexcept = default;
+
+    /** Attaches the tree to `r`, the same image after the region that held it was moved. */
+    void rebind(region_type& r) noexcept { this->region_ = &r; }
+
+    /** The region it is attached to. */
+    [[nodiscard]] region_type& storage() const noexcept {
+        return static_cast<region_type&>(*this->region_);
+    }
+
+    /** The allocator of its region, which holds what an operation stages. */
+    [[nodiscard]] Allocator get_allocator() const noexcept { return storage().get_allocator(); }
 
     // An operation ends the program where the process heap, which holds what it stages, runs
     // out, as the library tolerates, and where an allocation in the image fails after its probe
@@ -844,14 +1130,14 @@ public:
         if (nodes_of() == nullptr) {
             return errc::type;
         }
-        if (!region_->is_owned()) {
+        if (!storage().is_owned()) {
             return {};
         }
-        heap_of(*region_).shrink_to_fit();
-        const std::uint64_t size = header_bytes + heap_of(*region_).get_size();
-        if (!region_->shrink_to(size)) {
+        heap_of(storage()).shrink_to_fit();
+        const std::uint64_t size = header_bytes + heap_of(storage()).get_size();
+        if (!storage().shrink_to(size)) {
             // The heap takes its end back, so that it ends where the region does.
-            heap_of(*region_).grow(region_->size() - size);
+            heap_of(storage()).grow(storage().size() - size);
             return errc::capacity;
         }
         sync_header(read_header().next_id);
@@ -866,35 +1152,14 @@ public:
         if (nodes_of() == nullptr) {
             return errc::type;
         }
-        if (bytes <= region_->size()) {
+        if (bytes <= storage().size()) {
             return {};
         }
-        if (!region_->grow(bytes)) {
+        if (!storage().grow(bytes)) {
             return errc::capacity;
         }
         sync_header(read_header().next_id);
         return {};
-    }
-
-    /**
-     The exact size of the image @ref compact_to builds from this tree: the header, the heap's own
-     bytes, the container's two blocks, and for each node its block and those of its key and text.
-
-     It reads every node and allocates nothing; 0 when the tree is attached to nothing.
-    */
-    [[nodiscard]] std::uint64_t compact_bytes() const noexcept {
-        const nodes_type* nodes = nodes_of();
-        if (nodes == nullptr) {
-            return 0;
-        }
-        const costs c = measure_costs();
-        std::uint64_t total = header_bytes + c.heap.overhead + c.container + c.header_node;
-        for (const node_type& n : nodes->template get<by_id>()) {
-            total = saturated_sum(total, c.node);
-            total = saturated_sum(total, c.heap.block(n.key.size));
-            total = saturated_sum(total, c.heap.block(n.text.size));
-        }
-        return total;
     }
 
     // The walk keeps its stack on the process heap, whose exhaustion ends the program, as the
@@ -910,8 +1175,9 @@ public:
      @return The tree over `to`; @ref errc::type when `from` is attached to nothing,
      @ref errc::capacity when `to` is not of `bytes` bytes.
     */
-    static result<tree> compact_to(region& to, const tree& from, std::uint64_t bytes) noexcept {
-        const nodes_type* from_nodes = from.nodes_of();
+    static result<tree> compact_to(region_type& to, const view& from,
+                                   std::uint64_t bytes) noexcept {
+        const nodes_type* from_nodes = from.nodes();
         const node_type* root = from_nodes == nullptr ? nullptr : find_in(*from_nodes, root_id);
         if (root == nullptr) {
             return errc::type;
@@ -933,7 +1199,7 @@ public:
         BOOST_ASSERT(std::cmp_equal(static_cast<std::byte*>(block) - to.data(), container_offset));
         auto* nodes = new (block) nodes_type(allocator<node_type>(&h));
 
-        compaction copier{from, c, h, nodes};
+        compaction copier{from, c, h, nodes, to.get_allocator()};
         if (!copier.copy_tree(*root)) {
             return errc::capacity;
         }
@@ -956,89 +1222,7 @@ public:
 
     // NOLINTEND(bugprone-exception-escape)
 
-    /**
-     The container of the nodes, for what walks its indices itself, both ways or by a bound; null
-     when the tree is attached to nothing.
-    */
-    [[nodiscard]] const container<Traits>* nodes() const noexcept { return nodes_of(); }
-
 private:
-    /**
-     What a compact image's blocks take, measured once per call: the heap's, the container's, the
-     container's header node and a node.
-    */
-    struct costs {
-        /** The heap's own. */
-        heap_costs heap;
-
-        /** The block of the container itself. */
-        std::uint64_t container = 0;
-
-        /** The block of the container's header node, which its constructor takes. */
-        std::uint64_t header_node = 0;
-
-        /** The block of each node. */
-        std::uint64_t node = 0;
-    };
-
-    // The scratch heap is sized for what is built in it, so no allocation fails; were one to, the
-    // allocator would report it by boost::throw_exception, as the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
-    /**
-     Measures @ref costs in a scratch heap on the stack, by building in it what a tree does: a
-     container and a node. The block sizes of Boost.MultiIndex's nodes are not public, and this way
-     none is repeated here.
-    */
-    static costs measure_costs() noexcept {
-        constexpr std::size_t scratch_bytes = 2048;
-        alignas(16) std::array<std::byte, scratch_bytes> scratch{};
-        heap* h = new (scratch.data()) heap(scratch.size(), sizeof(heap));
-        costs c;
-        c.heap = measure_heap_costs();
-        std::uint64_t free_memory = h->get_free_memory();
-        void* block = h->allocate_aligned(sizeof(nodes_type), alignof(nodes_type));
-        BOOST_ASSERT(block != nullptr);
-        c.container = std::exchange(free_memory, h->get_free_memory()) - free_memory;
-        auto* nodes = new (block) nodes_type(allocator<node_type>(h));
-        c.header_node = std::exchange(free_memory, h->get_free_memory()) - free_memory;
-        const byte_string empty;
-        const scalar_type zero{};
-        nodes->emplace(root_id, std::uint64_t{0}, index_group, std::uint64_t{0}, empty,
-                       kind_t::null, repr::none, zero, empty);
-        c.node = std::exchange(free_memory, h->get_free_memory()) - free_memory;
-        nodes->~nodes_type();
-        return c;
-    }
-
-    // NOLINTEND(bugprone-exception-escape)
-
-    /** The node of this tree. */
-    using node_type = node<Traits>;
-
-    /** The container of this tree's nodes. */
-    using nodes_type = container<Traits>;
-
-    /** A node's scalar. */
-    using scalar_type = std::array<std::byte, scalar_bytes<Traits>>;
-
-    /** The kinds of values, which a node's member `kind` hides inside it. */
-    using kind_t = webcpp::document::kind;
-
-    /** Whether keys and strings are stored as UTF-16 code units. */
-    static constexpr bool utf16_text = std::same_as<typename Traits::string, utf16>;
-
-    /** Whether objects walk their members by key. */
-    static constexpr bool sorted_keys = std::same_as<typename Traits::object, sorted>;
-
-    /** Where an array's length is in its scalar. */
-    static constexpr std::size_t length_at = 0;
-
-    /** Where an object's next insertion number is in its scalar. */
-    static constexpr std::size_t next_insertion_at = 0;
-
-    /** Where an object's key count is in its scalar. */
-    static constexpr std::size_t key_count_at = 8;
-
     /**
      The group a node of `group` takes while an operation sets it aside, erased or renumbered: no
      node is ever left there, and no other node of its parent is in it.
@@ -1056,7 +1240,7 @@ private:
     */
     struct compaction {
         /** The tree copied from. */
-        const tree& from;
+        const view& from;
 
         /** What the blocks of the image take. */
         const costs& c;
@@ -1066,6 +1250,9 @@ private:
 
         /** The image's container. */
         nodes_type* nodes;
+
+        /** The allocator of the walk's stack. */
+        Allocator alloc;
 
         /** The id the next node copied takes. */
         std::uint64_t next_id = root_id;
@@ -1147,7 +1334,7 @@ private:
             if (!copy(root, 0, index_group, 0)) {
                 return false;
             }
-            std::vector<frame> stack;
+            std::vector<frame, rebound<Allocator, frame>> stack(alloc);
             if (const node_type* first = from.first_child(root_id)) {
                 stack.push_back({first, root_id, 0});
             }
@@ -1220,7 +1407,7 @@ private:
         const item<Traits>* value = nullptr;
 
         /** The tree of the node to copy. */
-        const tree* from = nullptr;
+        const view* from = nullptr;
 
         /** The id of the node to copy. */
         std::uint64_t from_id = 0;
@@ -1253,122 +1440,9 @@ private:
         std::uint64_t created = 0;
     };
 
-    /**
-     The node of the smallest id, which is the root, read through the two pointers that reach it,
-     the container's header node and the first node of the index by id, each first checked to lie
-     inside the image's `size` bytes; null when either does not, or when the tree has no node.
-    */
-    [[nodiscard]] const node_type* first_by_id(std::uint64_t size) const noexcept {
-        const auto& ids = nodes_of()->template get<by_id>();
-        const auto begin = reinterpret_cast<std::uintptr_t>(region_->data());
-        const auto within = [begin, size](const auto* p) {
-            const auto at = reinterpret_cast<std::uintptr_t>(p);
-            constexpr std::uint64_t bytes = sizeof(*p);
-            return at >= begin + header_bytes && at % alignof(decltype(*p)) == 0 && bytes <= size &&
-                   at - begin <= size - bytes;
-        };
-        // get_node gives an iterator's node without reading it, which no other member does.
-        const auto end = ids.end();
-        if (!within(end.get_node())) {
-            return nullptr;
-        }
-        const auto first = ids.begin();
-        if (first == end || !within(first.get_node())) {
-            return nullptr;
-        }
-        return &*first;
-    }
-
-    /** The fewest bytes that hold a header and an empty heap. */
-    static std::uint64_t smallest_image() noexcept {
-        return header_bytes + heap::get_min_size(sizeof(heap));
-    }
-
-    /** `a + b`, or the largest value when that overflows. */
-    static std::uint64_t saturated_sum(std::uint64_t a, std::uint64_t b) noexcept {
-        return a > std::numeric_limits<std::uint64_t>::max() - b
-                   ? std::numeric_limits<std::uint64_t>::max()
-                   : a + b;
-    }
-
     /** The size a region grows to for blocks of `total` bytes: its size and twice the blocks. */
-    static std::uint64_t grown_size(const region& r, std::uint64_t total) noexcept {
+    static std::uint64_t grown_size(const region_bytes& r, std::uint64_t total) noexcept {
         return saturated_sum(r.size(), saturated_sum(total, total));
-    }
-
-    /** The bytes as a `std::string_view`, as the index by key holds keys. */
-    static std::string_view as_chars(std::span<const std::byte> bytes) noexcept {
-        return {reinterpret_cast<const char*>(bytes.data()), bytes.size()};
-    }
-
-    /** Eight bytes of a scalar, from `at`. */
-    static std::uint64_t word(const scalar_type& s, std::size_t at) noexcept {
-        return load_little(s.data() + at, 8);
-    }
-
-    /** Writes eight bytes of a scalar, from `at`. */
-    static void set_word(scalar_type& s, std::size_t at, std::uint64_t value) noexcept {
-        store_little(value, s.data() + at, 8);
-    }
-
-    /** Whether `n` is a node of kind `k`. */
-    static bool is_kind(const node_type* n, kind_t k) noexcept {
-        return n != nullptr && n->kind == k;
-    }
-
-    /** The node of `id` in `nodes`, or null. */
-    static const node_type* find_in(const nodes_type& nodes, std::uint64_t id) noexcept {
-        const auto& ids = nodes.template get<by_id>();
-        const auto it = ids.find(id);
-        return it == ids.end() ? nullptr : &*it;
-    }
-
-    /** The child of `object` whose key is `key`, in the traits' encoding, or null. */
-    static const node_type* member_in(const nodes_type& nodes, std::uint64_t object,
-                                      std::string_view key) noexcept {
-        const auto& keys = nodes.template get<by_key>();
-        const auto it = keys.find(std::make_tuple(object, key));
-        return it == keys.end() ? nullptr : &*it;
-    }
-
-    /** The element `index` of `array`, or null. */
-    static const node_type* element_in(const nodes_type& nodes, std::uint64_t array,
-                                       std::uint64_t index) noexcept {
-        const auto& order = nodes.template get<by_order>();
-        const auto it = order.find(std::make_tuple(array, index_group, index));
-        return it == order.end() ? nullptr : &*it;
-    }
-
-    /** The first child of `parent` in `index`, or null. */
-    template <class Index>
-    static const node_type* first_of(const Index& index, std::uint64_t parent) noexcept {
-        const auto it = index.lower_bound(std::make_tuple(parent));
-        return it == index.end() || it->parent != parent ? nullptr : &*it;
-    }
-
-    /** The node after `child` in `index`, when it has the same parent, or null. */
-    template <class Index>
-    static const node_type* next_of(const Index& index, const node_type& child) noexcept {
-        auto it = index.iterator_to(child);
-        ++it;
-        return it == index.end() || it->parent != child.parent ? nullptr : &*it;
-    }
-
-    /** The container of the attached image, or null when the tree is attached to nothing. */
-    [[nodiscard]] nodes_type* nodes_of() const noexcept {
-        if (region_ == nullptr || region_->data() == nullptr) {
-            return nullptr;
-        }
-        std::uint64_t offset = 0;
-        std::memcpy(&offset, region_->data() + offsetof(image_header, container), sizeof offset);
-        return std::launder(reinterpret_cast<nodes_type*>(region_->data() + offset));
-    }
-
-    /** The header of the attached image. */
-    [[nodiscard]] image_header read_header() const noexcept {
-        image_header header{};
-        std::memcpy(&header, region_->data(), sizeof header);
-        return header;
     }
 
     /**
@@ -1377,10 +1451,10 @@ private:
     */
     void sync_header(std::uint64_t next_id) noexcept {
         image_header header = read_header();
-        header.size = region_->size();
+        header.size = storage().size();
         header.next_id = next_id;
         header.seal = 0;
-        std::memcpy(region_->data(), &header, sizeof header);
+        std::memcpy(storage().data(), &header, sizeof header);
     }
 
     /** An empty change, its new nodes numbered from the header's next id. */
@@ -1572,9 +1646,9 @@ private:
     }
 
     /** Reads the node `id` of `from` into the staged node `slot`, its children into new nodes. */
-    result<void> read_copy(change& c, std::size_t slot, const tree* from, std::uint64_t id,
+    result<void> read_copy(change& c, std::size_t slot, const view* from, std::uint64_t id,
                            bool may_be_undefined) const {
-        const nodes_type* source_nodes = from == nullptr ? nullptr : from->nodes_of();
+        const nodes_type* source_nodes = from == nullptr ? nullptr : from->nodes();
         const node_type* source_node =
             source_nodes == nullptr ? nullptr : find_in(*source_nodes, id);
         if (source_node == nullptr ||
@@ -1608,8 +1682,8 @@ private:
      value of this tree, or a key or text a caller read from it.
     */
     void own_views(change& c) const {
-        const std::byte* first = region_->data();
-        const std::byte* last = first + region_->size();
+        const std::byte* first = storage().data();
+        const std::byte* last = first + storage().size();
         const std::less<> before;
         const auto own = [&](std::span<const std::byte>& view) {
             if (view.empty() || !before(view.data(), last) ||
@@ -1647,15 +1721,15 @@ private:
             }
         }
         bool owned = false;
-        while (!probe(heap_of(*region_), sizes)) {
-            if (!region_->is_owned()) {
+        while (!probe(heap_of(storage()), sizes)) {
+            if (!storage().is_owned()) {
                 return errc::capacity;
             }
             if (!owned) {
                 own_views(c);
                 owned = true;
             }
-            if (!region_->grow(grown_size(*region_, total))) {
+            if (!storage().grow(grown_size(storage(), total))) {
                 return errc::capacity;
             }
             sync_header(c.next_id);
@@ -1683,7 +1757,7 @@ private:
         if (const auto room = find_room(c); !room.has_value()) {
             return room;
         }
-        heap& h = heap_of(*region_);
+        heap& h = heap_of(storage());
         std::vector<std::array<byte_string, 2>> made(c.nodes.size());
         for (std::size_t i = 0; i < c.nodes.size(); ++i) {
             if (!c.nodes[i].existing) {
@@ -1736,7 +1810,7 @@ private:
             n.scalar = value.scalar;
             n.text = text;
         });
-        free_string(heap_of(*region_), old);
+        free_string(heap_of(storage()), old);
     }
 
     /** Moves the element `from` of `array` to the ordinal `to`, which no element holds. */
@@ -1774,7 +1848,7 @@ private:
             }
         }
         auto& ids = nodes.template get<by_id>();
-        heap& h = heap_of(*region_);
+        heap& h = heap_of(storage());
         for (const std::uint64_t victim : std::views::reverse(subtree)) {
             const auto found = ids.find(victim);
             byte_string key = found->key;
@@ -1792,7 +1866,7 @@ private:
     result<void> append(std::uint64_t array, std::uint64_t length, std::uint64_t fill,
                         const item<Traits>* last) {
         // More nodes than the region could ever hold is no room, before a change takes memory.
-        if (fill >= region_->max_bytes() / node_probe_bytes<Traits>) {
+        if (fill >= storage().max_bytes() / node_probe_bytes<Traits>) {
             return errc::capacity;
         }
         change c = start_change();
@@ -1811,8 +1885,6 @@ private:
         set_length_word(array, length + fill + (last != nullptr ? 1 : 0));
         return {};
     }
-
-    region* region_ = nullptr;
 };
 
 }  // namespace webcpp::document::detail

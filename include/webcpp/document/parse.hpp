@@ -87,6 +87,35 @@ result<basic_document<Traits, owned>> parse(std::string_view text,
 }
 
 /**
+ `JSON.parse(text)`: reads JSON text into a new owned document allocated through `alloc`, as
+ @ref parse does.
+
+ The document's image and the parse's working state are allocated through `alloc`; a text given
+ whole, as here, leaves Boost.JSON's parser no state to suspend, so nothing else allocates.
+
+ @tparam Traits The traits of the document.
+ @tparam Allocator An allocator of `std::byte`.
+ @param text The text.
+ @param o The limits and the revivers.
+ @param alloc The allocator of the document and of the parse's working state.
+ @return The document; the errors of @ref parse, and @ref errc::capacity when `alloc` has no room.
+ @see "Allocators", in the guide.
+*/
+template <class Traits = default_traits, detail::byte_allocator Allocator>
+// The parser ends the program where the process heap, which holds its frames and pending text,
+// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+result<basic_document<Traits, basic_owned<Allocator>>> parse(std::string_view text,
+                                                             const parse_options& o,
+                                                             const Allocator& alloc) noexcept {
+    basic_parser<Traits, basic_owned<Allocator>> p(o, alloc);
+    if (const result<void> written = p.write(text); !written.has_value()) {
+        return written.error();
+    }
+    return p.finish();
+}
+
+/**
  Reads JSON text into a new document in a buffer its user owns, as @ref parse does.
 
  @tparam Traits The traits of the document.
@@ -103,6 +132,33 @@ result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
                                                     std::string_view text,
                                                     const parse_options& o = {}) noexcept {
     basic_parser<Traits, external> p(buffer, o);
+    if (const result<void> written = p.write(text); !written.has_value()) {
+        return written.error();
+    }
+    return p.finish();
+}
+
+/**
+ Reads JSON text into a new document in a buffer its user owns, as @ref parse_into does, the
+ parse's working state and the document's allocated through `alloc`.
+
+ @tparam Traits The traits of the document.
+ @tparam Allocator An allocator of `std::byte`.
+ @param buffer The buffer, 16-aligned, which the document uses in place.
+ @param text The text.
+ @param o The limits and the revivers.
+ @param alloc The allocator of the working state of the parse and of the document's operations.
+ @return The document; the errors of @ref parse_into.
+ @see "Allocators", in the guide.
+*/
+template <class Traits = default_traits, detail::byte_allocator Allocator>
+// The parser ends the program where the process heap, which holds its frames and pending text,
+// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// NOLINTNEXTLINE(bugprone-exception-escape)
+result<basic_document<Traits, basic_external<Allocator>>> parse_into(
+    std::span<std::byte> buffer, std::string_view text, const parse_options& o,
+    const Allocator& alloc) noexcept {
+    basic_parser<Traits, basic_external<Allocator>> p(buffer, o, alloc);
     if (const result<void> written = p.write(text); !written.has_value()) {
         return written.error();
     }

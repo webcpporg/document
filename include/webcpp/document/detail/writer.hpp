@@ -147,7 +147,7 @@ template <class Traits, class Out>
 class json_writer {
 public:
     /** A walk of `t` writing to `out` with `indent` spaces a level, already clamped. */
-    json_writer(const tree<Traits>& t, std::uint32_t indent, Out& out) noexcept
+    json_writer(const tree_view<Traits>& t, std::uint32_t indent, Out& out) noexcept
         : tree_(&t), indent_(indent), out_(&out) {}
 
     /**
@@ -371,7 +371,7 @@ private:
         status_ = out_->put(text);
     }
 
-    const tree<Traits>* tree_;
+    const tree_view<Traits>* tree_;
     std::uint32_t indent_;
     Out* out_;
     std::vector<frame> stack_;
@@ -384,7 +384,7 @@ private:
 */
 template <class Traits, class Out>
     requires output<Out>
-result<void> write_json(const tree<Traits>& t, const node<Traits>* root, std::uint32_t indent,
+result<void> write_json(const tree_view<Traits>& t, const node<Traits>* root, std::uint32_t indent,
                         Out& out) {
     if (root == nullptr || root->kind == webcpp::document::kind::undefined) {
         return {};

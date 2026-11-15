@@ -113,7 +113,9 @@ struct walker {
     static constexpr bool sorted_keys = std::same_as<typename Traits::object, sorted>;
 
     /** The container of an attached tree's nodes. */
-    static const container<Traits>& nodes_of(const tree<Traits>& t) noexcept { return *t.nodes(); }
+    static const container<Traits>& nodes_of(const tree_view<Traits>& t) noexcept {
+        return *t.nodes();
+    }
 
     /** Whether a walk of `w` over the children of a node of kind `k` is by key. */
     static bool by_keys(walk w, webcpp::document::kind k) noexcept {
@@ -121,7 +123,8 @@ struct walker {
     }
 
     /** The first child of `parent` in the walk's order, or null. */
-    static const node_type* first(const tree<Traits>& t, std::uint64_t parent, walk w) noexcept {
+    static const node_type* first(const tree_view<Traits>& t, std::uint64_t parent,
+                                  walk w) noexcept {
         const node_type* p = t.find(parent);
         if (p == nullptr) {
             return nullptr;
@@ -132,7 +135,8 @@ struct walker {
     }
 
     /** The last child of `parent` in the walk's order, or null. */
-    static const node_type* last(const tree<Traits>& t, std::uint64_t parent, walk w) noexcept {
+    static const node_type* last(const tree_view<Traits>& t, std::uint64_t parent,
+                                 walk w) noexcept {
         const node_type* p = t.find(parent);
         if (p == nullptr) {
             return nullptr;
@@ -143,7 +147,7 @@ struct walker {
     }
 
     /** The child after (`forward`) or before `child` in the walk's order, or null. */
-    static const node_type* step(const tree<Traits>& t, const node_type& child, walk w,
+    static const node_type* step(const tree_view<Traits>& t, const node_type& child, walk w,
                                  bool forward) noexcept {
         const container<Traits>& nodes = nodes_of(t);
         // Under sorted, members are all in the key group and elements in the index group.
@@ -159,7 +163,7 @@ struct walker {
      The first member of `object` whose key is not before (`upper` false) or is after (`upper`
      true) `utf8` in key order, or null; null for a key that is not valid UTF-8.
     */
-    static const node_type* bound(const tree<Traits>& t, std::uint64_t object,
+    static const node_type* bound(const tree_view<Traits>& t, std::uint64_t object,
                                   std::string_view utf8, bool upper) noexcept {
         if (!valid_utf8(utf8)) {
             return nullptr;
@@ -226,7 +230,7 @@ struct walker {
 template <class Traits, class Storage>
 const node<Traits>* container_node(basic_document<Traits, Storage>* doc, std::uint64_t id,
                                    webcpp::document::kind k) noexcept {
-    const tree<Traits>* t = doc == nullptr ? nullptr : access::tree_of(std::as_const(*doc));
+    const tree_view<Traits>* t = doc == nullptr ? nullptr : access::tree_of(std::as_const(*doc));
     const node<Traits>* n = t == nullptr ? nullptr : t->find(id);
     return n == nullptr || n->kind != k ? nullptr : n;
 }
@@ -251,7 +255,7 @@ template <class Traits, class T>
     requires settable<Traits, T>
 result<void> prepare_for_view(const T& v, prepared<Traits>& out, bool undefined_is_null) noexcept {
     if constexpr (copy_source<Traits, T>) {
-        const tree<Traits>* from = access::tree_of(v);
+        const tree_view<Traits>* from = access::tree_of(v);
         if (from == nullptr) {
             return errc::type;
         }

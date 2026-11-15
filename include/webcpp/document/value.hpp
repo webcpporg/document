@@ -195,19 +195,22 @@ private:
 struct access {
     /** The tree of a document, or null when it was moved from. */
     template <class Traits, class Storage>
-    static tree<Traits>* tree_of(basic_document<Traits, Storage>& d) noexcept {
+    static tree<Traits, typename Storage::allocator_type>* tree_of(
+        basic_document<Traits, Storage>& d) noexcept {
         return d.region_.data() == nullptr ? nullptr : &d.tree_;
     }
 
     /** The tree of a document, or null when it was moved from. */
     template <class Traits, class Storage>
-    static const tree<Traits>* tree_of(const basic_document<Traits, Storage>& d) noexcept {
+    static const tree<Traits, typename Storage::allocator_type>* tree_of(
+        const basic_document<Traits, Storage>& d) noexcept {
         return d.region_.data() == nullptr ? nullptr : &d.tree_;
     }
 
     /** The tree of a handle's document, or null when it names nothing. */
     template <class Traits, class Storage>
-    static const tree<Traits>* tree_of(const basic_const_value<Traits, Storage>& v) noexcept {
+    static const tree<Traits, typename Storage::allocator_type>* tree_of(
+        const basic_const_value<Traits, Storage>& v) noexcept {
         return v.tree_ptr();
     }
 
@@ -232,7 +235,8 @@ struct access {
 
     /** The document of a region whose tree was formatted or attached, the tree rebound to it. */
     template <class Traits, class Storage>
-    static basic_document<Traits, Storage> make_document(region r) noexcept {
+    static basic_document<Traits, Storage> make_document(
+        basic_region<typename Storage::allocator_type> r) noexcept {
         return basic_document<Traits, Storage>(std::move(r));
     }
 };
@@ -382,7 +386,7 @@ public:
     [[nodiscard]] result<T> get() const noexcept
         requires detail::readable<Traits, T>
     {
-        const detail::tree<Traits>* t = tree_ptr();
+        const auto* t = tree_ptr();
         if (t == nullptr) {
             return errc::type;
         }
@@ -562,7 +566,7 @@ public:
      @return A new owned document holding the array of the copies; @ref errc::type for any other
      kind, @ref errc::capacity when it does not fit.
     */
-    [[nodiscard]] result<basic_document<Traits, owned>> slice(
+    [[nodiscard]] result<basic_document<Traits, detail::owned_of<Storage>>> slice(
         std::int64_t start = 0,
         std::int64_t stop = std::numeric_limits<std::int64_t>::max()) const noexcept;
 
@@ -575,7 +579,8 @@ public:
      @ref errc::capacity when it does not fit.
     */
     template <class... T>
-    [[nodiscard]] result<basic_document<Traits, owned>> concat(const T&... v) const noexcept
+    [[nodiscard]] result<basic_document<Traits, detail::owned_of<Storage>>> concat(
+        const T&... v) const noexcept
         requires(detail::settable<Traits, T> && ...);
 
     /**
@@ -656,13 +661,14 @@ private:
     // NOLINTEND(bugprone-exception-escape)
 
     /** The tree of the handle's document, or null when it names nothing or the document none. */
-    [[nodiscard]] const detail::tree<Traits>* tree_ptr() const noexcept {
+    [[nodiscard]] const detail::tree<Traits, typename Storage::allocator_type>* tree_ptr()
+        const noexcept {
         return doc_ == nullptr ? nullptr : detail::access::tree_of(std::as_const(*doc_));
     }
 
     /** The node the handle names now, or null when it reads `undefined`. */
     [[nodiscard]] const detail::node<Traits>* resolve() const noexcept {
-        const detail::tree<Traits>* t = tree_ptr();
+        const auto* t = tree_ptr();
         if (t == nullptr) {
             return nullptr;
         }
@@ -933,7 +939,7 @@ public:
         if (!elements && s->kind != webcpp::document::kind::object) {
             return errc::type;
         }
-        const detail::tree<Traits>& from = *source.tree_ptr();
+        const detail::tree_view<Traits>& from = *source.tree_ptr();
         // The keys are owned here, in UTF-8, before an entry points at one: the tree may move the
         // source's image while it finds its room, when the source is this document.
         std::vector<std::string> keys;
@@ -972,7 +978,7 @@ public:
      @return A new owned document holding it, or holding `undefined` when the array is empty;
      @ref errc::type for any other kind.
     */
-    [[nodiscard]] result<basic_document<Traits, owned>> pop() noexcept;
+    [[nodiscard]] result<basic_document<Traits, detail::owned_of<Storage>>> pop() noexcept;
 
     /**
      `Array.prototype.shift`: removes the first element.
@@ -980,7 +986,7 @@ public:
      @return A new owned document holding it, or holding `undefined` when the array is empty;
      @ref errc::type for any other kind.
     */
-    [[nodiscard]] result<basic_document<Traits, owned>> shift() noexcept;
+    [[nodiscard]] result<basic_document<Traits, detail::owned_of<Storage>>> shift() noexcept;
 
     /**
      `Array.prototype.unshift`: inserts each value at the front, in order.
@@ -1009,9 +1015,8 @@ public:
      @see "Arrays", in the guide.
     */
     template <class... T>
-    [[nodiscard]] result<basic_document<Traits, owned>> splice(std::int64_t start,
-                                                               std::int64_t count,
-                                                               const T&... v) noexcept
+    [[nodiscard]] result<basic_document<Traits, detail::owned_of<Storage>>> splice(
+        std::int64_t start, std::int64_t count, const T&... v) noexcept
         requires(detail::settable<Traits, T> && ...);
 
     /**
@@ -1021,7 +1026,8 @@ public:
      @return A new owned document holding the array of the removed elements; @ref errc::type for
      any other kind.
     */
-    [[nodiscard]] result<basic_document<Traits, owned>> splice(std::int64_t start) noexcept;
+    [[nodiscard]] result<basic_document<Traits, detail::owned_of<Storage>>> splice(
+        std::int64_t start) noexcept;
 
     /**
      `Array.prototype.reverse`: reverses the elements in place.
@@ -1081,15 +1087,16 @@ private:
         : basic_const_value<Traits, Storage>(doc, where, id, index, key) {}
 
     /** The tree of the handle's document, to write; null when it names nothing. */
-    [[nodiscard]] detail::tree<Traits>* writable_tree() const noexcept {
+    [[nodiscard]] detail::tree<Traits, typename Storage::allocator_type>* writable_tree()
+        const noexcept {
         return this->doc_ == nullptr ? nullptr : detail::access::tree_of(*this->doc_);
     }
 
     /** Where a deep copy of a document reads: its tree and its root; none when moved from. */
     template <class S>
-    static result<std::pair<const detail::tree<Traits>*, const detail::node<Traits>*>> copy_from(
-        const basic_document<Traits, S>& d) noexcept {
-        const detail::tree<Traits>* t = detail::access::tree_of(d);
+    static result<std::pair<const detail::tree_view<Traits>*, const detail::node<Traits>*>>
+    copy_from(const basic_document<Traits, S>& d) noexcept {
+        const detail::tree_view<Traits>* t = detail::access::tree_of(d);
         if (t == nullptr) {
             return errc::type;
         }
@@ -1098,8 +1105,8 @@ private:
 
     /** Where a deep copy of a handle's value reads: its tree and its node, null for undefined. */
     template <class S>
-    static result<std::pair<const detail::tree<Traits>*, const detail::node<Traits>*>> copy_from(
-        const basic_const_value<Traits, S>& v) noexcept {
+    static result<std::pair<const detail::tree_view<Traits>*, const detail::node<Traits>*>>
+    copy_from(const basic_const_value<Traits, S>& v) noexcept {
         return std::pair(detail::access::tree_of(v), detail::access::node_of(v));
     }
 
@@ -1117,7 +1124,7 @@ private:
 
     /** Stores an item at this place: the node replaced, or the member or element created. */
     result<void> store(const detail::item<Traits>& v) noexcept {
-        detail::tree<Traits>* t = writable_tree();
+        auto* t = writable_tree();
         if (t == nullptr) {
             return errc::type;
         }
@@ -1144,7 +1151,7 @@ private:
      `undefined`.
     */
     result<void> store_undefined() noexcept {
-        detail::tree<Traits>* t = writable_tree();
+        auto* t = writable_tree();
         if (t == nullptr) {
             return errc::type;
         }
@@ -1189,6 +1196,24 @@ using value = basic_value<>;
 
 /** A handle of a @ref document, read only. */
 using const_value = basic_const_value<>;
+
+namespace pmr {
+
+/**
+ A handle of a `pmr::document`, reading and writing.
+
+ @see "Allocators", in the guide.
+*/
+using value = webcpp::document::basic_value<default_traits, owned>;
+
+/**
+ A handle of a `pmr::document`, read only.
+
+ @see "Allocators", in the guide.
+*/
+using const_value = webcpp::document::basic_const_value<default_traits, owned>;
+
+}  // namespace pmr
 
 // The members below make handles, which are complete only here.
 
@@ -1239,7 +1264,8 @@ auto children_iterator<Traits, Storage, Kind>::operator*() const noexcept -> val
         return basic_const_value<Traits, Storage>(doc_, place::node, child_, 0, {});
     } else {
         // A key is a view of the image, valid until the document's next change.
-        const tree<Traits>* t = doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
+        const tree_view<Traits>* t =
+            doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
         const node<Traits>* n = t == nullptr ? nullptr : t->find(child_);
         text_view_t<Traits> key;
         if (n != nullptr) {
@@ -1263,7 +1289,7 @@ auto children_iterator<Traits, Storage, Kind>::operator*() const noexcept -> val
 template <class Traits, class Storage, children_of Kind>
 children_iterator<Traits, Storage, Kind>&
 children_iterator<Traits, Storage, Kind>::operator++() noexcept {
-    const tree<Traits>* t = doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
+    const tree_view<Traits>* t = doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
     const node<Traits>* n = t == nullptr ? nullptr : t->find(child_);
     const node<Traits>* next = n == nullptr ? nullptr : t->next_sibling(*n);
     child_ = next == nullptr ? 0 : next->id;
@@ -1273,7 +1299,7 @@ children_iterator<Traits, Storage, Kind>::operator++() noexcept {
 template <class Traits, class Storage, children_of Kind>
 children_iterator<Traits, Storage, Kind> children<Traits, Storage, Kind>::begin() const noexcept {
     // The root's parent is 0: the children of 0 are those of nothing, not the root.
-    const tree<Traits>* t =
+    const tree_view<Traits>* t =
         doc_ == nullptr || parent_ == 0 ? nullptr : access::tree_of(std::as_const(*doc_));
     const node<Traits>* first = t == nullptr ? nullptr : t->first_child(parent_);
     return {doc_, first == nullptr ? 0 : first->id};

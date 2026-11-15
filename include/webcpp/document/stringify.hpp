@@ -49,7 +49,7 @@ inline constexpr std::uint64_t default_chunk = 4096;
 template <class Traits, class Storage>
 std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent = 0) {
     std::string text;
-    const detail::tree<Traits>* t = detail::access::tree_of(v);
+    const detail::tree_view<Traits>* t = detail::access::tree_of(v);
     if (t == nullptr) {
         return text;
     }
@@ -95,7 +95,7 @@ template <class Traits, class Storage, class Sink>
     requires detail::sink<std::remove_reference_t<Sink>>
 result<void> stringify_to(basic_const_value<Traits, Storage> v, Sink&& sink,
                           std::uint32_t indent = 0, std::uint64_t chunk = default_chunk) {
-    const detail::tree<Traits>* t = detail::access::tree_of(v);
+    const detail::tree_view<Traits>* t = detail::access::tree_of(v);
     if (t == nullptr) {
         return {};
     }

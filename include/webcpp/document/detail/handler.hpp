@@ -212,10 +212,11 @@ private:
 
     /** A new document: owned, within the options' limit, or formatted in the external buffer. */
     result<basic_document<Traits, Storage>> make_document() noexcept {
-        if constexpr (std::same_as<Storage, owned>) {
-            return basic_document<Traits, owned>::create(owner_->options_.max_document_bytes);
+        if constexpr (owned_storage<Storage>) {
+            return basic_document<Traits, Storage>::create(owner_->alloc_,
+                                                           owner_->options_.max_document_bytes);
         } else {
-            return format<Traits>(owner_->buffer_);
+            return format<Traits>(owner_->buffer_, owner_->alloc_);
         }
     }
 
@@ -226,7 +227,9 @@ private:
     }
 
     /** The tree of the document being built. */
-    [[nodiscard]] tree<Traits>& tree_of() const noexcept { return *access::tree_of(document()); }
+    [[nodiscard]] tree<Traits, typename Storage::allocator_type>& tree_of() const noexcept {
+        return *access::tree_of(document());
+    }
 
     /** Records `error` as the parser's failure and hands it to Boost.JSON, which stops. */
     bool fail(boost::system::error_code& ec, boost::system::error_code error) noexcept {
@@ -269,7 +272,7 @@ private:
      replaces the value in its first place), or an element appended; returns its id.
     */
     result<std::uint64_t> place(const item<Traits>& v) noexcept {
-        tree<Traits>& t = tree_of();
+        auto& t = tree_of();
         if (frames_.empty()) {
             if (const result<void> done = t.assign(root_id, v); !done.has_value()) {
                 return done.error();
@@ -342,7 +345,7 @@ private:
     /** Turns the object `id` into bytes when it has the shape `JSON.stringify` gives a Uint8Array.
      */
     result<void> revive_bytes(std::uint64_t id) noexcept {
-        tree<Traits>& t = tree_of();
+        auto& t = tree_of();
         result<std::vector<std::byte>> bytes = read<std::vector<std::byte>>(t, t.find(id));
         if (!bytes.has_value()) {
             return {};
@@ -412,7 +415,7 @@ private:
      the array's last, a member is found by its key, and the root is left holding `undefined`.
     */
     result<void> take_out() noexcept {
-        tree<Traits>& t = tree_of();
+        auto& t = tree_of();
         if (frames_.empty()) {
             return t.assign(root_id, empty_item<Traits>(webcpp::document::kind::undefined));
         }

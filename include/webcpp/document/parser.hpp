@@ -21,6 +21,7 @@
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/value.hpp>
 
+#include <boost/config.hpp>
 #include <boost/json/basic_parser_impl.hpp>
 #include <boost/json/error.hpp>
 #include <boost/system/error_code.hpp>
@@ -176,24 +177,31 @@ struct subscription {
 template <class Traits, class Storage>
 class basic_parser {
 public:
+    /** The allocator of the document and of the parser's working state. */
+    using allocator_type = typename Storage::allocator_type;
+
     /**
      A parser of an owned document.
 
      @param o The limits and the revivers.
+     @param alloc The allocator of the document it makes and of its own working state.
     */
-    explicit basic_parser(const parse_options& o = {}) noexcept
-        requires std::same_as<Storage, owned>
-        : options_(o), json_(json_options(o), *this) {}
+    explicit basic_parser(const parse_options& o = {},
+                          const allocator_type& alloc = allocator_type()) noexcept
+        requires detail::owned_storage<Storage>
+        : options_(o), alloc_(alloc), json_(json_options(o), *this) {}
 
     /**
      A parser of a document in a buffer its user owns, formatted when the text begins.
 
      @param buffer The buffer, 16-aligned, which outlives the parser and its document.
      @param o The limits and the revivers.
+     @param alloc The allocator of the document's working state and of the parser's own.
     */
-    explicit basic_parser(std::span<std::byte> buffer, const parse_options& o = {}) noexcept
-        requires std::same_as<Storage, external>
-        : options_(o), buffer_(buffer), json_(json_options(o), *this) {}
+    explicit basic_parser(std::span<std::byte> buffer, const parse_options& o = {},
+                          const allocator_type& alloc = allocator_type()) noexcept
+        requires detail::external_storage<Storage>
+        : options_(o), alloc_(alloc), buffer_(buffer), json_(json_options(o), *this) {}
 
     /** A parser is not copied: its handler and its document refer to it. */
     basic_parser(const basic_parser&) = delete;
@@ -469,6 +477,7 @@ private:
     }
 
     parse_options options_;
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS allocator_type alloc_;
     std::span<std::byte> buffer_;
     std::optional<basic_document<Traits, Storage>> document_;
     std::vector<detail::subscription<Traits, Storage>> subscriptions_;
@@ -485,6 +494,18 @@ private:
 
 /** The streaming parser of a @ref document. */
 using parser = basic_parser<>;
+
+namespace pmr {
+
+/**
+ The streaming parser of a `pmr::document`, its working state in the document's
+ `std::pmr::memory_resource`.
+
+ @see "Allocators", in the guide.
+*/
+using parser = webcpp::document::basic_parser<default_traits, owned>;
+
+}  // namespace pmr
 
 }  // namespace webcpp::document
 

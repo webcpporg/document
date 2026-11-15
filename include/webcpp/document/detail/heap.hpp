@@ -7,7 +7,7 @@
 /**
  The heap of a document's image: Boost.Interprocess's `rbtree_best_fit`, used directly, its
  allocator, which zeroes every block it hands out and frees, the strings it holds, and the region,
- the bytes of the image, owned and growing or external and fixed.
+ the bytes of the image, owned and growing through the document's allocator or external and fixed.
 
  Only `offset_ptr.hpp`, `mem_algo/rbtree_best_fit.hpp` and `sync/null_mutex.hpp` are included from
  Boost.Interprocess: its `managed_external_buffer`, `segment_manager`, `allocator` and
@@ -21,6 +21,8 @@
 
 #include <webcpp/document/errors.hpp>
 
+#include <boost/assert.hpp>
+#include <boost/config.hpp>
 #include <boost/interprocess/mem_algo/rbtree_best_fit.hpp>  // lint-world: a heap in a buffer
 #include <boost/interprocess/offset_ptr.hpp>                // lint-world: an offset, no process
 #include <boost/interprocess/sync/null_mutex.hpp>  // lint-world: a mutex that locks nothing
@@ -28,13 +30,16 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <new>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 
 namespace webcpp::document::detail {
@@ -324,106 +329,20 @@ inline heap_costs measure_heap_costs() noexcept {
 }
 
 /**
- The bytes of an image: owned, which the region allocates, zeroes and grows, or external, a span
- its user owns, which never grows.
+ The unit an owned image is allocated in: 16 bytes, 16-aligned, so that any allocator, rebound to
+ it, gives the heap the alignment it needs.
 */
-class region {
+struct alignas(16) image_block {
+    /** The block's bytes. */
+    std::array<std::byte, 16> bytes;
+};
+
+/**
+ The bytes of an image, whatever allocated them: where they are, how many, the size an owned image
+ never grows past, and whether they are owned. The tree reads an image through it.
+*/
+class region_bytes {
 public:
-    /** A new owned region of `size` bytes, zeroed, with an empty heap after the header. */
-    static result<region> owned(std::uint64_t size, std::uint64_t max_bytes) noexcept {
-        if (size > max_bytes || size < smallest() || size > largest()) {
-            return errc::capacity;
-        }
-        std::byte* bytes = allocate(size);
-        if (bytes == nullptr) {
-            return errc::capacity;
-        }
-        std::memset(bytes, 0, static_cast<std::size_t>(size));
-        region made;
-        made.data_ = bytes;
-        made.size_ = size;
-        made.max_bytes_ = max_bytes;
-        made.owned_ = true;
-        make_heap(bytes, size);
-        return made;
-    }
-
-    /** An owned copy of an image's bytes, whose heap is the image's own. */
-    static result<region> owned_copy(std::span<const std::byte> bytes,
-                                     std::uint64_t max_bytes) noexcept {
-        if (bytes.size() > max_bytes) {
-            return errc::capacity;
-        }
-        // Bytes too few for a heap are no image, and its heap would be read past their end.
-        if (bytes.size() < smallest()) {
-            return errc::not_a_document;
-        }
-        std::byte* copy = allocate(bytes.size());
-        if (copy == nullptr) {
-            return errc::capacity;
-        }
-        std::memcpy(copy, bytes.data(), bytes.size());
-        region made;
-        made.data_ = copy;
-        made.size_ = bytes.size();
-        made.max_bytes_ = max_bytes;
-        made.owned_ = true;
-        return made;
-    }
-
-    /** An external region over `buffer`, as it is: for an image already there. */
-    static region external(std::span<std::byte> buffer) noexcept {
-        region made;
-        made.data_ = buffer.data();
-        made.size_ = buffer.size();
-        made.max_bytes_ = buffer.size();
-        return made;
-    }
-
-    /** An external region over `buffer`, zeroed, with an empty heap after the header. */
-    static result<region> external_empty(std::span<std::byte> buffer) noexcept {
-        // The heap's offsets are the same at every 16-aligned address, and only there.
-        if (buffer.size() < smallest() ||
-            reinterpret_cast<std::uintptr_t>(buffer.data()) % 16 != 0) {
-            return errc::capacity;
-        }
-        std::memset(buffer.data(), 0, buffer.size());
-        make_heap(buffer.data(), buffer.size());
-        return external(buffer);
-    }
-
-    /** An empty region, which holds no bytes. */
-    region() noexcept = default;
-
-    /** Takes the bytes of `other`, which is left empty. */
-    region(region&& other) noexcept
-        : data_(std::exchange(other.data_, nullptr)),
-          size_(std::exchange(other.size_, 0)),
-          max_bytes_(std::exchange(other.max_bytes_, 0)),
-          owned_(std::exchange(other.owned_, false)) {}
-
-    /** Frees its own bytes, then takes the bytes of `other`, which is left empty. */
-    region& operator=(region&& other) noexcept {
-        if (this == &other) {
-            return *this;
-        }
-        release();
-        data_ = std::exchange(other.data_, nullptr);
-        size_ = std::exchange(other.size_, 0);
-        max_bytes_ = std::exchange(other.max_bytes_, 0);
-        owned_ = std::exchange(other.owned_, false);
-        return *this;
-    }
-
-    /** A region is not copied: an image is copied by @ref owned_copy. */
-    region(const region&) = delete;
-
-    /** A region is not copied: an image is copied by @ref owned_copy. */
-    region& operator=(const region&) = delete;
-
-    /** Frees an owned region's bytes. */
-    ~region() { release(); }
-
     /** The first byte, 16-aligned, or null when empty. */
     [[nodiscard]] std::byte* data() const noexcept { return data_; }
 
@@ -435,6 +354,159 @@ public:
 
     /** Whether the region owns its bytes, and so may grow. */
     [[nodiscard]] bool is_owned() const noexcept { return owned_; }
+
+protected:
+    /** No bytes. */
+    region_bytes() noexcept = default;
+
+    /** The bytes of a region are moved by the region, which knows their allocator. */
+    region_bytes(const region_bytes&) noexcept = default;
+
+    /** The bytes of a region are moved by the region, which knows their allocator. */
+    region_bytes& operator=(const region_bytes&) noexcept = default;
+
+    /** Destroyed by the region, which frees what it owns. */
+    ~region_bytes() = default;
+
+    /** Takes the fields of `other`, which is left empty. */
+    void take(region_bytes& other) noexcept {
+        data_ = std::exchange(other.data_, nullptr);
+        size_ = std::exchange(other.size_, 0);
+        max_bytes_ = std::exchange(other.max_bytes_, 0);
+        owned_ = std::exchange(other.owned_, false);
+    }
+
+    /** The first byte, or null. */
+    std::byte* data_ = nullptr;
+
+    /** How many bytes. */
+    std::uint64_t size_ = 0;
+
+    /** The size an owned region never grows past. */
+    std::uint64_t max_bytes_ = 0;
+
+    /** Whether the bytes are owned. */
+    bool owned_ = false;
+};
+
+/**
+ The bytes of an image: owned, which the region allocates through `Allocator`, zeroes and grows,
+ or external, a span its user owns, which never grows; and the allocator, which also holds the
+ working state of the operations on the image.
+
+ @tparam Allocator An allocator of `std::byte`, rebound to @ref image_block for the image.
+*/
+template <class Allocator>
+class basic_region : public region_bytes {
+public:
+    /** The allocator of the image and of the working state. */
+    using allocator_type = Allocator;
+
+    /** A new owned region of `size` bytes, zeroed, with an empty heap after the header. */
+    static result<basic_region> owned(std::uint64_t size, std::uint64_t max_bytes,
+                                      const Allocator& a = Allocator()) noexcept {
+        if (size > max_bytes || size < smallest() || size > largest()) {
+            return errc::capacity;
+        }
+        basic_region made(a);
+        std::byte* bytes = made.allocate(size);
+        if (bytes == nullptr) {
+            return errc::capacity;
+        }
+        std::memset(bytes, 0, static_cast<std::size_t>(size));
+        made.data_ = bytes;
+        made.size_ = size;
+        made.max_bytes_ = max_bytes;
+        made.owned_ = true;
+        make_heap(bytes, size);
+        return made;
+    }
+
+    /** An owned copy of an image's bytes, whose heap is the image's own. */
+    static result<basic_region> owned_copy(std::span<const std::byte> bytes,
+                                           std::uint64_t max_bytes,
+                                           const Allocator& a = Allocator()) noexcept {
+        if (bytes.size() > max_bytes) {
+            return errc::capacity;
+        }
+        // Bytes too few for a heap are no image, and its heap would be read past their end.
+        if (bytes.size() < smallest()) {
+            return errc::not_a_document;
+        }
+        basic_region made(a);
+        std::byte* copy = made.allocate(bytes.size());
+        if (copy == nullptr) {
+            return errc::capacity;
+        }
+        std::memcpy(copy, bytes.data(), bytes.size());
+        made.data_ = copy;
+        made.size_ = bytes.size();
+        made.max_bytes_ = max_bytes;
+        made.owned_ = true;
+        return made;
+    }
+
+    /** An external region over `buffer`, as it is: for an image already there. */
+    static basic_region external(std::span<std::byte> buffer,
+                                 const Allocator& a = Allocator()) noexcept {
+        basic_region made(a);
+        made.data_ = buffer.data();
+        made.size_ = buffer.size();
+        made.max_bytes_ = buffer.size();
+        return made;
+    }
+
+    /** An external region over `buffer`, zeroed, with an empty heap after the header. */
+    static result<basic_region> external_empty(std::span<std::byte> buffer,
+                                               const Allocator& a = Allocator()) noexcept {
+        // The heap's offsets are the same at every 16-aligned address, and only there.
+        if (buffer.size() < smallest() ||
+            reinterpret_cast<std::uintptr_t>(buffer.data()) % 16 != 0) {
+            return errc::capacity;
+        }
+        std::memset(buffer.data(), 0, buffer.size());
+        make_heap(buffer.data(), buffer.size());
+        return external(buffer, a);
+    }
+
+    /** An empty region, which holds no bytes, with a default allocator. */
+    basic_region() noexcept(std::is_nothrow_default_constructible_v<Allocator>) = default;
+
+    /** An empty region, which holds no bytes, with the allocator `a`. */
+    explicit basic_region(const Allocator& a) noexcept : alloc_(a) {}
+
+    /** Takes the bytes and a copy of the allocator of `other`, which is left empty. */
+    basic_region(basic_region&& other) noexcept : alloc_(other.alloc_) { take(other); }
+
+    /**
+     Frees its own bytes, then takes the bytes of `other`, which is left empty; the allocator is
+     taken only when it propagates on a move, else it equals `other`'s or `other` owns nothing.
+    */
+    basic_region& operator=(basic_region&& other) noexcept {
+        if (this == &other) {
+            return *this;
+        }
+        release();
+        if constexpr (block_traits::propagate_on_container_move_assignment::value) {
+            alloc_ = other.alloc_;
+        } else {
+            BOOST_ASSERT(alloc_ == other.alloc_ || !other.owned_);
+        }
+        take(other);
+        return *this;
+    }
+
+    /** A region is not copied: an image is copied by @ref owned_copy. */
+    basic_region(const basic_region&) = delete;
+
+    /** A region is not copied: an image is copied by @ref owned_copy. */
+    basic_region& operator=(const basic_region&) = delete;
+
+    /** Frees an owned region's bytes. */
+    ~basic_region() { release(); }
+
+    /** The allocator. */
+    [[nodiscard]] Allocator get_allocator() const noexcept { return alloc_; }
 
     /**
      Grows an owned region to twice its size or `at_least`, the larger, rounded up to 16, at most
@@ -459,7 +531,7 @@ public:
         const std::uint64_t old_size = size_;
         std::memcpy(bigger, data_, static_cast<std::size_t>(old_size));
         std::memset(bigger + old_size, 0, static_cast<std::size_t>(new_size - old_size));
-        deallocate(data_);
+        deallocate(data_, old_size);
         data_ = bigger;
         size_ = new_size;
         // The heap's links are offsets, so the copy is a heap already: it only takes the new end.
@@ -486,13 +558,23 @@ public:
             return false;
         }
         std::memcpy(smaller, data_, static_cast<std::size_t>(size));
-        deallocate(data_);
+        deallocate(data_, size_);
         data_ = smaller;
         size_ = size;
         return true;
     }
 
 private:
+    /** The allocator of the image's blocks. */
+    using block_allocator =
+        typename std::allocator_traits<Allocator>::template rebind_alloc<image_block>;
+
+    /** Its traits. */
+    using block_traits = std::allocator_traits<block_allocator>;
+
+    /** Whether the allocator is the standard one, whose `allocate` is the global operator new. */
+    static constexpr bool standard = std::same_as<Allocator, std::allocator<std::byte>>;
+
     /** The fewest bytes that hold a header and an empty heap. */
     static std::uint64_t smallest() noexcept {
         return header_bytes + heap::get_min_size(sizeof(heap));
@@ -503,15 +585,53 @@ private:
         return std::numeric_limits<std::size_t>::max();
     }
 
-    /** A new buffer of `size` bytes, 16-aligned and uninitialized, or null. */
-    static std::byte* allocate(std::uint64_t size) noexcept {
-        return static_cast<std::byte*>(
-            ::operator new(static_cast<std::size_t>(size), std::align_val_t{16}, std::nothrow));
+    /** How many blocks hold `size` bytes. */
+    static std::size_t blocks_of(std::uint64_t size) noexcept {
+        return static_cast<std::size_t>((size + sizeof(image_block) - 1) / sizeof(image_block));
     }
 
-    /** Frees a buffer @ref allocate made. */
-    static void deallocate(std::byte* bytes) noexcept {
-        ::operator delete(bytes, std::align_val_t{16});
+    /**
+     A new buffer of `size` bytes, 16-aligned and uninitialized, or null when the allocator has
+     none: its `std::bad_alloc` is caught, with exceptions.
+    */
+    std::byte* allocate(std::uint64_t size) noexcept {
+        if constexpr (standard) {
+            // std::allocator allocates with the global operator new: its form that returns null
+            // keeps a failure a value without exceptions too.
+            return static_cast<std::byte*>(
+                ::operator new(static_cast<std::size_t>(size), std::align_val_t{16}, std::nothrow));
+        } else {
+            block_allocator blocks(alloc_);
+            const std::size_t count = blocks_of(size);
+            if (count > block_traits::max_size(blocks)) {
+                return nullptr;
+            }
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+            try {
+                return reinterpret_cast<std::byte*>(
+                    std::to_address(block_traits::allocate(blocks, count)));
+            } catch (const std::bad_alloc&) {
+                return nullptr;
+            }
+#else
+            return reinterpret_cast<std::byte*>(
+                std::to_address(block_traits::allocate(blocks, count)));
+#endif
+        }
+    }
+
+    /** Frees a buffer of `size` bytes that @ref allocate made. */
+    void deallocate(std::byte* bytes, std::uint64_t size) noexcept {
+        if constexpr (standard) {
+            ::operator delete(bytes, std::align_val_t{16});
+        } else {
+            block_allocator blocks(alloc_);
+            using pointer = typename block_traits::pointer;
+            block_traits::deallocate(
+                blocks,
+                std::pointer_traits<pointer>::pointer_to(*reinterpret_cast<image_block*>(bytes)),
+                blocks_of(size));
+        }
     }
 
     /** Its heap, as @ref heap_of finds it. */
@@ -530,7 +650,7 @@ private:
     /** Frees its bytes when it owns them, and leaves it empty. */
     void release() noexcept {
         if (owned_ && data_ != nullptr) {
-            deallocate(data_);
+            deallocate(data_, size_);
         }
         data_ = nullptr;
         size_ = 0;
@@ -538,14 +658,14 @@ private:
         owned_ = false;
     }
 
-    std::byte* data_ = nullptr;
-    std::uint64_t size_ = 0;
-    std::uint64_t max_bytes_ = 0;
-    bool owned_ = false;
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS Allocator alloc_{};
 };
 
+/** The region of an image in the standard allocator. */
+using region = basic_region<std::allocator<std::byte>>;
+
 /** The heap of a region, at offset @ref header_bytes. */
-inline heap& heap_of(const region& r) noexcept {
+inline heap& heap_of(const region_bytes& r) noexcept {
     return *std::launder(reinterpret_cast<heap*>(r.data() + header_bytes));
 }
 

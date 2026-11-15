@@ -25,8 +25,10 @@
 #include <webcpp/document/kind.hpp>
 #include <webcpp/document/literal.hpp>
 #include <webcpp/document/number.hpp>
+#include <webcpp/document/storage.hpp>
 #include <webcpp/document/traits.hpp>
 
+#include <boost/config.hpp>
 #include <boost/decimal/decimal128_t.hpp>
 
 #include <algorithm>
@@ -39,6 +41,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -84,7 +87,7 @@ concept readable =
     std::same_as<T, std::u16string_view> || std::same_as<T, date_ms> ||
     std::same_as<T, std::vector<std::byte>> || std::same_as<T, std::span<const std::byte>>;
 
-template <class Traits>
+template <class Traits, class Allocator = std::allocator<std::byte>>
 struct converter;
 
 /**
@@ -92,13 +95,19 @@ struct converter;
  traits' encoding and a literal's entries, owned here until the tree has copied them.
 
  Text and bytes the caller gives in the traits' encoding, and a literal's keys, are not copied: the
- item points at them, which must outlive it.
+ item points at them, which must outlive it. What it owns is allocated through `Allocator`, rebound:
+ the allocator of the document the value is stored in.
 */
-template <class Traits>
+template <class Traits, class Allocator = std::allocator<std::byte>>
 class prepared {
 public:
-    /** A value holding `null`. */
-    prepared() noexcept = default;
+    /** A value holding `null`, its buffers in a default-constructed allocator. */
+    prepared() noexcept(std::is_nothrow_default_constructible_v<Allocator>)
+        : prepared(Allocator()) {}
+
+    /** A value holding `null`, its buffers in `alloc`. */
+    explicit prepared(const Allocator& alloc) noexcept
+        : alloc_(alloc), utf8_(alloc), utf16_(alloc), bytes_(alloc), entries_(alloc) {}
 
     /** A prepared value is not copied: its item points into it. */
     prepared(const prepared&) = delete;
@@ -109,13 +118,17 @@ public:
     /** Moves a prepared value, its item pointing into its new place. */
     prepared(prepared&& other) noexcept
         // A vector moved keeps its buffer, so the item still points at what it held.
-        : item_(std::exchange(other.item_, item<Traits>{})),
+        : alloc_(other.alloc_),
+          item_(std::exchange(other.item_, item<Traits>{})),
           utf8_(std::move(other.utf8_)),
           utf16_(std::move(other.utf16_)),
           bytes_(std::move(other.bytes_)),
           entries_(std::move(other.entries_)) {}
 
-    /** Moves a prepared value, its item pointing into its new place. */
+    /**
+     Moves a prepared value, its item pointing into its new place; both hold buffers of the same
+     allocator.
+    */
     prepared& operator=(prepared&& other) noexcept {
         if (this != &other) {
             item_ = std::exchange(other.item_, item<Traits>{});
@@ -133,18 +146,29 @@ public:
     /** The item, valid while this object lives and is not changed. */
     [[nodiscard]] const item<Traits>& value() const noexcept { return item_; }
 
+    /** The allocator of what it owns. */
+    [[nodiscard]] Allocator get_allocator() const noexcept { return alloc_; }
+
     /**
      Makes the item a deep copy of the node `id` of `from`, which may be the tree it is stored in.
     */
-    void copy_of(const tree<Traits>& from, std::uint64_t id) noexcept {
+    void copy_of(const tree_view<Traits>& from, std::uint64_t id) noexcept {
         clear();
         item_.from = &from;
         item_.from_id = id;
     }
 
 private:
-    template <class>
+    template <class, class>
     friend struct converter;
+
+    /** A buffer of `T` in the allocator. */
+    template <class T>
+    using buffer = std::vector<T, rebound<Allocator, T>>;
+
+    /** A list of buffers of `T`, each in the allocator. */
+    template <class T>
+    using buffers = std::vector<buffer<T>, rebound<Allocator, buffer<T>>>;
 
     /** Holds `null` again, and owns nothing. */
     void clear() noexcept {
@@ -155,6 +179,9 @@ private:
         entries_.clear();
     }
 
+    /** The allocator. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS Allocator alloc_;
+
     /** The item. */
     item<Traits> item_;
 
@@ -162,23 +189,23 @@ private:
     // is added after it.
 
     /** Text transcoded to UTF-8. */
-    std::vector<std::vector<char>> utf8_;
+    buffers<char> utf8_;
 
     /** Text transcoded to UTF-16. */
-    std::vector<std::vector<char16_t>> utf16_;
+    buffers<char16_t> utf16_;
 
     /** Bytes decoded from text. */
-    std::vector<std::vector<std::byte>> bytes_;
+    buffers<std::byte> bytes_;
 
     /** The entries of each literal container, a nested one pointing at its own. */
-    std::vector<std::vector<literal_entry<Traits>>> entries_;
+    buffers<literal_entry<Traits>> entries_;
 };
 
 /**
  The conversions' work, with access to what a @ref prepared value owns: C++ values into items, and
  nodes back into C++ values.
 */
-template <class Traits>
+template <class Traits, class Allocator>
 struct converter {
     /** The traits' number. */
     using number_type = Traits::number;
@@ -190,7 +217,7 @@ struct converter {
     using kind_t = webcpp::document::kind;
 
     /** A prepared value of these traits. */
-    using prepared_t = prepared<Traits>;
+    using prepared_t = prepared<Traits, Allocator>;
 
     /** An item of these traits. */
     using item_t = item<Traits>;
@@ -199,7 +226,7 @@ struct converter {
     using node_t = node<Traits>;
 
     /** A tree of these traits. */
-    using tree_t = tree<Traits>;
+    using tree_t = tree_view<Traits>;
 
     /** Whether strings are stored as UTF-16 code units. */
     static constexpr bool utf16_text = std::same_as<typename Traits::string, utf16>;
@@ -406,8 +433,8 @@ struct converter {
         if constexpr (!javascript_shape) {
             if (revive_bytes) {
                 if (result<std::vector<std::byte>> decoded = decode(text); decoded.has_value()) {
-                    const std::vector<std::byte>& bytes =
-                        owner.bytes_.emplace_back(std::move(decoded).unsafe_value());
+                    const auto& bytes = owner.bytes_.emplace_back(
+                        decoded.unsafe_value().begin(), decoded.unsafe_value().end(), owner.alloc_);
                     return hold_form(owner, owner.item_, std::span<const std::byte>(bytes));
                 }
             }
@@ -492,8 +519,8 @@ struct converter {
         }
         out.kind = kind_t::string;
         if constexpr (utf16_text) {
-            std::vector<char16_t>& units =
-                owner.utf16_.emplace_back(static_cast<std::size_t>(utf16_length(v)));
+            auto& units =
+                owner.utf16_.emplace_back(static_cast<std::size_t>(utf16_length(v)), owner.alloc_);
             to_utf16(v, units.data());
             out.text = std::as_bytes(std::span(units));
         } else {
@@ -512,8 +539,8 @@ struct converter {
             if (!valid_utf16(v)) {
                 return errc::type;
             }
-            std::vector<char>& chars =
-                owner.utf8_.emplace_back(static_cast<std::size_t>(utf8_size(v)));
+            auto& chars =
+                owner.utf8_.emplace_back(static_cast<std::size_t>(utf8_size(v)), owner.alloc_);
             to_utf8(v, chars.data());
             out.kind = kind_t::string;
             out.text = std::as_bytes(std::span(chars));
@@ -553,7 +580,7 @@ struct converter {
             return {};
         }
         const std::span<literal_entry<Traits>> entries =
-            owner.entries_.emplace_back(members.size());
+            owner.entries_.emplace_back(members.size(), owner.alloc_);
         out.entries = entries.data();
         out.entry_count = entries.size();
         for (std::size_t i = 0; i < members.size(); ++i) {
@@ -578,7 +605,7 @@ struct converter {
             return {};
         }
         const std::span<literal_entry<Traits>> entries =
-            owner.entries_.emplace_back(elements.size());
+            owner.entries_.emplace_back(elements.size(), owner.alloc_);
         out.entries = entries.data();
         out.entry_count = entries.size();
         for (std::size_t i = 0; i < elements.size(); ++i) {
@@ -995,19 +1022,20 @@ struct converter {
  floating-point value into traits whose `number` is not binary, @ref errc::range for a non-finite
  decimal or a date out of JavaScript's range.
 */
-template <class T, class Traits>
+template <class T, class Traits, class Allocator>
     requires preparable<Traits, T>
-result<void> prepare(const T& v, prepared<Traits>& out) noexcept {
-    return converter<Traits>::prepare_value(v, out);
+result<void> prepare(const T& v, prepared<Traits, Allocator>& out) noexcept {
+    return converter<Traits, Allocator>::prepare_value(v, out);
 }
 
 /**
  Turns a JSON number's text into an item, by value: @ref errc::range when the traits' `number`
  refuses it.
 */
-template <class Traits>
-result<void> prepare_number(std::string_view json_number, prepared<Traits>& out) noexcept {
-    return converter<Traits>::prepare_number_text(json_number, out);
+template <class Traits, class Allocator>
+result<void> prepare_number(std::string_view json_number,
+                            prepared<Traits, Allocator>& out) noexcept {
+    return converter<Traits, Allocator>::prepare_number_text(json_number, out);
 }
 
 /**
@@ -1015,10 +1043,10 @@ result<void> prepare_number(std::string_view json_number, prepared<Traits>& out)
  is exactly Date.prototype.toJSON's text, or with `revive_bytes` bytes when it is text of the
  traits' base64 policy; @ref errc::type for text that is not valid UTF-8 after all.
 */
-template <class Traits>
+template <class Traits, class Allocator>
 result<void> prepare_string(std::string_view utf8, bool revive_dates, bool revive_bytes,
-                            prepared<Traits>& out) noexcept {
-    return converter<Traits>::prepare_json_string(utf8, revive_dates, revive_bytes, out);
+                            prepared<Traits, Allocator>& out) noexcept {
+    return converter<Traits, Allocator>::prepare_json_string(utf8, revive_dates, revive_bytes, out);
 }
 
 /** The item of an empty container, `null`, or for a root @ref kind::undefined. */
@@ -1044,7 +1072,7 @@ item<Traits> empty_item(webcpp::document::kind k) noexcept {
 */
 template <class T, class Traits>
     requires readable<Traits, T>
-result<T> read(const tree<Traits>& t, const node<Traits>* n) noexcept {
+result<T> read(const tree_view<Traits>& t, const node<Traits>* n) noexcept {
     if (n == nullptr) {
         return errc::type;
     }
@@ -1057,7 +1085,7 @@ result<T> read(const tree<Traits>& t, const node<Traits>* n) noexcept {
  in any order. A null node is undefined, equal only to another.
 */
 template <class Traits>
-bool equal(const tree<Traits>& a, const node<Traits>* x, const tree<Traits>& b,
+bool equal(const tree_view<Traits>& a, const node<Traits>* x, const tree_view<Traits>& b,
            const node<Traits>* y) noexcept {
     return converter<Traits>::equal_trees(a, x, b, y);
 }
