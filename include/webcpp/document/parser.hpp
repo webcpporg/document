@@ -292,8 +292,7 @@ private:
         using held_traits = std::allocator_traits<held_allocator>;
         held_allocator a(alloc);
         F* const f = static_cast<F*>(object);
-        const typename held_traits::pointer place =
-            std::pointer_traits<typename held_traits::pointer>::pointer_to(*f);
+        const auto place = std::pointer_traits<typename held_traits::pointer>::pointer_to(*f);
         held_traits::destroy(a, f);
         held_traits::deallocate(a, place, 1);
     }
