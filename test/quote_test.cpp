@@ -4,16 +4,13 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// quote writes a string as JSON.stringify quotes it, the bytes stringify_test pins with Node 26
-// and the bytes stringify writes of the same string: every escape, text past ASCII, a lone
-// surrogate of UTF-16, a long string; it appends, refuses text that is not UTF-8 and leaves the
-// output unchanged then, and allocates through the output alone, a std::pmr::string on a resource
-// of its own, which a replaced operator new proves.
+// quote writes a string as JSON.stringify quotes it, the bytes Node 26 writes held here as
+// literals: every escape, C1's controls and other text past ASCII, a lone surrogate of UTF-16, long
+// strings; it appends, refuses the text a strict decoder (Node's TextDecoder, fatal) refuses and
+// leaves the output unchanged then, and allocates through the output alone, a std::pmr::string on
+// a resource of its own, which a replaced operator new proves.
 
 #include <webcpp/document/quote.hpp>
-
-#include <webcpp/document/document.hpp>
-#include <webcpp/document/stringify.hpp>
 
 #include <boost/core/lightweight_test.hpp>
 
@@ -27,7 +24,6 @@
 #include <new>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace wd = webcpp::document;
@@ -69,8 +65,6 @@ void operator delete(void* memory, std::size_t /*size*/) noexcept {
 
 namespace {
 
-using js_document = wd::basic_document<wd::js_traits>;
-
 /** A memory resource that counts what it hands out, from `upstream`. */
 class counting_resource final : public std::pmr::memory_resource {
 public:
@@ -98,17 +92,6 @@ private:
     std::pmr::memory_resource* upstream_;
     std::uint64_t allocations_ = 0;
 };
-
-// A document holding `v`, set at its root.
-template <class Document = wd::document, class T>
-Document document_of(const T& v) {
-    auto made = Document::create();
-    webcpp::test::require(BOOST_TEST(made.has_value()));
-    Document d = std::move(*made);
-    auto root = d.root();
-    webcpp::test::require(BOOST_TEST(root.set(v).has_value()));
-    return d;
-}
 
 // UTF-8 text quoted into a std::string, the result checked.
 std::string literal_of(std::string_view utf8) {
@@ -157,26 +140,23 @@ void quotes_as_json_stringify() {
         R"(\u001d\u001e\u001f)"
         "\x7f\"";
     BOOST_TEST_EQ(literal_of(controls), expected);
-    // A long string, past any buffer the writer keeps.
+    // U+0080 to U+009F, C1's controls, which JSON.stringify writes as they are: C2 80 to C2 9F in
+    // UTF-8, valid though a byte 80 alone is refused.
+    std::string c1;
+    for (std::uint32_t unit = 0x80; unit < 0xa0; ++unit) {
+        c1 += '\xc2';
+        c1 += static_cast<char>(unit);
+    }
+    BOOST_TEST_EQ(literal_of(c1), '"' + c1 + '"');
+    // Long strings, past any buffer the writer keeps: one with no escape, one of escapes alone.
     const std::string long_text(10000, 'z');
     BOOST_TEST_EQ(literal_of(long_text), '"' + long_text + '"');
-}
-
-void quotes_as_stringify_writes() {
-    std::string controls;
-    for (char c = 0; c < 0x20; ++c) {
-        controls.push_back(c);
+    std::string escaped_quotes = "\"";
+    for (std::size_t i = 0; i < 10000; ++i) {
+        escaped_quotes += R"(\")";
     }
-    const std::string long_text(10000, '"');
-    for (const std::string_view text : {
-             plain_text,
-             std::string_view(controls),
-             std::string_view(long_text),
-             std::string_view(),
-         }) {
-        BOOST_TEST_EQ(literal_of(text), wd::stringify(document_of(text)));
-        BOOST_TEST_EQ(literal_of(text), wd::stringify(document_of<js_document>(text)));
-    }
+    escaped_quotes += '"';
+    BOOST_TEST_EQ(literal_of(std::string(10000, '"')), escaped_quotes);
 }
 
 void a_lone_surrogate_of_utf16() {
@@ -191,13 +171,20 @@ void a_lone_surrogate_of_utf16() {
     BOOST_TEST_EQ(literal_of(units({0x7F, 0xE9, 0x20AC, 0xFFFF})),
                   "\"\x7f\xc3\xa9\xe2\x82\xac\xef\xbf\xbf\"");
     BOOST_TEST_EQ(literal_of(units({})), R"("")");
-    // The bytes stringify writes of the same units, past the writer's buffer of 256 bytes.
+    // A group of units repeated past the writer's buffer of 256 bytes, and what JSON.stringify
+    // writes of one group.
+    constexpr std::string_view group = R"(\"\ud800)"
+                                       "\xc3\xa9"
+                                       "\xf0\x9f\x98\x80"
+                                       R"(\n)";
     std::u16string many;
-    for (int i = 0; i < 300; ++i) {
+    std::string expected = "\"";
+    for (std::size_t i = 0; i < 300; ++i) {
         many += units({u'"', 0xD800, 0xE9, 0xD83D, 0xDE00, u'\n'});
+        expected += group;
     }
-    BOOST_TEST_EQ(literal_of(many),
-                  wd::stringify(document_of<js_document>(std::u16string_view(many))));
+    expected += '"';
+    BOOST_TEST_EQ(literal_of(many), expected);
 }
 
 void appends() {
@@ -210,10 +197,32 @@ void appends() {
 }
 
 void refuses_what_is_not_utf8() {
-    // A stray continuation byte, a byte UTF-8 never holds, a surrogate encoded, an overlong
-    // form, a sequence cut short, and one past U+10FFFF.
-    for (const std::string_view text :
-         {"\x80", "a\xff", "\xed\xa0\x80", "\xc0\xaf", "\xe2\x82", "\xf4\x90\x80\x80"}) {
+    for (const std::string_view text : {
+             // A stray continuation byte, a byte UTF-8 never holds, a surrogate encoded, an
+             // overlong form, a sequence cut short, and one past U+10FFFF.
+             "\x80",
+             "a\xff",
+             "\xed\xa0\x80",
+             "\xc0\xaf",
+             "\xe2\x82",
+             "\xf4\x90\x80\x80",
+             // Lead bytes past F4, which UTF-8 never holds, before three continuation bytes, and
+             // F8 before four, the five-byte form of RFC 2279.
+             "\xf5\x80\x80\x80",
+             "\xf8\x88\x80\x80",
+             "\xf8\x88\x80\x80\x80",
+             "\xfe\x80\x80\x80",
+             "\xff\x80\x80\x80",
+             // Overlong forms of three and four bytes: U+0000 as E0 80 80 and as F0 80 80 80.
+             "\xe0\x80\x80",
+             "\xf0\x80\x80\x80",
+             // A sequence of four bytes cut short, at the end of the text and before ASCII: the
+             // last one's 61 is an "a".
+             "\xf0\x9f\x98",
+             "\xf0\x9f",
+             "\xf0",
+             "\xf0\x9f\x98\x61",
+         }) {
         std::string out = "kept";
         const wd::result<void> refused = wd::quote(text, out);
         BOOST_TEST(refused.has_error() && refused.error() == wd::errc::type);
@@ -254,7 +263,6 @@ void allocates_through_the_output_alone() {
 
 int main() {
     quotes_as_json_stringify();
-    quotes_as_stringify_writes();
     a_lone_surrogate_of_utf16();
     appends();
     refuses_what_is_not_utf8();
