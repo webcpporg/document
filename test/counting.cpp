@@ -7,17 +7,20 @@
 // The replacements of the global operator new and operator delete that counting.hpp's counts read,
 // for the program that links this file alone: every form a program calls directly, the array and
 // the nothrow forms included, each counted once, however the standard library implements one form
-// through another.
+// through another; and the measure of what a standard container allocates for itself.
 
 #include "counting.hpp"
 
 #include <boost/config.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <memory_resource>
 #include <new>
+#include <vector>
 
 #ifdef _MSC_VER
 #include <malloc.h>
@@ -82,6 +85,50 @@ void* or_abort(void* memory) noexcept {
     return memory;
 }
 
+// A resource that records the blocks it is asked for, with the size and the alignment of the last,
+// and takes them from `upstream`.
+class recording_resource final : public std::pmr::memory_resource {
+public:
+    explicit recording_resource(std::pmr::memory_resource* upstream) noexcept
+        : upstream_(upstream) {}
+
+    [[nodiscard]] webcpp::test::container_bookkeeping recorded() const noexcept {
+        return recorded_;
+    }
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        ++recorded_.blocks;
+        recorded_.bytes = bytes;
+        recorded_.alignment = alignment;
+        return upstream_->allocate(bytes, alignment);
+    }
+
+    void do_deallocate(void* memory, std::size_t bytes, std::size_t alignment) override {
+        upstream_->deallocate(memory, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+
+    std::pmr::memory_resource* upstream_;
+    webcpp::test::container_bookkeeping recorded_;
+};
+
+// What an empty std::pmr::vector allocates when it is made, in a buffer on the stack, so that the
+// measure reaches no heap and no resource a test counts.
+webcpp::test::container_bookkeeping measure() {
+    alignas(std::max_align_t) std::array<std::byte, 256> room{};
+    std::pmr::monotonic_buffer_resource buffer(room.data(), room.size(),
+                                               std::pmr::null_memory_resource());
+    recording_resource recorder(&buffer);
+    {
+        const std::pmr::vector<std::byte> empty(&recorder);
+    }
+    return recorder.recorded();
+}
+
 }  // namespace
 
 namespace webcpp::test {
@@ -92,6 +139,16 @@ std::uint64_t global_news() noexcept {
 
 std::uint64_t global_deletes() noexcept {
     return deletes;
+}
+
+const container_bookkeeping& bookkeeping() {
+    static const container_bookkeeping measured = measure();
+    return measured;
+}
+
+bool is_bookkeeping(std::size_t bytes, std::size_t alignment) {
+    const container_bookkeeping& b = bookkeeping();
+    return b.blocks != 0 && bytes == b.bytes && alignment == b.alignment;
 }
 
 }  // namespace webcpp::test

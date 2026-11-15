@@ -405,7 +405,9 @@ void the_writer_allocates_its_stack_and_piece() {
 /**
  stringify of a copy of `source` in an arena, at each of `indents`, calls the global operator new
  and operator delete exactly as often as a std::string that appends the writer's pieces of the same
- text does, and as the stack of `frames` frames needs; the arena makes no allocation.
+ text does, made in the same count, and as the stack of `frames` frames needs: its frames past its
+ own room, and what the standard library allocates for the list that holds them (counting.hpp's
+ bookkeeping); the arena makes no allocation.
 */
 template <class Traits>
 void calls_new_for_its_string_alone(const wd::basic_document<Traits>& source, std::uint64_t frames,
@@ -424,8 +426,10 @@ void calls_new_for_its_string_alone(const wd::basic_document<Traits>& source, st
         std::uint64_t reference_news = 0;
         std::uint64_t reference_deletes = 0;
         {
-            std::string reference;
+            // Made in the count, as stringify's string is: what a standard library allocates for a
+            // string itself is counted on both sides.
             const global_count global;
+            std::string reference;
             std::size_t at = 0;
             for (const std::size_t size : sizes) {
                 reference.append(std::string_view(expected).substr(at, size));
@@ -436,14 +440,16 @@ void calls_new_for_its_string_alone(const wd::basic_document<Traits>& source, st
             BOOST_TEST(reference == expected);
         }
         BOOST_TEST_GT(reference_news, 0U);
+        const std::uint64_t deeper = stack_allocations(frames);
+        const std::uint64_t stack = deeper == 0 ? 0 : deeper + webcpp::test::bookkeeping().blocks;
         const std::uint64_t made = a.resource().allocations();
         {
             const global_count global;
             const std::string text = wd::stringify(doc, indent);
             const std::uint64_t news = global.news();
             const std::uint64_t deletes = global.deletes();
-            BOOST_TEST_EQ(news, reference_news + stack_allocations(frames));
-            BOOST_TEST_EQ(deletes, reference_deletes + stack_allocations(frames));
+            BOOST_TEST_EQ(news, reference_news + stack);
+            BOOST_TEST_EQ(deletes, reference_deletes + stack);
             BOOST_TEST(text == expected);
         }
         BOOST_TEST_EQ(a.resource().allocations(), made);
@@ -463,14 +469,14 @@ void stringify_calls_new_for_its_string_alone() {
 }
 
 // A dozen small texts written by stringify_to in a 64 KiB arena, the example's, take nothing of it:
-// the stack and the piece fit their own room, and the arena holds the document alone, which stays
-// as it was.
+// the stack and the piece fit their own room, and make no list a standard library would allocate
+// for (counting.hpp's bookkeeping), and the arena holds the document alone, which stays as it was.
 void small_texts_take_nothing() {
     arena a(std::size_t{64} * 1024);
     auto made = wd::parse(R"({"user":"Ada","langs":["Analytical","Note G"],"draft":true})",
                           wd::parse_options(), a.allocator());
     require(BOOST_TEST(made.has_value()));
-    const std::uint64_t allocations = a.resource().allocations();
+    const std::uint64_t allocations = a.resource().all_allocations();
     const std::uint64_t held = a.resource().bytes_in_use();
     for (std::size_t call = 0; call < 12; ++call) {
         std::string out;
@@ -479,7 +485,7 @@ void small_texts_take_nothing() {
                    }).has_value());
         BOOST_TEST_EQ(out, R"({"user":"Ada","langs":["Analytical","Note G"],"draft":true})");
     }
-    BOOST_TEST_EQ(a.resource().allocations(), allocations);
+    BOOST_TEST_EQ(a.resource().all_allocations(), allocations);
     BOOST_TEST_EQ(a.resource().bytes_in_use(), held);
 }
 

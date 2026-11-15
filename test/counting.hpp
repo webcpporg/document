@@ -5,10 +5,11 @@
 // https://www.boost.org/LICENSE_1_0.txt)
 
 // The instruments of the allocation tests: the calls of the global operator new that
-// counting.cpp's replacements count, a memory resource that counts what it hands out and takes
-// back, and an arena, a monotonic resource over memory taken before anything is counted, whose
-// upstream is the null resource, so that an allocation past its end fails rather than reach the
-// global heap. A program that includes this header links counting.cpp.
+// counting.cpp's replacements count, what a standard container allocates for itself, a memory
+// resource that counts what it hands out and takes back, and an arena, a monotonic resource over
+// memory taken before anything is counted, whose upstream is the null resource, so that an
+// allocation past its end fails rather than reach the global heap. A program that includes this
+// header links counting.cpp.
 
 #ifndef WEBCPP_TEST_DOCUMENT_COUNTING_HPP
 #define WEBCPP_TEST_DOCUMENT_COUNTING_HPP
@@ -48,6 +49,38 @@ private:
     std::uint64_t deletes_;
 };
 
+/**
+ What a standard container allocates for itself through its allocator, rebound, whatever it holds:
+ the MSVC STL's checked iterators (`_ITERATOR_DEBUG_LEVEL` above 0, the default of a debug build)
+ allocate a proxy for each container when it is constructed and when it is moved, in its noexcept
+ constructors as well, where an allocator's failure ends the program; the other standard libraries
+ allocate nothing so. Measured once, on an empty `std::pmr::vector`.
+*/
+struct container_bookkeeping {
+    /** The blocks one container allocates for itself: none, or its proxy. */
+    std::uint64_t blocks = 0;
+
+    /** The size of such a block; 0 when there is none. */
+    std::size_t bytes = 0;
+
+    /** The alignment of such a block; 0 when there is none. */
+    std::size_t alignment = 0;
+};
+
+/** What a standard container allocates for itself on this standard library. */
+const container_bookkeeping& bookkeeping();
+
+/**
+ Whether a block of `bytes` at `alignment` may be a standard container's own, as @ref bookkeeping
+ measures it; never on a standard library that allocates none. Where one does, a resource cannot
+ tell such a block from one of the document's of the same size and alignment, as the two 64-bit
+ words a change's plan may reserve: the resources here neither count nor refuse either. No operation
+ whose allocations a test counts exactly makes such a block of its own (keys, texts and pieces are
+ of `char`, stacks of 16 frames and more, images 16-aligned), and a failure at one that other
+ operations make is proven on the other standard libraries.
+*/
+bool is_bookkeeping(std::size_t bytes, std::size_t alignment);
+
 /** A memory resource that counts what it hands out and takes back, from `upstream`. */
 class counting_resource final : public std::pmr::memory_resource {
 public:
@@ -55,13 +88,23 @@ public:
     explicit counting_resource(std::pmr::memory_resource* upstream) noexcept
         : upstream_(upstream) {}
 
-    /** The allocations it made. */
+    /** The allocations it made, a standard container's own (@ref is_bookkeeping) left out. */
     [[nodiscard]] std::uint64_t allocations() const noexcept { return allocations_; }
 
-    /** The deallocations it made. */
+    /** The deallocations it made, a standard container's own left out. */
     [[nodiscard]] std::uint64_t deallocations() const noexcept { return deallocations_; }
 
-    /** The bytes handed out and not yet taken back. */
+    /**
+     Every allocation it made, a standard container's own among them: what an operation that is
+     to take nothing at all of a monotonic resource, which never reuses a block, must leave as it
+     was.
+    */
+    [[nodiscard]] std::uint64_t all_allocations() const noexcept { return all_allocations_; }
+
+    /**
+     The bytes handed out and not yet taken back, a standard container's own among them: all of
+     it comes back.
+    */
     [[nodiscard]] std::uint64_t bytes_in_use() const noexcept { return in_use_; }
 
     /** The largest alignment asked of it. */
@@ -70,14 +113,19 @@ public:
 private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         void* memory = upstream_->allocate(bytes, alignment);
-        ++allocations_;
+        if (!is_bookkeeping(bytes, alignment)) {
+            ++allocations_;
+        }
+        ++all_allocations_;
         in_use_ += bytes;
         largest_alignment_ = alignment > largest_alignment_ ? alignment : largest_alignment_;
         return memory;
     }
 
     void do_deallocate(void* memory, std::size_t bytes, std::size_t alignment) override {
-        ++deallocations_;
+        if (!is_bookkeeping(bytes, alignment)) {
+            ++deallocations_;
+        }
         in_use_ -= bytes;
         upstream_->deallocate(memory, bytes, alignment);
     }
@@ -89,6 +137,7 @@ private:
     std::pmr::memory_resource* upstream_;
     std::uint64_t allocations_ = 0;
     std::uint64_t deallocations_ = 0;
+    std::uint64_t all_allocations_ = 0;
     std::uint64_t in_use_ = 0;
     std::size_t largest_alignment_ = 0;
 };
@@ -97,6 +146,10 @@ private:
  A memory resource that hands out what `upstream` gives for its first `budget` allocations and fails
  every later one with `Failure`, through `boost::throw_exception`: an allocator that runs out at a
  chosen step of an operation, for tests built with exceptions.
+
+ A standard container's own block (@ref is_bookkeeping) is handed out whatever the budget, and
+ counts for none of it: the standard library allocates it in noexcept constructors, where a refusal
+ ends the program, so that no operation could make that refusal errc::capacity.
 
  @tparam Failure What a refusal throws: `std::bad_alloc`, or Boost.Interprocess's `bad_alloc`, which
  an allocator of Boost.Interprocess throws and which derives from `std::exception` alone.
@@ -119,11 +172,13 @@ public:
 
 private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
-        if (budget_ == 0) {
-            ++refusals_;
-            boost::throw_exception(Failure());
+        if (!is_bookkeeping(bytes, alignment)) {
+            if (budget_ == 0) {
+                ++refusals_;
+                boost::throw_exception(Failure());
+            }
+            --budget_;
         }
-        --budget_;
         void* memory = upstream_->allocate(bytes, alignment);
         in_use_ += bytes;
         return memory;
