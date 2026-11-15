@@ -43,6 +43,13 @@ include::{examples}/document_threads.expected[lines=1..4]
 Every document arrived with the image the producer sent: no byte was copied and nothing was parsed
 on the consumer's side.
 
+Threads that read one document at once read it through `const` operations. A document of the
+standard allocator, `wd::document` and the documents of the pools below among them, may be read by
+any number of threads at once with every one of them. A document of a memory resource allocates in
+it in a few `const` operations, which <<document-allocators-reads>> lists: threads that use them on
+one document at once need a resource that is safe to use from several threads, such as
+`std::pmr::synchronized_pool_resource`.
+
 [#document-sharing-pool]
 === Shared documents
 

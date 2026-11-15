@@ -14,6 +14,7 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/detail/fwd.hpp>
 #include <webcpp/document/detail/selector.hpp>
 #include <webcpp/document/document.hpp>
@@ -21,6 +22,7 @@
 #include <webcpp/document/parse.hpp>
 #include <webcpp/document/value.hpp>
 
+#include <boost/config.hpp>
 #include <boost/json/basic_parser_impl.hpp>
 #include <boost/json/error.hpp>
 #include <boost/system/error_code.hpp>
@@ -31,6 +33,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -41,6 +44,7 @@
 
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
 #include <exception>
+#include <new>
 #endif
 
 namespace webcpp::document {
@@ -143,11 +147,185 @@ concept selector_callback =
      std::same_as<std::invoke_result_t<F&, basic_const_value<Traits, Storage>, path_view>,
                   result<void>>);
 
-/** A selector and its callback, as `on` or `observe` registered it. */
+/**
+ A selector's callback, its type erased as `std::function` erases it, its object allocated through
+ the parser's allocator, rebound, which `std::function` cannot take.
+
+ Its object is the callable a selector was given, decayed, made by `make`; the callback is moved,
+ never copied, and calls it as `std::function` does, its `void` made success.
+*/
+template <class Traits, class Storage>
+class delivery {
+public:
+    /** The allocator of the parser, which holds the callable. */
+    using allocator_type = Storage::allocator_type;
+
+    /** The read-only handle a callback is given. */
+    using handle = basic_const_value<Traits, Storage>;
+
+    /**
+     A callback holding `f`, decayed, in storage allocated through `alloc`; what the allocator or
+     the callable's constructor throws propagates, and the storage goes back to `alloc`.
+    */
+    template <class F>
+        requires selector_callback<std::decay_t<F>, Traits, Storage>
+    static delivery make(F&& f, const allocator_type& alloc) {
+        using held = std::decay_t<F>;
+        using held_allocator = rebound<allocator_type, held>;
+        using held_traits = std::allocator_traits<held_allocator>;
+        held_allocator a(alloc);
+        storage_for<held> storage(a);
+        held_traits::construct(a, storage.get(), std::forward<F>(f));
+        storage.release();
+        // A callable that is a function pointer makes its storage a pointer to a pointer.
+        return delivery(static_cast<void*>(storage.get()), &operations_of<held>, alloc);
+    }
+
+    /** Takes the callable of `other`, which holds none after it. */
+    delivery(delivery&& other) noexcept
+        : object_(std::exchange(other.object_, nullptr)), ops_(other.ops_), alloc_(other.alloc_) {}
+
+    /** A callback is not copied: it owns its callable. */
+    delivery(const delivery&) = delete;
+
+    /** A callback is not copied: it owns its callable. */
+    delivery& operator=(const delivery&) = delete;
+
+    /** A callback is not assigned: a polymorphic allocator, which it may hold, is not. */
+    delivery& operator=(delivery&&) = delete;
+
+    /** Destroys the callable and gives its storage back to the allocator. */
+    ~delivery() {
+        if (object_ != nullptr) {
+            ops_->destroy(object_, alloc_);
+        }
+    }
+
+    /**
+     Calls the callable with a value and its path, as `std::function` would: with a copy of the
+     handle, its `void` made success; what it throws propagates.
+    */
+    result<void> operator()(const handle& v, path_view where) {
+        return ops_->call(object_, v, where);
+    }
+
+private:
+    /**
+     What a callable of one type does: be called, and be destroyed with its storage.
+
+     Tip: each member has an initializer, else MSVC 14.3 and 14.5 warn (C4268, an error under /WX)
+     that `operations_of`, which sets every member, is filled with zeros; it is not, and the
+     callback it builds is called and destroyed as it should be.
+    */
+    struct operations {
+        /** Calls the callable at `object` with a value and its path. */
+        result<void> (*call)(void* object, const handle& v, path_view where) = nullptr;
+
+        /** Destroys the callable at `object` and gives its storage back to `alloc`. */
+        void (*destroy)(void* object, const allocator_type& alloc) noexcept = nullptr;
+    };
+
+    /**
+     Storage for one callable of type `T`, allocated through an allocator, which goes back to it
+     unless it is released once the callable is built in it.
+    */
+    template <class T>
+    class storage_for {
+    public:
+        /** The allocator's traits, rebound to `T`. */
+        using traits = std::allocator_traits<rebound<allocator_type, T>>;
+
+        /** Storage for one `T` from `allocator`, which outlives it; what the allocator throws. */
+        explicit storage_for(rebound<allocator_type, T>& allocator)
+            : allocator_(&allocator), place_(traits::allocate(allocator, 1)) {}
+
+        /** The storage is the one being made: it is not copied. */
+        storage_for(const storage_for&) = delete;
+
+        /** The storage is the one being made: it is not copied. */
+        storage_for& operator=(const storage_for&) = delete;
+
+        /** The storage is the one being made: it is not moved. */
+        storage_for(storage_for&&) = delete;
+
+        /** The storage is the one being made: it is not moved. */
+        storage_for& operator=(storage_for&&) = delete;
+
+        /** Gives the storage back unless it was released. */
+        ~storage_for() {
+            if (!released_) {
+                traits::deallocate(*allocator_, place_, 1);
+            }
+        }
+
+        /** The storage's address. */
+        [[nodiscard]] T* get() const noexcept { return std::to_address(place_); }
+
+        /** Keeps the storage, which the callable built in it now owns. */
+        void release() noexcept { released_ = true; }
+
+    private:
+        /** The allocator. */
+        rebound<allocator_type, T>* allocator_;
+
+        /** The storage. */
+        traits::pointer place_;
+
+        /** Whether the storage is kept. */
+        bool released_ = false;
+    };
+
+    /**
+     Calls the callable of type `F` at `object` with a copy of the handle, as `std::function`
+     passes its argument, so that a callable taking the handle by value or as an rvalue is called
+     as one taking a const reference is; its `void` made success.
+    */
+    template <class F>
+    static result<void> call_as(void* object, const handle& v, path_view where) {
+        F& f = *static_cast<F*>(object);
+        if constexpr (std::same_as<std::invoke_result_t<F&, handle, path_view>, void>) {
+            std::invoke(f, handle(v), where);
+            return {};
+        } else {
+            return std::invoke(f, handle(v), where);
+        }
+    }
+
+    /** Destroys the callable of type `F` at `object` and gives its storage back to `alloc`. */
+    template <class F>
+    static void destroy_as(void* object, const allocator_type& alloc) noexcept {
+        using held_allocator = rebound<allocator_type, F>;
+        using held_traits = std::allocator_traits<held_allocator>;
+        held_allocator a(alloc);
+        F* const f = static_cast<F*>(object);
+        const auto place = std::pointer_traits<typename held_traits::pointer>::pointer_to(*f);
+        held_traits::destroy(a, f);
+        held_traits::deallocate(a, place, 1);
+    }
+
+    /** The operations of a callable of type `F`. */
+    template <class F>
+    static constexpr operations operations_of{.call = &call_as<F>, .destroy = &destroy_as<F>};
+
+    /** A callback of the callable at `object`, built, whose operations are `ops`. */
+    delivery(void* object, const operations* ops, const allocator_type& alloc) noexcept
+        : object_(object), ops_(ops), alloc_(alloc) {}
+
+    /** The callable, in storage of the allocator; null once moved from. */
+    void* object_;
+
+    /** What the callable does. */
+    const operations* ops_;
+
+    /** The allocator of the callable's storage. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS allocator_type alloc_;
+};
+
+/** A selector and its callback, as `on` or `observe` registered it, in the parser's allocator. */
 template <class Traits, class Storage>
 struct subscription {
     /** The places it matches. */
-    selector where;
+    basic_selector<typename Storage::allocator_type> where;
 
     /**
      Whether the value is dropped after its delivery, as `on` asks, or kept, as `observe` does.
@@ -155,7 +333,7 @@ struct subscription {
     bool take = false;
 
     /** The callback, its `void` made success. */
-    std::function<result<void>(basic_const_value<Traits, Storage>, path_view)> deliver;
+    delivery<Traits, Storage> deliver;
 };
 
 }  // namespace detail
@@ -169,31 +347,56 @@ struct subscription {
  its own, since its input is the network's; an exception a callback throws propagates from `write`
  or `finish`, and leaves the parser failed: every later call throws it again, until @ref reset.
 
+ Its working state, the handler's frames, path and pending text, the selectors and their
+ callbacks, is allocated through the document's allocator, rebound. With exceptions, an allocator
+ that has no room is @ref errc::capacity, and fails the parser; without them it ends the program,
+ as the allocator itself does. A text given whole to @ref finish_with never suspends Boost.JSON's
+ parser, and allocates nothing else. A text fed in chunks by @ref write suspends it at each
+ chunk's end, and Boost.JSON keeps its suspension stack in the global heap, which no allocator
+ reaches: one allocation at the first suspension, and one more at each suspension deeper than
+ every earlier one, the last kept until the parser is destroyed, across @ref reset.
+
  @tparam Traits The traits of the document.
- @tparam Storage @ref owned, or @ref external to build it in a buffer of its user's.
+ @tparam Storage @ref basic_owned or @ref basic_external of an allocator of `std::byte`: @ref owned
+ and `pmr::owned`, or @ref external and `pmr::external` to build it in a buffer of its user's. The
+ allocator holds an owned document's image and the parser's working state.
  @see "Parsing", in the guide.
 */
 template <class Traits, class Storage>
 class basic_parser {
 public:
+    /** The allocator of the document and of the parser's working state. */
+    using allocator_type = Storage::allocator_type;
+
     /**
      A parser of an owned document.
 
      @param o The limits and the revivers.
+     @param alloc The allocator of the document it makes and of its own working state.
     */
-    explicit basic_parser(const parse_options& o = {}) noexcept
-        requires std::same_as<Storage, owned>
-        : options_(o), json_(json_options(o), *this) {}
+    explicit basic_parser(const parse_options& o = parse_options(),
+                          const allocator_type& alloc = allocator_type()) noexcept
+        requires detail::owned_storage<Storage>
+        : options_(o),
+          alloc_(alloc),
+          subscriptions_(subscriptions_allocator(alloc)),
+          json_(json_options(o), *this) {}
 
     /**
      A parser of a document in a buffer its user owns, formatted when the text begins.
 
      @param buffer The buffer, 16-aligned, which outlives the parser and its document.
      @param o The limits and the revivers.
+     @param alloc The allocator of the document's working state and of the parser's own.
     */
-    explicit basic_parser(std::span<std::byte> buffer, const parse_options& o = {}) noexcept
-        requires std::same_as<Storage, external>
-        : options_(o), buffer_(buffer), json_(json_options(o), *this) {}
+    explicit basic_parser(std::span<std::byte> buffer, const parse_options& o = parse_options(),
+                          const allocator_type& alloc = allocator_type()) noexcept
+        requires detail::external_storage<Storage>
+        : options_(o),
+          alloc_(alloc),
+          buffer_(buffer),
+          subscriptions_(subscriptions_allocator(alloc)),
+          json_(json_options(o), *this) {}
 
     /** A parser is not copied: its handler and its document refer to it. */
     basic_parser(const basic_parser&) = delete;
@@ -215,8 +418,8 @@ public:
 
      @param chunk The chunk: any split of the text, down to one byte.
      @return Success; @ref errc::syntax for malformed text, a second text after the first included,
-     @ref errc::range for a number the traits refuse, @ref errc::capacity past a limit, or the
-     error a callback returned.
+     @ref errc::range for a number the traits refuse, @ref errc::capacity past a limit or, with
+     exceptions, when the allocator has no room, or the error a callback returned.
     */
     result<void> write(std::string_view chunk) {
         if (!failure_.has_value()) {
@@ -234,7 +437,7 @@ public:
             return {};
         }
         boost::system::error_code ec;
-        const std::size_t used = json_.write_some(true, chunk.data(), chunk.size(), ec);
+        const std::size_t used = feed(true, chunk, ec);
         // Boost.JSON stops where a second text begins, without an error, and its next call would
         // begin that text as a new document.
         if (!ec && used < chunk.size()) {
@@ -251,17 +454,41 @@ public:
      @return The document; the errors of @ref write, and @ref errc::syntax for text that ends
      early.
     */
-    result<basic_document<Traits, Storage>> finish() {
+    result<basic_document<Traits, Storage>> finish() { return finish_with(std::string_view()); }
+
+    /**
+     Feeds the last chunk of the text, ends the text and returns the document, without the values
+     `on` took: what @ref write of `last` then @ref finish return.
+
+     Boost.JSON's parser is told that no text follows, so that it never suspends: a text given
+     whole, to a parser that was given none before, allocates nothing outside the allocator, where
+     @ref write would have Boost.JSON allocate its suspension stack. After it the parser takes no
+     more text, which is @ref errc::syntax, until @ref reset.
+
+     @param last The last chunk: the whole text, or what follows the chunks @ref write took.
+     @return The document; the errors of @ref write, and @ref errc::syntax for text that ends
+     early.
+    */
+    result<basic_document<Traits, Storage>> finish_with(std::string_view last) {
         if (!failure_.has_value()) {
             return failed().error();
         }
         if (ended_) {
             return end_again().error();
         }
+        if (last.size() > options_.max_bytes - given_) {
+            failure_ = errc::capacity;
+            return failure_.error();
+        }
+        given_ += last.size();
         // No more text, as Boost.JSON's own stream_parser ends one.
         boost::system::error_code ec;
-        static_cast<void>(json_.write_some(false, nullptr, 0, ec));
-        if (const result<void> settled = settle(ec, 0); !settled.has_value()) {
+        const std::size_t used = feed(false, last, ec);
+        // A second text after the first, which write finds the same way.
+        if (!ec && used < last.size()) {
+            ec = boost::json::error::extra_data;
+        }
+        if (const result<void> settled = settle(ec, used); !settled.has_value()) {
             return settled.error();
         }
         ended_ = true;
@@ -309,11 +536,14 @@ public:
      completes when its token ends, an array or object when it closes; a value inside another that
      also matches is delivered first.
 
+     The selector and the callback, decayed, are held in the allocator.
+
      @tparam F A callable taking a read-only handle and a @ref path_view, returning `void` or
      `result<void>`.
      @param selector The selector.
      @param f The callback.
-     @return Success; @ref errc::type for a malformed selector.
+     @return Success; @ref errc::type for a malformed selector, and with exceptions
+     @ref errc::capacity when the allocator has no room, the parser then unchanged.
      @see "Selectors", in the guide.
     */
     template <class F>
@@ -330,7 +560,8 @@ public:
      `result<void>`.
      @param selector The selector, as @ref on takes it.
      @param f The callback.
-     @return Success; @ref errc::type for a malformed selector.
+     @return Success; @ref errc::type for a malformed selector, and with exceptions
+     @ref errc::capacity when the allocator has no room, the parser then unchanged.
      @see "Selectors", in the guide.
     */
     template <class F>
@@ -366,7 +597,7 @@ private:
             return failure_.error();
         }
         boost::system::error_code ec;
-        const std::size_t used = json_.write_some(true, fed.data(), fed.size(), ec);
+        const std::size_t used = feed(true, fed, ec);
         given_ += used;
         if (const result<void> settled = settle(ec, used); !settled.has_value()) {
             return settled.error();
@@ -388,6 +619,25 @@ private:
             std::move(*document_));  // NOLINT(bugprone-unchecked-optional-access)
         reset();
         return made;
+    }
+
+    /**
+     Feeds Boost.JSON's parser a chunk, `more` telling whether text follows; returns how many bytes
+     it used.
+
+     With exceptions, an allocation that fails, of the handler in the allocator or of Boost.JSON's
+     suspension stack, propagates out of Boost.JSON's parser, which lets its handler throw and
+     fails itself: `std::bad_alloc`, a type derived from it, or Boost.Interprocess's `bad_alloc`.
+     It is @ref errc::capacity, which fails the parser until @ref reset.
+    */
+    std::size_t feed(bool more, std::string_view chunk, boost::system::error_code& ec) {
+        return detail::unless_allocation_fails(
+            [&] { return json_.write_some(more, chunk.data(), chunk.size(), ec); },
+            [&]() -> std::size_t {
+                failure_ = errc::capacity;
+                ec = failure_.error();
+                return 0;
+            });
     }
 
     /** Boost.JSON's options: numbers left as text, and the depth limit. */
@@ -441,37 +691,46 @@ private:
         return failure_;
     }
 
-    /** Adds a subscription, its callback's `void` made success. */
+    /** A subscription of this parser. */
+    using subscription_type = detail::subscription<Traits, Storage>;
+
+    /** The allocator of the subscriptions. */
+    using subscriptions_allocator = detail::rebound<allocator_type, subscription_type>;
+
+    /**
+     Adds a subscription, its selector and its callback in the allocator; with exceptions, an
+     allocator with no room is @ref errc::capacity, and adds nothing.
+    */
     template <class F>
     result<void> subscribe(std::string_view text, F&& f, bool take) {
-        result<detail::selector> parsed = detail::selector::parse(text);
+        return detail::unless_allocation_fails([&] { return add(text, std::forward<F>(f), take); },
+                                               [] { return result<void>(errc::capacity); });
+    }
+
+    /**
+     Adds a subscription, made whole before it is added, so that what fails to allocate leaves
+     the subscriptions as they were.
+    */
+    template <class F>
+    result<void> add(std::string_view text, F&& f, bool take) {
+        result<detail::basic_selector<allocator_type>> parsed =
+            detail::basic_selector<allocator_type>::parse(text, alloc_);
         if (!parsed.has_value()) {
             return parsed.error();
         }
-        using callback = std::decay_t<F>;
-        detail::subscription<Traits, Storage> added;
-        added.where = std::move(parsed).unsafe_value();
-        added.take = take;
-        if constexpr (std::same_as<std::invoke_result_t<
-                                       callback&, basic_const_value<Traits, Storage>, path_view>,
-                                   void>) {
-            added.deliver = [g = callback(std::forward<F>(f))](
-                                const basic_const_value<Traits, Storage>& v,
-                                path_view where) mutable -> result<void> {
-                g(v, where);
-                return {};
-            };
-        } else {
-            added.deliver = callback(std::forward<F>(f));
-        }
-        subscriptions_.push_back(std::move(added));
+        subscriptions_.push_back(subscription_type{
+            .where = std::move(parsed).unsafe_value(),
+            .take = take,
+            .deliver = detail::delivery<Traits, Storage>::make(std::forward<F>(f), alloc_),
+        });
         return {};
     }
 
     parse_options options_;
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS allocator_type alloc_;
     std::span<std::byte> buffer_;
     std::optional<basic_document<Traits, Storage>> document_;
-    std::vector<detail::subscription<Traits, Storage>> subscriptions_;
+    std::vector<subscription_type, subscriptions_allocator> subscriptions_;
     boost::json::basic_parser<detail::handler<Traits, Storage>> json_;
     result<void> failure_;
     boost::system::error_code cause_;
@@ -485,6 +744,18 @@ private:
 
 /** The streaming parser of a @ref document. */
 using parser = basic_parser<>;
+
+namespace pmr {
+
+/**
+ The streaming parser of a `pmr::document`, its working state in the document's
+ `std::pmr::memory_resource`.
+
+ @see "Allocators", in the guide.
+*/
+using parser = webcpp::document::basic_parser<default_traits, owned>;
+
+}  // namespace pmr
 
 }  // namespace webcpp::document
 

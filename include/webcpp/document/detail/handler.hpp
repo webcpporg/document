@@ -12,7 +12,8 @@
  Under an object a value is set as a member, a repeated key replacing the value in place, as
  JavaScript does; under an array it is appended; at the top it is the root. The handler keeps the
  text's path of the value being read, keys and indices in the text, which the selectors match and
- `on` does not renumber.
+ `on` does not renumber. What it keeps, the frames, the path and its keys, the pending text and
+ the value being stored, is allocated through the document's allocator, rebound.
 */
 
 #ifndef WEBCPP_DOCUMENT_DETAIL_HANDLER_HPP
@@ -58,7 +59,12 @@ struct frame {
     std::uint64_t next_index = 0;
 };
 
-/** The handler of Boost.JSON's `basic_parser` that builds the document of a @ref basic_parser. */
+/**
+ The handler of Boost.JSON's `basic_parser` that builds the document of a @ref basic_parser.
+
+ What a callback allocates, in the allocator, may throw: Boost.JSON's parser lets the exception
+ out of its `write_some`, where the parser turns it into an error.
+*/
 template <class Traits, class Storage>
 class handler {
 public:
@@ -74,8 +80,15 @@ public:
     /** The largest string Boost.JSON hands the handler: no limit of its own. */
     static constexpr std::size_t max_string_size = static_cast<std::size_t>(-1);
 
-    /** The handler of `owner`, which outlives it. */
-    explicit handler(basic_parser<Traits, Storage>& owner) noexcept : owner_(&owner) {}
+    /** The handler of `owner`, which outlives it, its working state in `owner`'s allocator. */
+    explicit handler(basic_parser<Traits, Storage>& owner) noexcept
+        : owner_(&owner),
+          frames_(rebound<allocator_type, frame>(owner.alloc_)),
+          path_(rebound<allocator_type, path_step>(owner.alloc_)),
+          keys_(rebound<allocator_type, string_type>(owner.alloc_)),
+          key_(rebound<allocator_type, char>(owner.alloc_)),
+          text_(rebound<allocator_type, char>(owner.alloc_)),
+          value_(owner.alloc_) {}
 
     /** The text begins: the document is made, or formatted in the external buffer. */
     bool on_document_begin(boost::system::error_code& ec) {
@@ -207,15 +220,23 @@ public:
     }
 
 private:
+    /** The allocator of the document and of the parser. */
+    using allocator_type = Storage::allocator_type;
+
+    /** Text in the allocator. */
+    using string_type =
+        std::basic_string<char, std::char_traits<char>, rebound<allocator_type, char>>;
+
     /** The bytes policy whose bytes are an object's shape, revived when the object ends. */
     static constexpr bool bytes_as_objects = std::same_as<typename Traits::bytes, javascript_bytes>;
 
     /** A new document: owned, within the options' limit, or formatted in the external buffer. */
     result<basic_document<Traits, Storage>> make_document() noexcept {
-        if constexpr (std::same_as<Storage, owned>) {
-            return basic_document<Traits, owned>::create(owner_->options_.max_document_bytes);
+        if constexpr (owned_storage<Storage>) {
+            return basic_document<Traits, Storage>::create(owner_->alloc_,
+                                                           owner_->options_.max_document_bytes);
         } else {
-            return format<Traits>(owner_->buffer_);
+            return format<Traits>(owner_->buffer_, owner_->alloc_);
         }
     }
 
@@ -226,7 +247,9 @@ private:
     }
 
     /** The tree of the document being built. */
-    [[nodiscard]] tree<Traits>& tree_of() const noexcept { return *access::tree_of(document()); }
+    [[nodiscard]] tree<Traits, typename Storage::allocator_type>& tree_of() const noexcept {
+        return *access::tree_of(document());
+    }
 
     /** Records `error` as the parser's failure and hands it to Boost.JSON, which stops. */
     bool fail(boost::system::error_code& ec, boost::system::error_code error) noexcept {
@@ -235,26 +258,49 @@ private:
         return false;
     }
 
-    /** Steps into the value that begins: its key, or its index in the text, joins the path. */
+    /**
+     Steps into the value that begins: its key, or its index in the text, joins the path.
+
+     A member's step views its key in `keys_`, at the step's depth, which keeps its buffer for the
+     next value at that depth.
+    */
     void enter() {
         if (frames_.empty()) {
             return;
         }
         if (steps_ == path_.size()) {
-            path_.emplace_back();
+            deepen();
         }
-        // A step keeps its key's buffer when it is left, for the next value at its depth.
         path_step& step = path_[steps_++];
         frame& parent = frames_.back();
         step.is_index = parent.is_array;
         if (parent.is_array) {
-            step.key.clear();
+            step.key = {};
             step.index = parent.next_index++;
         } else {
-            step.key.assign(key_);
+            string_type& key = keys_[steps_ - 1];
+            key.assign(key_);
+            step.key = key;
             step.index = 0;
             key_.clear();
         }
+    }
+
+    /**
+     Makes room for one step more than the path has had: a key's buffer, unless an allocation
+     that failed left one, then the step, so that `keys_` has a buffer for each step of `path_`.
+    */
+    void deepen() {
+        if (keys_.size() == path_.size()) {
+            keys_.push_back(string_type(rebound<allocator_type, char>(owner_->alloc_)));
+            // The buffers moved as keys_ grew, and a short key's bytes, held inline, with them.
+            for (std::size_t i = 0; i < steps_; ++i) {
+                if (!path_[i].is_index) {
+                    path_[i].key = keys_[i];
+                }
+            }
+        }
+        path_.push_back(path_step{});
     }
 
     /** Steps out of the value that completed. */
@@ -269,7 +315,7 @@ private:
      replaces the value in its first place), or an element appended; returns its id.
     */
     result<std::uint64_t> place(const item<Traits>& v) noexcept {
-        tree<Traits>& t = tree_of();
+        auto& t = tree_of();
         if (frames_.empty()) {
             if (const result<void> done = t.assign(root_id, v); !done.has_value()) {
                 return done.error();
@@ -339,15 +385,22 @@ private:
         return complete(done.id, ec);
     }
 
-    /** Turns the object `id` into bytes when it has the shape `JSON.stringify` gives a Uint8Array.
-     */
+    /**
+     Turns the object `id` into bytes when it has the shape `JSON.stringify` gives a Uint8Array,
+     its bytes read into the allocator; an allocator with no room for them is
+     @ref errc::capacity.
+    */
     result<void> revive_bytes(std::uint64_t id) noexcept {
-        tree<Traits>& t = tree_of();
-        result<std::vector<std::byte>> bytes = read<std::vector<std::byte>>(t, t.find(id));
+        auto& t = tree_of();
+        const auto bytes = read_bytes_with(t, t.find(id), owner_->alloc_);
         if (!bytes.has_value()) {
-            return {};
+            // An object of another shape stays an object; an allocator with no room fails.
+            if (bytes.error() != errc::capacity) {
+                return {};
+            }
+            return bytes.error();
         }
-        prepared<Traits> made;
+        prepared<Traits, allocator_type> made(owner_->alloc_);
         if (const result<void> held =
                 prepare(std::span<const std::byte>(bytes.unsafe_value()), made);
             !held.has_value()) {
@@ -412,7 +465,7 @@ private:
      the array's last, a member is found by its key, and the root is left holding `undefined`.
     */
     result<void> take_out() noexcept {
-        tree<Traits>& t = tree_of();
+        auto& t = tree_of();
         if (frames_.empty()) {
             return t.assign(root_id, empty_item<Traits>(webcpp::document::kind::undefined));
         }
@@ -431,22 +484,28 @@ private:
     basic_parser<Traits, Storage>* owner_;
 
     /** The containers being read, the innermost last. */
-    std::vector<frame> frames_;
+    std::vector<frame, rebound<allocator_type, frame>> frames_;
 
     /** The text's path of the value being read, its first `steps_` entries; the rest are spare. */
-    std::vector<path_step> path_;
+    std::vector<path_step, rebound<allocator_type, path_step>> path_;
+
+    /**
+     The keys of the path's members, one buffer for each entry of `path_`, which a member's step
+     views; at least as many as `path_` has.
+    */
+    std::vector<string_type, rebound<allocator_type, string_type>> keys_;
 
     /** How many entries of `path_` are the path. */
     std::size_t steps_ = 0;
 
     /** The key being read, or read and waiting for its value. */
-    std::string key_;
+    string_type key_;
 
     /** The string or number being read. */
-    std::string text_;
+    string_type text_;
 
     /** The scalar being stored, kept to reuse its buffers. */
-    prepared<Traits> value_;
+    prepared<Traits, allocator_type> value_;
 };
 
 }  // namespace webcpp::document::detail

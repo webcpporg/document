@@ -120,20 +120,23 @@ changed by accident and is not authentication: *never open an image from a sourc
 [#document-images-storage]
 === Owned and external storage
 
-A document's second template parameter is its storage:
+A document's second template parameter is its storage, which also carries the allocator the
+document allocates through (<<document-allocators>>):
 
 [cols="1,2,3",options="header"]
 |===
 | Storage | The buffer | When it is full
 
-| `wd::owned`, the default
-| the document's own, 16-aligned
+| `wd::owned`, the default; `wd::basic_owned<Allocator>`
+| the document's own, 16-aligned, from its allocator: for `wd::owned`, the global aligned
+  `operator new`
 | it grows: a buffer twice the size, or what the operation needs if more, the image copied and the
   heap grown, up to the `max_bytes` of `create` or `from_image`, 1 GiB unless told otherwise; past
-  it, `errc::capacity`
+  it, or when the allocator has no room, `errc::capacity`
 
-| `wd::external`
-| a `std::span<std::byte>` its user owns and keeps alive, such as a browser's memory, 16-aligned
+| `wd::external`; `wd::basic_external<Allocator>`
+| a `std::span<std::byte>` its user owns and keeps alive, such as a browser's memory, 16-aligned;
+  the allocator holds only the working state of the document's operations
 | the operation returns `errc::capacity` and changes nothing
 |===
 
@@ -235,4 +238,5 @@ The image's size afterwards is `compact_size()`, which is also its `capacity()`,
 that needs room grows it.
 
 A moved document takes the image of the one it is moved from, which then holds nothing: its
-handles, and those of the document moved into, are invalid.
+handles, and those of the document moved into, are invalid. A move assignment between allocators
+that are not equal and do not propagate copies the image instead (<<document-allocators-moves>>).

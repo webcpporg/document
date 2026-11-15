@@ -65,6 +65,8 @@ include::traits.adoc[]
 
 include::images.adoc[]
 
+include::allocation.adoc[]
+
 include::wire.adoc[]
 
 include::sharing.adoc[]

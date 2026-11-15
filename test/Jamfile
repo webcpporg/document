@@ -68,6 +68,9 @@ webcpp.run image : image_test.cpp ;
 # grow there.
 webcpp.run stringify : stringify_test.cpp
   : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+# quote, a string alone as JSON.stringify quotes it, into the caller's string,
+# which alone allocates.
+webcpp.run quote : quote_test.cpp ;
 # parse, whole or in chunks, as JSON.parse reads; and the parse that throws. A
 # 64 MB string, an object of 100,000 keys and 800 KB of zeros outgrow
 # Emscripten's initial 16 MB, so its memory may grow.
@@ -122,6 +125,24 @@ webcpp.run shared : shared_test.cpp ;
 # needs exceptions; the test runs itself again as the second process.
 webcpp.run shared_interprocess : shared_test.cpp
   : <exception-handling>on <define>WEBCPP_TEST_DOCUMENT_INTERPROCESS : native ;
+
+# A document's allocator: the image created, grown, copied and moved in a
+# resource, between resources and in an allocator of the program's own, with no
+# call of the global operator new, which counting.cpp counts; and an allocator
+# with no room, errc::capacity.
+webcpp.run allocator : allocator_test.cpp counting.cpp ;
+# The working state of a document's operations in its allocator, with no call
+# of the global operator new: the tree's changes, the handles' and the
+# conversions', the parser's and the writer's. Their arenas of several MB
+# outgrow Emscripten's initial 16 MB, so its memory may grow.
+webcpp.run allocator_tree : allocator_tree_test.cpp counting.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+webcpp.run allocator_values : allocator_values_test.cpp counting.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+webcpp.run allocator_parse : allocator_parse_test.cpp counting.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+webcpp.run allocator_stringify : allocator_stringify_test.cpp counting.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 
 # Compact images: equal content gives equal bytes, the exact size, a caller's
 # buffer.

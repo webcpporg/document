@@ -43,12 +43,10 @@
 #include <optional>
 #include <ranges>
 #include <span>
-#include <string>
 #include <string_view>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-#include <vector>
 
 namespace webcpp::document {
 
@@ -113,7 +111,9 @@ struct walker {
     static constexpr bool sorted_keys = std::same_as<typename Traits::object, sorted>;
 
     /** The container of an attached tree's nodes. */
-    static const container<Traits>& nodes_of(const tree<Traits>& t) noexcept { return *t.nodes(); }
+    static const container<Traits>& nodes_of(const tree_view<Traits>& t) noexcept {
+        return *t.nodes();
+    }
 
     /** Whether a walk of `w` over the children of a node of kind `k` is by key. */
     static bool by_keys(walk w, webcpp::document::kind k) noexcept {
@@ -121,7 +121,8 @@ struct walker {
     }
 
     /** The first child of `parent` in the walk's order, or null. */
-    static const node_type* first(const tree<Traits>& t, std::uint64_t parent, walk w) noexcept {
+    static const node_type* first(const tree_view<Traits>& t, std::uint64_t parent,
+                                  walk w) noexcept {
         const node_type* p = t.find(parent);
         if (p == nullptr) {
             return nullptr;
@@ -132,7 +133,8 @@ struct walker {
     }
 
     /** The last child of `parent` in the walk's order, or null. */
-    static const node_type* last(const tree<Traits>& t, std::uint64_t parent, walk w) noexcept {
+    static const node_type* last(const tree_view<Traits>& t, std::uint64_t parent,
+                                 walk w) noexcept {
         const node_type* p = t.find(parent);
         if (p == nullptr) {
             return nullptr;
@@ -143,7 +145,7 @@ struct walker {
     }
 
     /** The child after (`forward`) or before `child` in the walk's order, or null. */
-    static const node_type* step(const tree<Traits>& t, const node_type& child, walk w,
+    static const node_type* step(const tree_view<Traits>& t, const node_type& child, walk w,
                                  bool forward) noexcept {
         const container<Traits>& nodes = nodes_of(t);
         // Under sorted, members are all in the key group and elements in the index group.
@@ -152,31 +154,23 @@ struct walker {
                      : step_in(nodes.template get<by_order>(), child, forward);
     }
 
-    // A key is transcoded on the process heap with utf16, whose exhaustion ends the program, as
-    // the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
     /**
      The first member of `object` whose key is not before (`upper` false) or is after (`upper`
      true) `utf8` in key order, or null; null for a key that is not valid UTF-8.
     */
-    static const node_type* bound(const tree<Traits>& t, std::uint64_t object,
+    static const node_type* bound(const tree_view<Traits>& t, std::uint64_t object,
                                   std::string_view utf8, bool upper) noexcept {
         if (!valid_utf8(utf8)) {
             return nullptr;
         }
         const auto& keys = nodes_of(t).template get<by_key>();
         if constexpr (std::same_as<typename Traits::string, utf16>) {
-            std::vector<char16_t> units(static_cast<std::size_t>(utf16_length(utf8)));
-            to_utf16(utf8, units.data());
-            const std::span<const std::byte> bytes = std::as_bytes(std::span(units));
-            return bound_in(keys, object,
-                            {reinterpret_cast<const char*>(bytes.data()), bytes.size()}, upper);
+            // The index compares the UTF-8 with the stored keys as it decodes it: no copy is made.
+            return bound_in(keys, object, utf8_lookup{utf8}, upper);
         } else {
             return bound_in(keys, object, utf8, upper);
         }
     }
-
-    // NOLINTEND(bugprone-exception-escape)
 
     /** The first child of `parent` in `index`, or null. */
     template <class Index>
@@ -212,11 +206,14 @@ struct walker {
         return it->parent != child.parent ? nullptr : &*it;
     }
 
-    /** The bound of the key `stored`, in the traits' encoding, among the members of `object`. */
-    template <class Index>
-    static const node_type* bound_in(const Index& keys, std::uint64_t object,
-                                     std::string_view stored, bool upper) noexcept {
-        const auto probe = std::make_tuple(object, stored);
+    /**
+     The bound of `key` among the members of `object`: in the traits' encoding as a
+     `std::string_view`, or in UTF-8 as a @ref utf8_lookup.
+    */
+    template <class Index, class Key>
+    static const node_type* bound_in(const Index& keys, std::uint64_t object, const Key& key,
+                                     bool upper) noexcept {
+        const auto probe = std::make_tuple(object, key);
         const auto it = upper ? keys.upper_bound(probe) : keys.lower_bound(probe);
         return it == keys.end() || it->parent != object ? nullptr : &*it;
     }
@@ -226,7 +223,7 @@ struct walker {
 template <class Traits, class Storage>
 const node<Traits>* container_node(basic_document<Traits, Storage>* doc, std::uint64_t id,
                                    webcpp::document::kind k) noexcept {
-    const tree<Traits>* t = doc == nullptr ? nullptr : access::tree_of(std::as_const(*doc));
+    const tree_view<Traits>* t = doc == nullptr ? nullptr : access::tree_of(std::as_const(*doc));
     const node<Traits>* n = t == nullptr ? nullptr : t->find(id);
     return n == nullptr || n->kind != k ? nullptr : n;
 }
@@ -247,11 +244,12 @@ inline constexpr bool is_document<basic_document<Traits, Storage>> = true;
  It reads a source through @ref access alone, not through `detail/value_array.hpp`'s helpers,
  which are not yet declared when that header is the one a program includes first.
 */
-template <class Traits, class T>
+template <class Traits, class Allocator, class T>
     requires settable<Traits, T>
-result<void> prepare_for_view(const T& v, prepared<Traits>& out, bool undefined_is_null) noexcept {
+result<void> prepare_for_view(const T& v, prepared<Traits, Allocator>& out,
+                              bool undefined_is_null) noexcept {
     if constexpr (copy_source<Traits, T>) {
-        const tree<Traits>* from = access::tree_of(v);
+        const tree_view<Traits>* from = access::tree_of(v);
         if (from == nullptr) {
             return errc::type;
         }
@@ -326,9 +324,6 @@ public:
     child_iterator(document_type* doc, std::uint64_t parent, std::uint64_t child) noexcept
         : doc_(doc), parent_(parent), child_(child) {}
 
-    // A handle of a node holds no key, so making one allocates nothing; were it to, the process
-    // heap's exhaustion would end the program, as the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
     /** The current child. */
     reference operator*() const noexcept {
         auto h = access::handle_at<Handle>(doc_, child_);
@@ -352,11 +347,9 @@ public:
     /** The current child, held, for `it->second` and `it->get<T>()`. */
     pointer operator->() const noexcept { return pointer(**this); }
 
-    // NOLINTEND(bugprone-exception-escape)
-
     /** Moves to the next child, or to the end after the last. */
     child_iterator& operator++() noexcept {
-        const tree<traits>* t = tree_ptr();
+        const tree_view<traits>* t = tree_ptr();
         const node<traits>* n = t == nullptr ? nullptr : t->find(child_);
         const node<traits>* next =
             n == nullptr ? nullptr : walker<traits>::step(*t, *n, Walk, true);
@@ -373,7 +366,7 @@ public:
 
     /** Moves to the previous child, or to the last from the end. */
     child_iterator& operator--() noexcept {
-        const tree<traits>* t = tree_ptr();
+        const tree_view<traits>* t = tree_ptr();
         const node<traits>* previous = nullptr;
         if (t != nullptr && child_ == 0) {
             previous = walker<traits>::last(*t, parent_, Walk);
@@ -402,7 +395,7 @@ public:
 
 private:
     /** The tree of the document, or null when there is none. */
-    [[nodiscard]] const tree<traits>* tree_ptr() const noexcept {
+    [[nodiscard]] const tree_view<traits>* tree_ptr() const noexcept {
         return doc_ == nullptr ? nullptr : access::tree_of(std::as_const(*doc_));
     }
 
@@ -560,7 +553,7 @@ private:
         : doc_(doc), id_(id) {}
 
     /** The tree of the document; the object's node must be there. */
-    [[nodiscard]] const detail::tree<traits_type>* tree_ptr() const noexcept {
+    [[nodiscard]] const detail::tree_view<traits_type>* tree_ptr() const noexcept {
         return detail::access::tree_of(std::as_const(*doc_));
     }
 
@@ -883,13 +876,16 @@ private:
         return detail::container_node(doc_, id_, webcpp::document::kind::object);
     }
 
+    /** The allocator of the document's working state. */
+    using allocator_type = storage_type::allocator_type;
+
     /** The tree of the document; the object's node must be there. */
-    [[nodiscard]] const detail::tree<traits_type>* tree_ptr() const noexcept {
+    [[nodiscard]] const detail::tree<traits_type, allocator_type>* tree_ptr() const noexcept {
         return detail::access::tree_of(std::as_const(*doc_));
     }
 
     /** The tree of the document, to write; the object's node must be there. */
-    [[nodiscard]] detail::tree<traits_type>* writable_tree() const noexcept {
+    [[nodiscard]] detail::tree<traits_type, allocator_type>* writable_tree() const noexcept {
         return detail::access::tree_of(*doc_);
     }
 
@@ -902,7 +898,7 @@ private:
     template <class T>
     [[nodiscard]] result<std::pair<iterator, bool>> put(std::string_view key, const T& v,
                                                         bool created) const noexcept {
-        detail::prepared<traits_type> p;
+        detail::prepared<traits_type, allocator_type> p(writable_tree()->get_allocator());
         if (const auto made = detail::prepare_for_view(v, p, false); !made.has_value()) {
             return made.error();
         }
@@ -913,24 +909,11 @@ private:
         return std::pair(iterator(doc_, id_, id.unsafe_value()), created);
     }
 
-    // A UTF-16 key is turned into UTF-8 on the process heap, whose exhaustion ends the program, as
-    // the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
-    /** Erases the member `m` of the object, which needs no room. */
+    /** Erases the member `m` of the object, by its id, which needs no room and cannot fail. */
     void erase_member(const detail::node<traits_type>& m) const noexcept {
-        // The tree finds the member by its key before it frees anything, so a key read from the
-        // image may be given as it is.
-        if constexpr (std::same_as<typename traits_type::string, utf16>) {
-            const std::u16string_view units = m.key.units();
-            std::string key(static_cast<std::size_t>(detail::utf8_size(units)), '\0');
-            detail::to_utf8(units, key.data());
-            static_cast<void>(writable_tree()->erase_member(id_, key));
-        } else {
-            static_cast<void>(writable_tree()->erase_member(id_, m.key.chars()));
-        }
+        [[maybe_unused]] const auto erased = writable_tree()->erase_member_by_id(id_, m.id);
+        BOOST_ASSERT(erased.has_value() && erased.unsafe_value());
     }
-
-    // NOLINTEND(bugprone-exception-escape)
 
     basic_document<traits_type, storage_type>* doc_ = nullptr;
     std::uint64_t id_ = 0;
@@ -1124,12 +1107,12 @@ public:
         if (!index.has_value()) {
             return errc::type;
         }
-        detail::prepared<traits_type> p;
+        detail::tree<traits_type, allocator_type>* t = writable_tree();
+        detail::prepared<traits_type, allocator_type> p(t->get_allocator());
         if (const auto made = detail::prepare_for_view(v, p, true); !made.has_value()) {
             return made.error();
         }
         const detail::item<traits_type> item = p.value();
-        detail::tree<traits_type>* t = writable_tree();
         if (const auto done = t->insert_elements(id_, *index, std::span(&item, 1));
             !done.has_value()) {
             return done.error();
@@ -1252,13 +1235,16 @@ private:
         return detail::container_node(doc_, id_, webcpp::document::kind::array);
     }
 
+    /** The allocator of the document's working state. */
+    using allocator_type = storage_type::allocator_type;
+
     /** The tree of the document; the array's node must be there. */
-    [[nodiscard]] const detail::tree<traits_type>* tree_ptr() const noexcept {
+    [[nodiscard]] const detail::tree<traits_type, allocator_type>* tree_ptr() const noexcept {
         return detail::access::tree_of(std::as_const(*doc_));
     }
 
     /** The tree of the document, to write; the array's node must be there. */
-    [[nodiscard]] detail::tree<traits_type>* writable_tree() const noexcept {
+    [[nodiscard]] detail::tree<traits_type, allocator_type>* writable_tree() const noexcept {
         return detail::access::tree_of(*doc_);
     }
 
@@ -1297,7 +1283,7 @@ private:
         if (n == 0) {
             return;
         }
-        // A removal allocates nothing in the image, so its probe always finds room.
+        // A removal allocates nothing, in the image or in the allocator, so it cannot fail.
         [[maybe_unused]] const auto removed = writable_tree()->erase_elements(id_, index, n);
         BOOST_ASSERT(removed.has_value());
     }

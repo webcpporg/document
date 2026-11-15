@@ -15,12 +15,11 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/storage.hpp>
 #include <webcpp/document/traits.hpp>
 
 namespace webcpp::document {
 
-struct owned;
-struct external;
 struct parse_options;
 class literal;
 class object;

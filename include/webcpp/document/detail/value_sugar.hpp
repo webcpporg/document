@@ -26,6 +26,7 @@
 #include <webcpp/document/errors.hpp>
 
 #include <concepts>
+#include <memory>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -49,13 +50,26 @@ T value_or_raise(result<T>&& made) {
 
 template <class Traits, class Storage>
 basic_document<Traits, Storage>::basic_document()
-    requires detail::exceptions_enabled<Traits> && std::same_as<Storage, owned>
+    requires detail::exceptions_enabled<Traits> && detail::owned_storage<Storage>
     : basic_document(detail::value_or_raise(create())) {}
 
 template <class Traits, class Storage>
+basic_document<Traits, Storage>::basic_document(const allocator_type& alloc)
+    requires detail::exceptions_enabled<Traits> && detail::owned_storage<Storage>
+    : basic_document(detail::value_or_raise(create(alloc))) {}
+
+template <class Traits, class Storage>
 basic_document<Traits, Storage>::basic_document(const basic_document& other)
-    requires detail::exceptions_enabled<Traits> && std::same_as<Storage, owned>
-    : basic_document(detail::value_or_raise(other.clone())) {}
+    requires detail::exceptions_enabled<Traits> && detail::owned_storage<Storage>
+    : basic_document(detail::value_or_raise(
+          other.clone(std::allocator_traits<allocator_type>::select_on_container_copy_construction(
+              other.get_allocator())))) {}
+
+template <class Traits, class Storage>
+basic_document<Traits, Storage>::basic_document(const basic_document& other,
+                                                const allocator_type& alloc)
+    requires detail::exceptions_enabled<Traits> && detail::owned_storage<Storage>
+    : basic_document(detail::value_or_raise(other.clone(alloc))) {}
 
 template <class Traits, class Storage>
 template <class T>

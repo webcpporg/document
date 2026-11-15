@@ -18,7 +18,10 @@
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/value.hpp>
 
+#include <boost/throw_exception.hpp>
+
 #include <cstdint>
+#include <new>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -38,24 +41,35 @@ inline constexpr std::uint64_t default_chunk = 4096;
  numbers are written as JavaScript writes them; a date as Date.prototype.toJSON writes it; bytes by
  the traits' bytes policy.
 
+ The text is a `std::string`, the program's value in the standard allocator whatever the
+ document's, and the writer's stack is in the same allocator: `stringify` asks the document's
+ allocator for nothing. The stack holds a frame of 16 bytes for each container the writer is
+ inside, the first 16 in room of its own and the deeper ones allocated, room for 16 at first and
+ twice the room each time it is full, and freed when it returns.
+
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
  @param v The value.
  @param indent The spaces of each level, clamped to 10; 0 writes compactly.
  @return The text; empty when the value is `undefined`, since `JSON.stringify(undefined)` returns
- no text. The standard library's `std::bad_alloc` is its only failure.
+ no text.
+ @throws std::bad_alloc When the standard allocator has no room for the text or the stack; without
+ exceptions, the standard allocator's failure ends the program, as it does itself.
  @see "Writing JSON", in the guide.
 */
 template <class Traits, class Storage>
 std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent = 0) {
     std::string text;
-    const detail::tree<Traits>* t = detail::access::tree_of(v);
+    const auto* t = detail::access::tree_of(v);
     if (t == nullptr) {
         return text;
     }
     detail::string_output out(text);
-    // A string output fails only by throwing std::bad_alloc: its result is always a success.
-    (void)detail::write_json(*t, detail::access::node_of(v), indent, out);
+    // The stack is in the text's allocator. A string output fails only by throwing: a failure
+    // returned is the stack's, with exceptions, which the text a std::string returns cannot carry.
+    if (!detail::write_json(*t, detail::access::node_of(v), indent, out, text.get_allocator())) {
+        boost::throw_exception(std::bad_alloc());
+    }
     return text;
 }
 
@@ -69,6 +83,7 @@ std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent
  @param d The document.
  @param indent The spaces of each level, clamped to 10; 0 writes compactly.
  @return The text, as @ref stringify of its root writes it.
+ @throws std::bad_alloc As @ref stringify of its root throws it.
 */
 template <class Traits, class Storage>
 std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t indent = 0) {
@@ -80,6 +95,15 @@ std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t in
 /**
  Writes a value as @ref stringify does, in pieces of at most `chunk` bytes, to a sink.
 
+ Its working state has room of its own, and it allocates only past it, in the document's
+ allocator, rebound, freed when it returns: its stack holds a frame of 16 bytes for each container
+ it is inside, the first 16 in its own room and the deeper ones allocated, room for 16 at first
+ and twice the room each time it is full; and the piece it holds back until it is full has 4096
+ bytes of its own room, so that a chunk of at most 4096 bytes allocates none, while a larger
+ chunk's piece, once it holds more, is allocated at 8192 bytes, then twice its room, up to
+ `chunk`, each time it is full. A value nested 16 deep or less, written in chunks of at most 4096
+ bytes, asks the document's allocator for nothing. What the sink allocates is the program's own.
+
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
  @tparam Sink A callable taking `std::string_view` and returning `void` or `result<void>`.
@@ -87,22 +111,27 @@ std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t in
  @param sink The sink.
  @param indent The spaces of each level, clamped to 10; 0 writes compactly.
  @param chunk The largest piece, at least 1.
- @return Success, or the first failure the sink returned, which stops the writing; an exception
- the sink throws propagates. The document is unchanged either way.
+ @return Success, or the first failure the sink returned, which stops the writing; with
+ exceptions, @ref errc::capacity when the document's allocator has no room for the stack or the
+ piece, which stops it too, the sink not called again. An exception the sink throws propagates.
+ The document is unchanged either way; without exceptions, an allocator that fails ends the
+ program, as it does itself.
  @see "Writing JSON", in the guide.
 */
 template <class Traits, class Storage, class Sink>
     requires detail::sink<std::remove_reference_t<Sink>>
 result<void> stringify_to(basic_const_value<Traits, Storage> v, Sink&& sink,
                           std::uint32_t indent = 0, std::uint64_t chunk = default_chunk) {
-    const detail::tree<Traits>* t = detail::access::tree_of(v);
+    const auto* t = detail::access::tree_of(v);
     if (t == nullptr) {
         return {};
     }
+    const typename Storage::allocator_type alloc = t->get_allocator();
     // The sink is called through a reference: it is used in place, never forwarded or copied.
-    detail::chunked_output<std::remove_reference_t<Sink>> out(sink, chunk);
+    detail::chunked_output<std::remove_reference_t<Sink>, typename Storage::allocator_type> out(
+        sink, chunk, alloc);
     if (const result<void> written =
-            detail::write_json(*t, detail::access::node_of(v), indent, out);
+            detail::write_json(*t, detail::access::node_of(v), indent, out, alloc);
         !written) {
         return written;
     }
@@ -121,7 +150,8 @@ result<void> stringify_to(basic_const_value<Traits, Storage> v, Sink&& sink,
  @param sink The sink.
  @param indent The spaces of each level, clamped to 10; 0 writes compactly.
  @param chunk The largest piece, at least 1.
- @return Success, or the first failure the sink returned.
+ @return Success, the first failure the sink returned, or with exceptions @ref errc::capacity, as
+ @ref stringify_to of its root returns them.
 */
 template <class Traits, class Storage, class Sink>
     requires detail::sink<std::remove_reference_t<Sink>>

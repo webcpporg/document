@@ -17,6 +17,8 @@
 
 #include <webcpp/document/value.hpp>
 
+#include <boost/config.hpp>
+
 #include <array>
 #include <concepts>
 #include <cstddef>
@@ -66,8 +68,8 @@ constexpr std::uint64_t splice_count(std::int64_t count, std::uint64_t start,
 /** The tree and node a copy source reads. */
 template <class Traits>
 struct source_read {
-    /** The tree. */
-    const tree<Traits>* from = nullptr;
+    /** The tree, of a document of any allocator. */
+    const tree_view<Traits>* from = nullptr;
 
     /** The node, or null when the source reads `undefined`. */
     const node<Traits>* n = nullptr;
@@ -76,7 +78,7 @@ struct source_read {
 /** Where a document's value is read: its tree and its root; @ref errc::type when moved from. */
 template <class Traits, class Storage>
 result<source_read<Traits>> read_source(const basic_document<Traits, Storage>& d) noexcept {
-    const tree<Traits>* t = access::tree_of(d);
+    const tree_view<Traits>* t = access::tree_of(d);
     if (t == nullptr) {
         return errc::type;
     }
@@ -93,9 +95,9 @@ result<source_read<Traits>> read_source(const basic_const_value<Traits, Storage>
  Makes `out` the item of a value an array method stores: a C++ value prepared, or a deep copy of a
  source's value, `null` for one that reads `undefined`, as `[undefined]` is written.
 */
-template <class Traits, class T>
+template <class Traits, class Allocator, class T>
     requires settable<Traits, T>
-result<void> prepare_element(const T& v, prepared<Traits>& out) noexcept {
+result<void> prepare_element(const T& v, prepared<Traits, Allocator>& out) noexcept {
     if constexpr (copy_source<Traits, T>) {
         const auto s = read_source(v);
         if (!s.has_value()) {
@@ -111,12 +113,24 @@ result<void> prepare_element(const T& v, prepared<Traits>& out) noexcept {
     }
 }
 
+/** `sizeof...(I)` prepared values, each holding its buffers in `alloc`. */
+template <class Traits, class Allocator, std::size_t... I>
+std::array<prepared<Traits, Allocator>, sizeof...(I)> prepared_values(
+    const Allocator& alloc, std::index_sequence<I...> /*indices*/) noexcept {
+    if constexpr (sizeof...(I) == 0) {
+        return {};
+    } else {
+        // Each element is made in its place: a prepared value is not copied.
+        return {{(static_cast<void>(I), prepared<Traits, Allocator>(alloc))...}};
+    }
+}
+
 /**
  Prepares each value into `held` and its item into `items`, in order: the first failure stops it.
  The items point into `held`, which must outlive them.
 */
-template <class Traits, class... T, std::size_t... I>
-result<void> prepare_elements(std::array<prepared<Traits>, sizeof...(T)>& held,
+template <class Traits, class Allocator, class... T, std::size_t... I>
+result<void> prepare_elements(std::array<prepared<Traits, Allocator>, sizeof...(T)>& held,
                               std::array<item<Traits>, sizeof...(T)>& items,
                               std::index_sequence<I...> /*indices*/, const T&... v) noexcept {
     if constexpr (sizeof...(T) != 0) {
@@ -131,10 +145,11 @@ result<void> prepare_elements(std::array<prepared<Traits>, sizeof...(T)>& held,
     return {};
 }
 
-/** A new owned document whose value is `v`, read before the call returns. */
-template <class Traits>
-result<basic_document<Traits, owned>> owned_holding(const item<Traits>& v) noexcept {
-    auto made = basic_document<Traits, owned>::create();
+/** A new owned document in `alloc` whose value is `v`, read before the call returns. */
+template <class Traits, class Allocator>
+result<basic_document<Traits, basic_owned<Allocator>>> owned_holding(
+    const item<Traits>& v, const Allocator& alloc) noexcept {
+    auto made = basic_document<Traits, basic_owned<Allocator>>::create(alloc);
     if (!made.has_value()) {
         return made.error();
     }
@@ -154,14 +169,10 @@ item<Traits> array_of(std::span<const literal_entry<Traits>> entries) noexcept {
     return a;
 }
 
-// The entries are staged on the process heap, whose exhaustion ends the program, as the library
-// tolerates.
-// NOLINTBEGIN(bugprone-exception-escape)
-
 /** Appends to `out` an entry copying each of the `n` elements of `array` in `from`, from `at`. */
-template <class Traits>
-void copy_elements(const tree<Traits>& from, std::uint64_t array, std::uint64_t at, std::uint64_t n,
-                   std::vector<literal_entry<Traits>>& out) {
+template <class Traits, class Entries>
+void copy_elements(const tree_view<Traits>& from, std::uint64_t array, std::uint64_t at,
+                   std::uint64_t n, Entries& out) {
     const node<Traits>* e = n == 0 ? nullptr : from.element(array, at);
     for (std::uint64_t i = 0; i < n && e != nullptr; ++i, e = from.next_sibling(*e)) {
         literal_entry<Traits>& entry = out.emplace_back();
@@ -177,12 +188,11 @@ void copy_elements(const tree<Traits>& from, std::uint64_t array, std::uint64_t 
  The document holds the array of the copies, or, when `single`, the one element, or `undefined`
  when there is none: `pop` and `shift`.
 */
-template <class Traits>
-result<basic_document<Traits, owned>> splice_elements(tree<Traits>& t, std::uint64_t array,
-                                                      std::uint64_t at, std::uint64_t n,
-                                                      std::span<const item<Traits>> items,
-                                                      bool single) noexcept {
-    result<basic_document<Traits, owned>> removed = errc::type;
+template <class Traits, class Allocator>
+result<basic_document<Traits, basic_owned<Allocator>>> splice_elements(
+    tree<Traits, Allocator>& t, std::uint64_t array, std::uint64_t at, std::uint64_t n,
+    std::span<const item<Traits>> items, bool single) noexcept {
+    result<basic_document<Traits, basic_owned<Allocator>>> removed = errc::type;
     if (single) {
         // With nothing to remove, it holds undefined, which JavaScript's pop of [] returns.
         item<Traits> one = empty_item<Traits>(webcpp::document::kind::undefined);
@@ -190,12 +200,15 @@ result<basic_document<Traits, owned>> splice_elements(tree<Traits>& t, std::uint
             one.from = &t;
             one.from_id = t.element(array, at)->id;
         }
-        removed = owned_holding(one);
+        removed = owned_holding(one, t.get_allocator());
     } else {
-        std::vector<literal_entry<Traits>> entries;
-        entries.reserve(static_cast<std::size_t>(n));
-        copy_elements(t, array, at, n, entries);
-        removed = owned_holding(array_of<Traits>(entries));
+        removed = bad_alloc_as_capacity([&] {
+            std::vector<literal_entry<Traits>, rebound<Allocator, literal_entry<Traits>>> entries(
+                rebound<Allocator, literal_entry<Traits>>(t.get_allocator()));
+            entries.reserve(static_cast<std::size_t>(n));
+            copy_elements<Traits>(t, array, at, n, entries);
+            return owned_holding(array_of<Traits>(entries), t.get_allocator());
+        });
     }
     if (!removed.has_value()) {
         return removed;
@@ -208,14 +221,20 @@ result<basic_document<Traits, owned>> splice_elements(tree<Traits>& t, std::uint
 
 /**
  The entries of `concat`'s array, and the prepared values they point into: this array's elements,
- then each argument, an array's elements or the value.
+ then each argument, an array's elements or the value, all in the document's allocator.
 */
-template <class Traits>
+template <class Traits, class Allocator>
 class concatenation {
 public:
+    /** No entry yet, each to be held in `alloc`. */
+    explicit concatenation(const Allocator& alloc) noexcept
+        : alloc_(alloc),
+          held_(rebound<Allocator, prepared<Traits, Allocator>>(alloc)),
+          entries_(rebound<Allocator, literal_entry<Traits>>(alloc)) {}
+
     /** Appends a copy of each element of `array` in `from`. */
-    void add_elements(const tree<Traits>& from, std::uint64_t array) {
-        copy_elements(from, array, 0, from.count(array), entries_);
+    void add_elements(const tree_view<Traits>& from, std::uint64_t array) {
+        copy_elements<Traits>(from, array, 0, from.count(array), entries_);
     }
 
     /** Appends an argument: an array's elements, spread, or the value. */
@@ -272,7 +291,7 @@ private:
     /** Appends one value. */
     template <class T>
     result<void> add_value(const T& v) {
-        prepared<Traits>& p = held_.emplace_back();
+        prepared<Traits, Allocator>& p = held_.emplace_back(alloc_);
         if (const auto made = prepare_element(v, p); !made.has_value()) {
             return made;
         }
@@ -280,15 +299,16 @@ private:
         return {};
     }
 
+    /** The allocator of the prepared values' buffers. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS Allocator alloc_;
+
     // A prepared value moved keeps what its item points at, so the vector may grow.
     /** The prepared values the entries point into. */
-    std::vector<prepared<Traits>> held_;
+    std::vector<prepared<Traits, Allocator>, rebound<Allocator, prepared<Traits, Allocator>>> held_;
 
     /** The array's entries, in order. */
-    std::vector<literal_entry<Traits>> entries_;
+    std::vector<literal_entry<Traits>, rebound<Allocator, literal_entry<Traits>>> entries_;
 };
-
-// NOLINTEND(bugprone-exception-escape)
 
 }  // namespace webcpp::document::detail
 
@@ -323,53 +343,56 @@ basic_value<Traits, Storage> basic_value<Traits, Storage>::at(std::int64_t index
     return this->template element_handle<basic_value>(k);
 }
 
-// The copies' entries are staged on the process heap, whose exhaustion ends the program, as the
-// library tolerates.
-// NOLINTBEGIN(bugprone-exception-escape)
-
 template <class Traits, class Storage>
-result<basic_document<Traits, owned>> basic_const_value<Traits, Storage>::slice(
+result<basic_document<Traits, detail::owned_of<Storage>>> basic_const_value<Traits, Storage>::slice(
     std::int64_t start, std::int64_t stop) const noexcept {
     const std::uint64_t id = id_of(webcpp::document::kind::array);
     if (id == 0) {
         return errc::type;
     }
-    const detail::tree<Traits>& t = *tree_ptr();
+    const auto& t = *tree_ptr();
     const std::uint64_t length = t.count(id);
     const std::uint64_t first = detail::relative_index(start, length);
     const std::uint64_t last = detail::relative_index(stop, length);
-    std::vector<detail::literal_entry<Traits>> entries;
-    if (last > first) {
-        entries.reserve(static_cast<std::size_t>(last - first));
-        detail::copy_elements(t, id, first, last - first, entries);
-    }
-    return detail::owned_holding(detail::array_of<Traits>(entries));
+    return detail::bad_alloc_as_capacity([&] {
+        std::vector<detail::literal_entry<Traits>,
+                    detail::rebound<allocator_type, detail::literal_entry<Traits>>>
+            entries(
+                detail::rebound<allocator_type, detail::literal_entry<Traits>>(t.get_allocator()));
+        if (last > first) {
+            entries.reserve(static_cast<std::size_t>(last - first));
+            detail::copy_elements<Traits>(t, id, first, last - first, entries);
+        }
+        return detail::owned_holding(detail::array_of<Traits>(entries), t.get_allocator());
+    });
 }
 
 template <class Traits, class Storage>
 template <class... T>
-result<basic_document<Traits, owned>> basic_const_value<Traits, Storage>::concat(
-    const T&... v) const noexcept
+result<basic_document<Traits, detail::owned_of<Storage>>>
+basic_const_value<Traits, Storage>::concat(const T&... v) const noexcept
     requires(detail::settable<Traits, T> && ...)
 {
     const std::uint64_t id = id_of(webcpp::document::kind::array);
     if (id == 0) {
         return errc::type;
     }
-    detail::concatenation<Traits> c;
-    c.add_elements(*tree_ptr(), id);
-    if constexpr (sizeof...(T) != 0) {
-        result<void> added;
-        // The fold stops at the first argument that fails.
-        static_cast<void>(((added = c.add(v), added.has_value()) && ...));
-        if (!added.has_value()) {
-            return added.error();
-        }
-    }
-    return detail::owned_holding(detail::array_of<Traits>(c.entries()));
+    return detail::bad_alloc_as_capacity(
+        [&]() -> result<basic_document<Traits, detail::owned_of<Storage>>> {
+            detail::concatenation<Traits, allocator_type> c(tree_ptr()->get_allocator());
+            c.add_elements(*tree_ptr(), id);
+            if constexpr (sizeof...(T) != 0) {
+                result<void> added;
+                // The fold stops at the first argument that fails.
+                static_cast<void>(((added = c.add(v), added.has_value()) && ...));
+                if (!added.has_value()) {
+                    return added.error();
+                }
+            }
+            return detail::owned_holding(detail::array_of<Traits>(c.entries()),
+                                         tree_ptr()->get_allocator());
+        });
 }
-
-// NOLINTEND(bugprone-exception-escape)
 
 template <class Traits, class Storage>
 template <class... T>
@@ -380,14 +403,15 @@ result<std::uint64_t> basic_value<Traits, Storage>::push(const T&... v) noexcept
     if (id == 0) {
         return errc::type;
     }
-    std::array<detail::prepared<Traits>, sizeof...(T)> held{};
+    auto* t = writable_tree();
+    auto held =
+        detail::prepared_values<Traits>(t->get_allocator(), std::index_sequence_for<T...>());
     std::array<detail::item<Traits>, sizeof...(T)> items{};
     if (const auto made =
             detail::prepare_elements(held, items, std::index_sequence_for<T...>(), v...);
         !made.has_value()) {
         return made.error();
     }
-    detail::tree<Traits>* t = writable_tree();
     if (const auto done = t->insert_elements(id, t->count(id), items); !done.has_value()) {
         return done.error();
     }
@@ -395,24 +419,26 @@ result<std::uint64_t> basic_value<Traits, Storage>::push(const T&... v) noexcept
 }
 
 template <class Traits, class Storage>
-result<basic_document<Traits, owned>> basic_value<Traits, Storage>::pop() noexcept {
+result<basic_document<Traits, detail::owned_of<Storage>>>
+basic_value<Traits, Storage>::pop() noexcept {
     const std::uint64_t id = this->id_of(webcpp::document::kind::array);
     if (id == 0) {
         return errc::type;
     }
-    detail::tree<Traits>* t = writable_tree();
+    auto* t = writable_tree();
     const std::uint64_t length = t->count(id);
     return detail::splice_elements<Traits>(*t, id, length == 0 ? 0 : length - 1,
                                            length == 0 ? 0 : 1, {}, true);
 }
 
 template <class Traits, class Storage>
-result<basic_document<Traits, owned>> basic_value<Traits, Storage>::shift() noexcept {
+result<basic_document<Traits, detail::owned_of<Storage>>>
+basic_value<Traits, Storage>::shift() noexcept {
     const std::uint64_t id = this->id_of(webcpp::document::kind::array);
     if (id == 0) {
         return errc::type;
     }
-    detail::tree<Traits>* t = writable_tree();
+    auto* t = writable_tree();
     return detail::splice_elements<Traits>(*t, id, 0, t->count(id) == 0 ? 0 : 1, {}, true);
 }
 
@@ -425,14 +451,15 @@ result<std::uint64_t> basic_value<Traits, Storage>::unshift(const T&... v) noexc
     if (id == 0) {
         return errc::type;
     }
-    std::array<detail::prepared<Traits>, sizeof...(T)> held{};
+    auto* t = writable_tree();
+    auto held =
+        detail::prepared_values<Traits>(t->get_allocator(), std::index_sequence_for<T...>());
     std::array<detail::item<Traits>, sizeof...(T)> items{};
     if (const auto made =
             detail::prepare_elements(held, items, std::index_sequence_for<T...>(), v...);
         !made.has_value()) {
         return made.error();
     }
-    detail::tree<Traits>* t = writable_tree();
     if (const auto done = t->insert_elements(id, 0, items); !done.has_value()) {
         return done.error();
     }
@@ -441,23 +468,23 @@ result<std::uint64_t> basic_value<Traits, Storage>::unshift(const T&... v) noexc
 
 template <class Traits, class Storage>
 template <class... T>
-result<basic_document<Traits, owned>> basic_value<Traits, Storage>::splice(std::int64_t start,
-                                                                           std::int64_t count,
-                                                                           const T&... v) noexcept
+result<basic_document<Traits, detail::owned_of<Storage>>> basic_value<Traits, Storage>::splice(
+    std::int64_t start, std::int64_t count, const T&... v) noexcept
     requires(detail::settable<Traits, T> && ...)
 {
     const std::uint64_t id = this->id_of(webcpp::document::kind::array);
     if (id == 0) {
         return errc::type;
     }
-    std::array<detail::prepared<Traits>, sizeof...(T)> held{};
+    auto* t = writable_tree();
+    auto held =
+        detail::prepared_values<Traits>(t->get_allocator(), std::index_sequence_for<T...>());
     std::array<detail::item<Traits>, sizeof...(T)> items{};
     if (const auto made =
             detail::prepare_elements(held, items, std::index_sequence_for<T...>(), v...);
         !made.has_value()) {
         return made.error();
     }
-    detail::tree<Traits>* t = writable_tree();
     const std::uint64_t length = t->count(id);
     const std::uint64_t at = detail::relative_index(start, length);
     return detail::splice_elements<Traits>(*t, id, at, detail::splice_count(count, at, length),
@@ -465,13 +492,13 @@ result<basic_document<Traits, owned>> basic_value<Traits, Storage>::splice(std::
 }
 
 template <class Traits, class Storage>
-result<basic_document<Traits, owned>> basic_value<Traits, Storage>::splice(
+result<basic_document<Traits, detail::owned_of<Storage>>> basic_value<Traits, Storage>::splice(
     std::int64_t start) noexcept {
     const std::uint64_t id = this->id_of(webcpp::document::kind::array);
     if (id == 0) {
         return errc::type;
     }
-    detail::tree<Traits>* t = writable_tree();
+    auto* t = writable_tree();
     const std::uint64_t length = t->count(id);
     const std::uint64_t at = detail::relative_index(start, length);
     return detail::splice_elements<Traits>(*t, id, at, length - at, {}, false);

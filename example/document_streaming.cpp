@@ -6,14 +6,18 @@
 
 // Streaming in both directions: JSON text fed to the parser in chunks split inside a string and a
 // number, a syntax error and the offset where it was found, a parser that stays failed or finished
-// until it is reset, the limits of a parse, and a document written in pieces to a sink.
+// until it is reset, the limits of a parse, a document written in pieces to a sink, and a JSON text
+// written field by field, its strings quoted as JSON.stringify quotes them.
 
 #include <webcpp/document.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <iostream>
+#include <memory_resource>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace wd = webcpp::document;
 
@@ -93,4 +97,30 @@ int main() {
         0, 8);
     std::cout << kept << " then " << stopped.error().message() << '\n';
     // end::stringify_to[]
+
+    // tag::quote[]
+    // A JSON text written field by field, without a document, into a string of the program's own
+    // resource, which alone allocates.
+    std::vector<std::byte> storage(1024);
+    std::pmr::monotonic_buffer_resource arena(storage.data(), storage.size());
+    std::pmr::string message(&arena);
+    message += R"({"type":)";
+    if (const wd::result<void> quoted = wd::quote("offer", message); quoted.has_error()) {
+        return 1;
+    }
+    message += R"(,"sdp":)";
+    if (const wd::result<void> quoted = wd::quote("v=0\r\ns=\"-\"\r\n", message);
+        quoted.has_error()) {
+        return 1;
+    }
+    // UTF-16 that ends in half of a pair, which JSON.stringify writes as an escape.
+    message += R"(,"label":)";
+    wd::quote(std::u16string{u'a', 0xD83D}, message);
+    message += '}';
+    std::cout << message << '\n';
+
+    // Text that is not UTF-8 is refused, and the string is left as it was.
+    const wd::result<void> refused = wd::quote("\xff", message);
+    std::cout << refused.error().message() << ", " << message.size() << " bytes kept\n";
+    // end::quote[]
 }

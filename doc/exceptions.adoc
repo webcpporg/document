@@ -69,6 +69,9 @@ include::{examples}/document_javascript.expected[lines=23..29]
   `as<std::string>()`.
 * *`wd::document d;` holds `null`,* and the copy constructor gives an equal and independent copy.
   Both are for owned documents only: an external document has no buffer to be made or copied into.
+  The copy is in the allocator that `select_on_container_copy_construction` gives, as a standard
+  container's copy is: for a `wd::pmr::document`, the default resource, where `doc.clone()` keeps
+  the document's own (<<document-allocators-moves>>).
 * *An external document throws `wd::capacity_error` when it is full,* where `set` would return
   `errc::capacity`.
 

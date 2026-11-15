@@ -1122,7 +1122,11 @@ inline void write_base64(std::span<const std::byte> in, char* out, bool url) noe
     }
 }
 
-/** Reads base64 text into `out`, which has room for it, and returns the size read. */
+/**
+ Reads base64 text into `out`, which has room for it, and returns the size read; with a null
+ `out`, it only checks the text and counts the bytes it holds, so that their room is sized before
+ it is allocated.
+*/
 inline result<std::uint64_t> read_base64(std::string_view text, std::byte* out, bool url) noexcept {
     // Base64 is padded to a multiple of four characters with at most two '='; base64url has no
     // padding, and a length of 4n + 1 leaves no whole byte.
@@ -1150,7 +1154,10 @@ inline result<std::uint64_t> read_base64(std::string_view text, std::byte* out, 
         pending_bits += 6;
         if (pending_bits >= 8) {
             pending_bits -= 8;
-            out[written++] = static_cast<std::byte>((pending >> pending_bits) & 0xffU);
+            if (out != nullptr) {
+                out[written] = static_cast<std::byte>((pending >> pending_bits) & 0xffU);
+            }
+            ++written;
             pending &= (1U << pending_bits) - 1;
         }
     }

@@ -32,6 +32,17 @@ specific to document.
 - No floating point outside `js_traits` and its codec; no hashed container; nodes are built in place
   (`emplace`), never copied from a temporary; the allocator zeroes every block it hands out and
   frees.
+- Every allocation an operation makes outside the image goes through the document's allocator,
+  rebound (`detail::rebound`, constructed from it, never converted to), and is made before the
+  operation's first change, so that with exceptions an allocator's failure, which
+  `detail::unless_allocation_fails` alone catches (`std::bad_alloc`, a type derived from it, or
+  Boost.Interprocess's `bad_alloc`), is `errc::capacity` with the document's content as it was; an
+  erasure, a lookup and `==` allocate nothing, and a `const` operation allocates in the document's
+  allocator only as the page's "Reads from several threads" lists. An image's blocks the allocator
+  gives at another alignment than 16 are given back, and a change a place cannot take is refused
+  before its value is prepared. The `allocator*` tests count the global `operator new` and fail an
+  operation at each of its allocations: a container of the standard allocator in an operation fails
+  them. Boost.JSON's suspension stack, in a parse fed in chunks, is the one exception.
 - The values of `errc` and `kind`, the category's identity `0x646f63756d656e74` ("document") and the
   image's header layout never change; a layout change raises the image's format version.
 - Boost.MultiIndex erases an element whose `modify` throws: a `modify` only swaps prepared values.
@@ -44,15 +55,16 @@ specific to document.
 - `doc/document.adoc` includes one file per section, in this order: `introduction.adoc`,
   `gains.adoc`, `js-module.adoc`, `javascript.adoc`, `handles.adoc`, `numbers.adoc`,
   `strings.adoc`, `order.adoc`, `arrays.adoc`, `containers.adoc`, `stringify.adoc`,
-  `parsing.adoc`, `streams.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`, `wire.adoc`,
-  `sharing.adoc`, `boost-json.adoc`, `exceptions.adoc`, `errors.adoc`, `testing.adoc`,
-  `benchmarks.adoc`, then the reference and the changelog.
+  `parsing.adoc`, `streams.adoc`, `selectors.adoc`, `traits.adoc`, `images.adoc`,
+  `allocation.adoc`, `wire.adoc`, `sharing.adoc`, `boost-json.adoc`, `exceptions.adoc`,
+  `errors.adoc`, `testing.adoc`, `benchmarks.adoc`, then the reference and the changelog.
   `b2 libs/document/doc` builds it with the strict reference.
 - Each `@see "<title>"` of a Doc Comment names a section's title: "Introduction", "What C++
   gives JavaScript", "Using it from JavaScript", "From JavaScript", "Handles", "Numbers", "Strings,
   dates and bytes", "Key order", "Arrays", "Containers", "Writing JSON", "Parsing", "Streams of
-  documents", "Selectors", "Traits", "Images", "Images on the wire", "Sealed images", "Sharing",
-  "Compared with Boost.JSON", "The sugar that throws", "Errors", "Testing", "Benchmarks".
+  documents", "Selectors", "Traits", "Images", "Allocators", "Images on the wire", "Sealed
+  images", "Sharing", "Compared with Boost.JSON", "The sugar that throws", "Errors", "Testing",
+  "Benchmarks".
   Renaming a section renames its `@see` lines in the same commit; doc-check fails otherwise.
 - The guide's programs are `example/document_<topic>.cpp`, each with its `.expected`, whose lines
   are what Node prints for the same JavaScript wherever the page does not say otherwise; check a
@@ -67,5 +79,9 @@ specific to document.
   ways.
 - `document_image.expected` holds a digest of an image, which is the same on every target: a
   change to the image's layout, or to what the example stores, changes it on every target at once.
+- `document_allocators.expected` is C++'s alone, which its section says: its JSON lines are what
+  Node prints for the same steps, and it prints nothing that depends on where a resource's bytes go
+  (a count or size of allocations), which libstdc++'s and libc++'s growth policies and small-string
+  buffers make differ between targets.
 - The README copies `example/document_quick_start.cpp[tag=program]` and its output; doc-check
   compares the copy at every doc build.

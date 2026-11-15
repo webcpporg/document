@@ -9,6 +9,11 @@
  of its own rather than recursion, and writes what ECMA-262's SerializeJSONObject,
  SerializeJSONArray and QuoteJSONString write, to an output that `stringify` keeps whole and
  `stringify_to` hands to a sink in chunks.
+
+ Its working state, the stack and the piece `stringify_to` holds back, has room of its own for a
+ value nested @ref first_frames deep and a piece of @ref first_piece_room bytes, and allocates
+ only past them, in the allocator it is given, rebound: the string's for `stringify`, the
+ document's for `stringify_to`. That and its output are all it allocates.
 */
 
 #ifndef WEBCPP_DOCUMENT_DETAIL_WRITER_HPP
@@ -16,11 +21,15 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/detail/tree.hpp>
-#include <webcpp/document/detail/utf.hpp>
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/number.hpp>
+#include <webcpp/document/quote.hpp>
+#include <webcpp/document/storage.hpp>
 #include <webcpp/document/traits.hpp>
+
+#include <boost/config.hpp>
 
 #include <algorithm>
 #include <array>
@@ -29,16 +38,33 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <new>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace webcpp::document::detail {
 
 /** The most spaces of one level: `JSON.stringify` clamps its third argument to 10. */
 inline constexpr std::uint32_t max_indent = 10;
+
+/**
+ The frames the writer's stack holds in room of its own, 16 bytes each: a value nested 16 deep is
+ written with no allocation of its stack. The frames past them are allocated, room for 16 at
+ first and twice the room each time it is full.
+*/
+inline constexpr std::size_t first_frames = 16;
+
+/**
+ The bytes of the room of its own the piece `stringify_to` holds back takes, the default chunk's:
+ a chunk of 4096 bytes or fewer allocates no piece. A larger chunk's piece, once it holds more,
+ is allocated at twice this room, then twice its room each time it is full, up to the chunk.
+*/
+inline constexpr std::size_t first_piece_room = 4096;
 
 /**
  A sink of `stringify_to`: a callable taking `std::string_view` and returning `void` or
@@ -57,50 +83,85 @@ concept output = requires(Out& out, std::string_view text) {
     { out.put(text) } -> std::same_as<result<void>>;
 };
 
+/**
+ Runs `allocate`, which allocates through the writer's allocator: with exceptions, the allocator's
+ failure (@ref unless_allocation_fails) is @ref errc::capacity; without, an allocator that fails
+ ends the program, as it does itself.
+*/
+template <class Allocate>
+result<void> allocating(Allocate&& allocate) {
+    return unless_allocation_fails(
+        [&]() -> result<void> {
+            std::forward<Allocate>(allocate)();
+            return {};
+        },
+        [] { return result<void>(errc::capacity); });
+}
+
 /** The output of `stringify`: the text appended to a string. */
 class string_output {
 public:
     /** An output that appends to `text`, which outlives it. */
     explicit string_output(std::string& text) noexcept : text_(&text) {}
 
-    /** Appends `text`; the standard library's `std::bad_alloc` is its only failure. */
+    /** Appends `text`; the string's `std::bad_alloc` propagates, the output's only failure. */
     result<void> put(std::string_view text) {
         text_->append(text);
         return {};
     }
 
 private:
+    /** The string appended to. */
     std::string* text_;
 };
 
-/** The output of `stringify_to`: the text handed to a sink in pieces of at most `chunk` bytes. */
-template <class Sink>
+/**
+ The output of `stringify_to`: the text handed to a sink in pieces of at most `chunk` bytes, the
+ piece it holds back until it is full in room of its own of @ref first_piece_room bytes, or, for a
+ larger chunk, in `Allocator`, rebound, once it holds more.
+
+ Tip: the larger room's string of bytes is made only when the piece first outgrows its own room, so
+ that a piece that keeps to it makes no standard container: a standard library may allocate for
+ one when it is made, as the MSVC STL's checked iterators allocate a proxy for each.
+*/
+template <class Sink, class Allocator>
 class chunked_output {
 public:
-    /** An output to `sink`, which outlives it, in pieces of at most `chunk` bytes, at least 1. */
-    chunked_output(Sink& sink, std::uint64_t chunk)
+    /**
+     An output to `sink`, which outlives it, in pieces of at most `chunk` bytes, at least 1, a
+     piece larger than its own room held back in `alloc`.
+    */
+    chunked_output(Sink& sink, std::uint64_t chunk, const Allocator& alloc) noexcept
         // A chunk of 0 would never hand anything over; one past the address space is all of it.
         : sink_(&sink),
           chunk_(static_cast<std::size_t>(
-              std::clamp<std::uint64_t>(chunk, 1, std::numeric_limits<std::size_t>::max()))) {}
+              std::clamp<std::uint64_t>(chunk, 1, std::numeric_limits<std::size_t>::max()))),
+          alloc_(alloc) {}
 
-    /** Takes `text`, handing the sink each full piece; the sink's failure is returned. */
+    /**
+     Takes `text`, handing the sink each full piece; the sink's failure is returned, and with
+     exceptions @ref errc::capacity when the allocator has no room for the piece held back.
+    */
     result<void> put(std::string_view text) {
         while (!text.empty()) {
             // A full piece of the text itself is handed over without a copy.
-            if (pending_.empty() && text.size() >= chunk_) {
+            if (held_ == 0 && text.size() >= chunk_) {
                 if (const result<void> handed = hand(text.substr(0, chunk_)); !handed) {
                     return handed;
                 }
                 text.remove_prefix(chunk_);
                 continue;
             }
-            const std::size_t taken = std::min(chunk_ - pending_.size(), text.size());
-            pending_.append(text.substr(0, taken));
+            const std::size_t taken = std::min(chunk_ - held_, text.size());
+            if (const result<void> room = make_room(held_ + taken); !room) {
+                return room;
+            }
+            std::ranges::copy(text.substr(0, taken), piece() + held_);
+            held_ += taken;
             text.remove_prefix(taken);
-            if (pending_.size() == chunk_) {
-                const result<void> handed = hand(pending_);
-                pending_.clear();
+            if (held_ == chunk_) {
+                const result<void> handed = hand({piece(), held_});
+                held_ = 0;
                 if (!handed) {
                     return handed;
                 }
@@ -111,15 +172,26 @@ public:
 
     /** Hands the sink what is left; the sink's failure is returned. */
     result<void> flush() {
-        if (pending_.empty()) {
+        if (held_ == 0) {
             return {};
         }
-        const result<void> handed = hand(pending_);
-        pending_.clear();
+        const result<void> handed = hand({piece(), held_});
+        held_ = 0;
         return handed;
     }
 
 private:
+    /** The allocator of a piece larger than its own room. */
+    using piece_allocator = rebound<Allocator, char>;
+
+    /** The room of a piece larger than its own. */
+    using piece_room = std::vector<char, piece_allocator>;
+
+    /** The first byte of the piece held back: in its own room, or in the larger one. */
+    [[nodiscard]] char* piece() noexcept {
+        return larger_.has_value() ? larger_->data() : own_.data();
+    }
+
     /** Hands one piece to the sink, a sink returning `void` succeeding. */
     result<void> hand(std::string_view piece) {
         if constexpr (std::same_as<std::invoke_result_t<Sink&, std::string_view>, void>) {
@@ -130,28 +202,151 @@ private:
         }
     }
 
+    /**
+     Makes room in the piece for `size` bytes, at most the chunk, before it takes them: past its
+     own room, twice that room, then twice the room each time, up to the chunk, the piece held
+     moved into it, so that each growth is one allocation.
+    */
+    result<void> make_room(std::size_t size) {
+        const std::size_t room = larger_.has_value() ? larger_->size() : own_.size();
+        if (size <= room) {
+            return {};
+        }
+        std::size_t grown = room;
+        while (grown < size) {
+            grown = grown > chunk_ / 2 ? chunk_ : 2 * grown;
+        }
+        piece_room larger(alloc_);
+        if (const result<void> made = allocating([&larger, grown] { larger.resize(grown); });
+            !made) {
+            return made;
+        }
+        std::ranges::copy(std::string_view(piece(), held_), larger.data());
+        if (!larger_.has_value()) {
+            larger_.emplace(alloc_);
+        }
+        larger_->swap(larger);
+        return {};
+    }
+
+    /** The sink, used in place. */
     Sink* sink_;
+
+    /** The largest piece. */
     std::size_t chunk_;
-    std::string pending_;
+
+    /** How many bytes of the text the piece holds, fewer than a chunk. */
+    std::size_t held_ = 0;
+
+    /** The piece's room of its own. */
+    std::array<char, first_piece_room> own_{};
+
+    /** The allocator of a piece larger than its own room. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS piece_allocator alloc_;
+
+    /** The piece's room once it holds more than its own, none until then. */
+    std::optional<piece_room> larger_;
+};
+
+/**
+ The writer's stack: room of its own for @ref first_frames frames, and the deeper ones in
+ `Allocator`, rebound, room for @ref first_frames at first and twice the room each time it is
+ full.
+
+ Tip: the list of the deeper frames is made with the first of them, so that a stack that keeps to
+ its own room makes no standard container: a standard library may allocate for one when it is
+ made, as the MSVC STL's checked iterators allocate a proxy for each.
+*/
+template <class Frame, class Allocator>
+class frame_stack {
+public:
+    /** An empty stack, its deeper frames in `alloc`. */
+    explicit frame_stack(const Allocator& alloc) noexcept : alloc_(alloc) {}
+
+    /** How many frames it holds. */
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+    /** Whether it holds none. */
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+
+    /** The innermost frame; the stack holds one. */
+    [[nodiscard]] Frame& back() noexcept {
+        return size_ > first_frames && deeper_.has_value() ? deeper_->back() : own_[size_ - 1];
+    }
+
+    /** Removes the innermost frame; the stack holds one. */
+    void pop_back() noexcept {
+        if (size_ > first_frames && deeper_.has_value()) {
+            deeper_->pop_back();
+        }
+        --size_;
+    }
+
+    /**
+     Pushes `f`, room made first; with exceptions, @ref errc::capacity when the allocator has no
+     room, the stack as it was.
+    */
+    result<void> push(const Frame& f) {
+        if (size_ < first_frames) {
+            own_[size_++] = f;
+            return {};
+        }
+        if (!deeper_.has_value()) {
+            deeper_.emplace(alloc_);
+        }
+        frames& deeper = *deeper_;
+        if (deeper.size() == deeper.capacity()) {
+            const std::size_t room = deeper.capacity() == 0 ? first_frames : 2 * deeper.capacity();
+            if (const result<void> made = allocating([&deeper, room] { deeper.reserve(room); });
+                !made) {
+                return made;
+            }
+        }
+        // There is room: it does not allocate.
+        deeper.push_back(f);
+        ++size_;
+        return {};
+    }
+
+private:
+    /** A list of frames, in the allocator. */
+    using frames = std::vector<Frame, rebound<Allocator, Frame>>;
+
+    /** The outermost frames. */
+    std::array<Frame, first_frames> own_{};
+
+    /** The allocator of the frames past them. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS rebound<Allocator, Frame> alloc_;
+
+    /** The frames past them, innermost last; none until the first of them. */
+    std::optional<frames> deeper_;
+
+    /** How many frames it holds. */
+    std::size_t size_ = 0;
 };
 
 /**
  The walk of @ref write_json over one subtree, which keeps the containers it is inside on a stack
- of its own: depth is not bounded by the API, and a recursion would be bounded by the thread's
- stack.
+ of its own, @ref frame_stack, the frames past its own room in `Allocator`, rebound: depth is not
+ bounded by the API, and a recursion would be bounded by the thread's stack.
 
  Tip: the stack holds ids, never nodes, and each step finds its node again, so that nothing the
  walk holds points into the image across a call of the output.
 */
-template <class Traits, class Out>
+template <class Traits, class Out, class Allocator>
 class json_writer {
 public:
-    /** A walk of `t` writing to `out` with `indent` spaces a level, already clamped. */
-    json_writer(const tree<Traits>& t, std::uint32_t indent, Out& out) noexcept
-        : tree_(&t), indent_(indent), out_(&out) {}
+    /**
+     A walk of `t` writing to `out` with `indent` spaces a level, already clamped, its stack in
+     `alloc`.
+    */
+    json_writer(const tree_view<Traits>& t, std::uint32_t indent, Out& out,
+                const Allocator& alloc) noexcept
+        : tree_(&t), indent_(indent), out_(&out), stack_(alloc) {}
 
     /**
-     Writes the subtree of `root`, a node that is not `undefined`; the output's failure ends it.
+     Writes the subtree of `root`, a node that is not `undefined`; the output's failure ends it,
+     and with exceptions @ref errc::capacity when the allocator has no room for the stack.
     */
     result<void> run(const node<Traits>& root) {
         write_value(root);
@@ -227,15 +422,34 @@ private:
         }
     }
 
-    /** Opens a container: `[]` or `{}` when it is empty, else its opener and a frame. */
+    /**
+     Opens a container: `[]` or `{}` when it is empty, else its frame, then its opener, so that a
+     stack with no room writes nothing of it.
+    */
     void open(const node<Traits>& n, bool object) {
+        if (!status_) {
+            return;
+        }
         const node<Traits>* first = tree_->first_child(n.id);
         if (first == nullptr) {
             put(object ? "{}" : "[]");
             return;
         }
-        put(object ? "{" : "[");
-        stack_.push_back(frame{.next = first->id, .object = object, .first = true});
+        if (push(frame{.next = first->id, .object = object, .first = true})) {
+            put(object ? "{" : "[");
+        }
+    }
+
+    /**
+     Pushes a frame, room made first; with exceptions, an allocator with no room stops the writing
+     with @ref errc::capacity.
+    */
+    bool push(const frame& f) {
+        if (const result<void> pushed = stack_.push(f); !pushed) {
+            status_ = pushed;
+            return false;
+        }
+        return true;
     }
 
     /** Writes a number as JavaScript's Number::toString writes the traits' `number`. */
@@ -336,88 +550,15 @@ private:
     }
 
     /**
-     QuoteJSONString of UTF-8 text, valid as the document holds it: the runs that need no escape
-     are written as they are.
+     QuoteJSONString of a key or a string: UTF-8, valid as the document holds it, or UTF-16.
     */
-    void quote(std::string_view text) {
-        put("\"");
-        std::size_t run = 0;
-        for (std::size_t i = 0; i < text.size() && status_; ++i) {
-            const auto unit = static_cast<unsigned char>(text[i]);
-            if (unit >= 0x20 && unit != '"' && unit != '\\') {
-                continue;
-            }
-            put(text.substr(run, i - run));
-            escape_into(unit);
-            run = i + 1;
-        }
-        put(text.substr(run));
-        put("\"");
-    }
-
-    /**
-     QuoteJSONString of UTF-16 text: transcoded to UTF-8 through a buffer, and a lone surrogate
-     written as `\\u` and its four lowercase hex digits, as JavaScript writes it since ES2019.
-    */
-    void quote(std::u16string_view units) {
-        // The longest a unit or a pair becomes: six characters, the escape of a lone surrogate.
-        constexpr std::size_t longest = 6;
-        std::array<char, 256> buffer{};
-        std::size_t used = 0;
-        put("\"");
-        for (std::size_t i = 0; i < units.size() && status_; ++i) {
-            if (buffer.size() - used < longest) {
-                put({buffer.data(), used});
-                used = 0;
-            }
-            const char16_t unit = units[i];
-            const bool pair =
-                high_surrogate(unit) && i + 1 < units.size() && low_surrogate(units[i + 1]);
-            if (pair) {
-                used += static_cast<std::size_t>(to_utf8(units.substr(i, 2), buffer.data() + used));
-                ++i;
-            } else if (high_surrogate(unit) || low_surrogate(unit)) {
-                used += unicode_escape(unit, buffer.data() + used);
-            } else if (unit >= 0x80) {
-                used += static_cast<std::size_t>(to_utf8(units.substr(i, 1), buffer.data() + used));
-            } else if (unit >= 0x20 && unit != u'"' && unit != u'\\') {
-                buffer[used++] = static_cast<char>(unit);
-            } else {
-                put({buffer.data(), used});
-                used = 0;
-                escape_into(unit);
-            }
-        }
-        put({buffer.data(), used});
-        put("\"");
-    }
-
-    /** Writes the escape of a unit below 0x20, `"` or `\\`. */
-    void escape_into(std::uint32_t unit) {
-        switch (unit) {
-            case '"': put("\\\""); return;
-            case '\\': put("\\\\"); return;
-            case '\b': put("\\b"); return;
-            case '\f': put("\\f"); return;
-            case '\n': put("\\n"); return;
-            case '\r': put("\\r"); return;
-            case '\t': put("\\t"); return;
-            default: break;
-        }
-        std::array<char, 6> text{};
-        put({text.data(), unicode_escape(unit, text.data())});
-    }
-
-    /** Writes `\\u` and the four lowercase hex digits of `unit` at `out`, and returns 6. */
-    static std::size_t unicode_escape(std::uint32_t unit, char* out) noexcept {
-        constexpr std::string_view hex = "0123456789abcdef";
-        out[0] = '\\';
-        out[1] = 'u';
-        out[2] = hex[(unit >> 12U) & 0xfU];
-        out[3] = hex[(unit >> 8U) & 0xfU];
-        out[4] = hex[(unit >> 4U) & 0xfU];
-        out[5] = hex[unit & 0xfU];
-        return 6;
+    template <class Text>
+    void quote(Text text) {
+        const auto pass = [this](std::string_view piece) {
+            put(piece);
+            return status_.has_value();
+        };
+        quote_json(text, pass);
     }
 
     /** Writes a line break and the spaces of `level` levels; nothing when writing compactly. */
@@ -444,25 +585,35 @@ private:
         status_ = out_->put(text);
     }
 
-    const tree<Traits>* tree_;
+    /** The tree read. */
+    const tree_view<Traits>* tree_;
+
+    /** The spaces of a level, already clamped. */
     std::uint32_t indent_;
+
+    /** The output written to. */
     Out* out_;
-    std::vector<frame> stack_;
+
+    /** The containers the walk is inside, the innermost last. */
+    frame_stack<frame, Allocator> stack_;
+
+    /** The first failure, which stops the writing, or success. */
     result<void> status_{};
 };
 
 /**
  Writes the subtree of `root` as `JSON.stringify(value, null, indent)` does, `indent` clamped to
- @ref max_indent; a null `root`, `undefined`, writes nothing.
+ @ref max_indent, the frames of its stack past its own room in `alloc`, rebound; a null `root`,
+ `undefined`, writes nothing.
 */
-template <class Traits, class Out>
+template <class Traits, class Out, class Allocator>
     requires output<Out>
-result<void> write_json(const tree<Traits>& t, const node<Traits>* root, std::uint32_t indent,
-                        Out& out) {
+result<void> write_json(const tree_view<Traits>& t, const node<Traits>* root, std::uint32_t indent,
+                        Out& out, const Allocator& alloc) {
     if (root == nullptr || root->kind == webcpp::document::kind::undefined) {
         return {};
     }
-    json_writer<Traits, Out> writer(t, std::min(indent, max_indent), out);
+    json_writer<Traits, Out, Allocator> writer(t, std::min(indent, max_indent), out, alloc);
     return writer.run(*root);
 }
 

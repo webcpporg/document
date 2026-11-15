@@ -30,6 +30,7 @@ webcpp.example document_streaming.cpp ;
 webcpp.example document_selectors.cpp ;
 webcpp.example document_traits.cpp ;
 webcpp.example document_image.cpp ;
+webcpp.example document_allocators.cpp ;
 # The core in a build without exceptions, whatever the build asks.
 webcpp.example document_no_exceptions.cpp : <exception-handling>off ;
 

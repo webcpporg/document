@@ -166,8 +166,9 @@ handles that read and write a document; <<document-numbers>>, <<document-strings
 array methods. <<document-stringify>>, <<document-parsing>>, <<document-streams>> and
 <<document-selectors>> write and read JSON text, whole or in pieces, and <<document-containers>>
 shows the containers a {cpp} program walks. <<document-traits>> chooses what a document stores;
-<<document-images>> shows the binary image, <<document-wire>> sends it, and <<document-sharing>>
-shares it. <<document-vs-boost-json>> compares document with Boost.JSON, <<document-exceptions>>
-teaches the sugar that throws, and <<document-errors>> lists every error. <<document-testing>> shows
+<<document-images>> shows the binary image, <<document-allocators>> places it and every
+operation's memory in an allocator, <<document-wire>> sends it, and <<document-sharing>> shares it.
+<<document-vs-boost-json>> compares document with Boost.JSON, <<document-exceptions>> teaches the
+sugar that throws, and <<document-errors>> lists every error. <<document-testing>> shows
 how document is tested, <<document-benchmarks>> what it costs, and the <<reference,reference>>
 closes the page.
