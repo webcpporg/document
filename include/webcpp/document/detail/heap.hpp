@@ -329,8 +329,9 @@ inline heap_costs measure_heap_costs() noexcept {
 }
 
 /**
- The unit an owned image is allocated in: 16 bytes, 16-aligned, so that any allocator, rebound to
- it, gives the heap the alignment it needs.
+ The unit an owned image is allocated in: 16 bytes, 16-aligned, so that an allocator rebound to it
+ is asked for the alignment the heap needs, a memory resource for an alignment of 16. A buffer an
+ allocator gives at another alignment is given back, and the region has no room.
 */
 struct alignas(16) image_block {
     /** The block's bytes. */
@@ -401,6 +402,10 @@ private:
  or external, a span its user owns, which never grows; and the allocator, which also holds the
  working state of the operations on the image.
 
+ The allocator's pointer to an owned image's blocks is kept as the allocator gave it, and the
+ blocks are given back through it: a pointer that is not a plain one may carry more than an
+ address, a segment or a tag, which a pointer rebuilt from the address would not.
+
  @tparam Allocator An allocator of `std::byte`, rebound to @ref image_block for the image.
 */
 template <class Allocator>
@@ -416,16 +421,14 @@ public:
             return errc::capacity;
         }
         basic_region made(a);
-        std::byte* bytes = made.allocate(size);
-        if (bytes == nullptr) {
+        const buffer allocated = made.allocate(size);
+        if (allocated.bytes == nullptr) {
             return errc::capacity;
         }
-        std::memset(bytes, 0, static_cast<std::size_t>(size));
-        made.data_ = bytes;
-        made.size_ = size;
+        std::memset(allocated.bytes, 0, static_cast<std::size_t>(size));
+        made.hold(allocated, size);
         made.max_bytes_ = max_bytes;
-        made.owned_ = true;
-        make_heap(bytes, size);
+        make_heap(allocated.bytes, size);
         return made;
     }
 
@@ -441,15 +444,13 @@ public:
             return errc::not_a_document;
         }
         basic_region made(a);
-        std::byte* copy = made.allocate(bytes.size());
-        if (copy == nullptr) {
+        const buffer copy = made.allocate(bytes.size());
+        if (copy.bytes == nullptr) {
             return errc::capacity;
         }
-        std::memcpy(copy, bytes.data(), bytes.size());
-        made.data_ = copy;
-        made.size_ = bytes.size();
+        std::memcpy(copy.bytes, bytes.data(), bytes.size());
+        made.hold(copy, bytes.size());
         made.max_bytes_ = max_bytes;
-        made.owned_ = true;
         return made;
     }
 
@@ -483,7 +484,10 @@ public:
     explicit basic_region(const Allocator& a) noexcept : alloc_(a) {}
 
     /** Takes the bytes and a copy of the allocator of `other`, which is left empty. */
-    basic_region(basic_region&& other) noexcept : alloc_(other.alloc_) { take(other); }
+    basic_region(basic_region&& other) noexcept
+        : alloc_(other.alloc_), kept_(std::exchange(other.kept_, kept_pointer{})) {
+        take(other);
+    }
 
     /**
      Frees its own bytes, then takes the bytes of `other`, which is left empty; the allocator is
@@ -500,6 +504,7 @@ public:
             BOOST_ASSERT(alloc_ == other.alloc_ || !other.owned_);
         }
         take(other);
+        kept_ = std::exchange(other.kept_, kept_pointer{});
         return *this;
     }
 
@@ -531,16 +536,15 @@ public:
         if (new_size <= size_) {
             return false;
         }
-        std::byte* bigger = allocate(new_size);
-        if (bigger == nullptr) {
+        const buffer bigger = allocate(new_size);
+        if (bigger.bytes == nullptr) {
             return false;
         }
         const std::uint64_t old_size = size_;
-        std::memcpy(bigger, data_, static_cast<std::size_t>(old_size));
-        std::memset(bigger + old_size, 0, static_cast<std::size_t>(new_size - old_size));
-        deallocate(data_, old_size);
-        data_ = bigger;
-        size_ = new_size;
+        std::memcpy(bigger.bytes, data_, static_cast<std::size_t>(old_size));
+        std::memset(bigger.bytes + old_size, 0, static_cast<std::size_t>(new_size - old_size));
+        deallocate(held(), old_size);
+        hold(bigger, new_size);
         // The heap's links are offsets, so the copy is a heap already: it only takes the new end.
         own_heap().grow(new_size - old_size);
         return true;
@@ -560,14 +564,13 @@ public:
         if (size == size_) {
             return true;
         }
-        std::byte* smaller = allocate(size);
-        if (smaller == nullptr) {
+        const buffer smaller = allocate(size);
+        if (smaller.bytes == nullptr) {
             return false;
         }
-        std::memcpy(smaller, data_, static_cast<std::size_t>(size));
-        deallocate(data_, size_);
-        data_ = smaller;
-        size_ = size;
+        std::memcpy(smaller.bytes, data_, static_cast<std::size_t>(size));
+        deallocate(held(), size_);
+        hold(smaller, size);
         return true;
     }
 
@@ -577,6 +580,27 @@ private:
 
     /** Its traits. */
     using block_traits = std::allocator_traits<block_allocator>;
+
+    /** Its pointer to the image's blocks. */
+    using block_pointer = block_traits::pointer;
+
+    /** Whether that pointer is a plain one, which the bytes' address gives back exactly. */
+    static constexpr bool plain_pointer = std::is_pointer_v<block_pointer>;
+
+    /** What is kept in the place of a plain pointer, which the bytes' address is: nothing. */
+    struct no_pointer {};
+
+    /** The allocator's pointer to an owned image's blocks, kept when it is not a plain one. */
+    using kept_pointer = std::conditional_t<plain_pointer, no_pointer, block_pointer>;
+
+    /** A buffer the allocator gave: its bytes, and its pointer when it is not a plain one. */
+    struct buffer {
+        /** The first byte, 16-aligned, or null when the allocator gave none. */
+        std::byte* bytes = nullptr;
+
+        /** The allocator's pointer to it. */
+        BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS kept_pointer pointer{};
+    };
 
     /** Whether the allocator is the standard one, whose `allocate` is the global operator new. */
     static constexpr bool standard = std::same_as<Allocator, std::allocator<std::byte>>;
@@ -597,47 +621,79 @@ private:
     }
 
     /**
-     A new buffer of `size` bytes, 16-aligned and uninitialized, or null when the allocator has
-     none: its `std::bad_alloc` is caught, with exceptions.
+     A new buffer of `size` bytes, 16-aligned and uninitialized, or none when the allocator has
+     none: its `std::bad_alloc` is caught, with exceptions. A buffer the allocator gives at another
+     alignment, as one that ignores an over-aligned request may, is given back, and is none too.
     */
-    std::byte* allocate(std::uint64_t size) noexcept {
+    buffer allocate(std::uint64_t size) noexcept {
         if constexpr (standard) {
             // std::allocator allocates with the global operator new: its form that returns null
             // keeps a failure a value without exceptions too.
-            return static_cast<std::byte*>(
-                ::operator new(static_cast<std::size_t>(size), std::align_val_t{16}, std::nothrow));
+            return {static_cast<std::byte*>(::operator new(static_cast<std::size_t>(size),
+                                                           std::align_val_t{16}, std::nothrow))};
         } else {
             block_allocator blocks(alloc_);
             const std::size_t count = blocks_of(size);
             if (count > block_traits::max_size(blocks)) {
-                return nullptr;
+                return {};
             }
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
             try {
-                return reinterpret_cast<std::byte*>(
-                    std::to_address(block_traits::allocate(blocks, count)));
+                return aligned_or_given_back(blocks, block_traits::allocate(blocks, count), count);
             } catch (const std::bad_alloc&) {
-                return nullptr;
+                return {};
             }
 #else
-            return reinterpret_cast<std::byte*>(
-                std::to_address(block_traits::allocate(blocks, count)));
+            return aligned_or_given_back(blocks, block_traits::allocate(blocks, count), count);
 #endif
         }
     }
 
-    /** Frees a buffer of `size` bytes that @ref allocate made. */
-    void deallocate(std::byte* bytes, std::uint64_t size) noexcept {
+    /**
+     The buffer of the `count` blocks at `p`, which `blocks` allocated, when they are 16-aligned;
+     else none, the blocks given back: the heap's offsets hold at 16-aligned addresses alone.
+    */
+    static buffer aligned_or_given_back(block_allocator& blocks, block_pointer p,
+                                        std::size_t count) noexcept {
+        auto* bytes = reinterpret_cast<std::byte*>(std::to_address(p));
+        if (bytes == nullptr) {
+            return {};
+        }
+        if (reinterpret_cast<std::uintptr_t>(bytes) % alignof(image_block) != 0) {
+            block_traits::deallocate(blocks, std::move(p), count);
+            return {};
+        }
+        buffer made{bytes};
+        if constexpr (!plain_pointer) {
+            made.pointer = std::move(p);
+        }
+        return made;
+    }
+
+    /** Frees a buffer of `size` bytes that @ref allocate made, through the allocator's pointer. */
+    void deallocate(const buffer& b, std::uint64_t size) noexcept {
         if constexpr (standard) {
-            ::operator delete(bytes, std::align_val_t{16});
+            ::operator delete(b.bytes, std::align_val_t{16});
         } else {
             block_allocator blocks(alloc_);
-            using pointer = block_traits::pointer;
-            block_traits::deallocate(
-                blocks,
-                std::pointer_traits<pointer>::pointer_to(*reinterpret_cast<image_block*>(bytes)),
-                blocks_of(size));
+            if constexpr (plain_pointer) {
+                block_traits::deallocate(blocks, reinterpret_cast<image_block*>(b.bytes),
+                                         blocks_of(size));
+            } else {
+                block_traits::deallocate(blocks, b.pointer, blocks_of(size));
+            }
         }
+    }
+
+    /** The owned buffer it holds. */
+    [[nodiscard]] buffer held() const noexcept { return {data_, kept_}; }
+
+    /** Holds `b`, of `size` bytes, as its owned bytes. */
+    void hold(const buffer& b, std::uint64_t size) noexcept {
+        data_ = b.bytes;
+        kept_ = b.pointer;
+        size_ = size;
+        owned_ = true;
     }
 
     /** Its heap, as @ref heap_of finds it. */
@@ -656,15 +712,19 @@ private:
     /** Frees its bytes when it owns them, and leaves it empty. */
     void release() noexcept {
         if (owned_ && data_ != nullptr) {
-            deallocate(data_, size_);
+            deallocate(held(), size_);
         }
         data_ = nullptr;
+        kept_ = kept_pointer{};
         size_ = 0;
         max_bytes_ = 0;
         owned_ = false;
     }
 
     BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS Allocator alloc_{};
+
+    /** The allocator's pointer to an owned image's blocks, when it is not a plain one. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS kept_pointer kept_{};
 };
 
 /** The region of an image in the standard allocator. */

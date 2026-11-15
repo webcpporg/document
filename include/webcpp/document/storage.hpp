@@ -30,6 +30,10 @@ namespace webcpp::document {
  and a move assignment between allocators that are not equal and do not propagate copies the image
  into the target's allocator.
 
+ The image is allocated as blocks of 16 bytes, 16-aligned, and the allocator rebound to them must
+ give them that alignment: a buffer it gives at another alignment is given back, and the operation
+ returns @ref errc::capacity.
+
  @tparam Allocator An allocator of `std::byte`; `std::allocator<std::byte>` by default, whose
  documents are those of @ref owned.
  @see "Images", in the guide.

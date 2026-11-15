@@ -20,6 +20,7 @@
 
 #include <algorithm>
 #include <array>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -27,6 +28,7 @@
 #include <new>
 #include <span>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -92,6 +94,193 @@ public:
 
 private:
     allocator_counts* counts_;
+};
+
+/** What an allocator of @ref aligning_allocator does: its counts, and whether it under-aligns. */
+struct alignment_control {
+    /** The allocations it made. */
+    std::uint64_t allocations = 0;
+
+    /** The deallocations it made. */
+    std::uint64_t deallocations = 0;
+
+    /** Whether each block it hands out is 8 bytes past a 16-aligned address. */
+    bool under_align = false;
+};
+
+/**
+ An allocator that, when told to, aligns every block to 8 bytes and never to 16, whatever the type
+ asks, as an allocator that ignores an over-aligned request may: a block of the image, alignas(16),
+ is over-aligned wherever std::max_align_t's alignment is 8, as on arm64 macOS and on MSVC.
+*/
+template <class T>
+class aligning_allocator {
+public:
+    /** The type allocated. */
+    using value_type = T;
+
+    /** An allocator that does as `control` says and counts there; `control` outlives it. */
+    explicit aligning_allocator(alignment_control* control) noexcept : control_(control) {}
+
+    // The Allocator requirements convert an allocator to its rebound type implicitly.
+    /** The same allocator for another type. */
+    template <class U>
+    // NOLINTNEXTLINE(misc-explicit-constructor)
+    aligning_allocator(const aligning_allocator<U>& other) noexcept : control_(other.control()) {}
+
+    /** Room for `n` objects of `T`, 16-aligned or, when told to, 8 bytes past it. */
+    T* allocate(std::size_t n) {
+        ++control_->allocations;
+        auto* block =
+            static_cast<std::byte*>(::operator new((n * sizeof(T)) + 16, std::align_val_t{16}));
+        return static_cast<T*>(static_cast<void*>(block + offset()));
+    }
+
+    /** Gives back what @ref allocate made. */
+    void deallocate(T* p, std::size_t /*n*/) noexcept {
+        ++control_->deallocations;
+        // A block is given back from the 16-aligned address it was made at.
+        auto* block = static_cast<std::byte*>(static_cast<void*>(p));
+        const std::size_t past = reinterpret_cast<std::uintptr_t>(block) % 16;
+        ::operator delete(block - past, std::align_val_t{16});
+    }
+
+    /** What it does and counts. */
+    [[nodiscard]] alignment_control* control() const noexcept { return control_; }
+
+    /** Whether two allocators do as the same control says. */
+    template <class U>
+    friend bool operator==(const aligning_allocator& a, const aligning_allocator<U>& b) noexcept {
+        return a.control_ == b.control();
+    }
+
+private:
+    /** The bytes past a 16-aligned address it hands out. */
+    [[nodiscard]] std::size_t offset() const noexcept { return control_->under_align ? 8 : 0; }
+
+    alignment_control* control_;
+};
+
+/** The tag a @ref tagging_allocator's pointers carry, which an address alone does not give. */
+constexpr std::uint64_t pointer_tag = 0x5ea1;
+
+/**
+ A pointer that is not a plain one, as an allocator of a segment of shared memory may hand out:
+ an address and a tag, which a pointer rebuilt from the address alone does not carry.
+*/
+template <class T>
+class tagged_pointer {
+public:
+    /** The type pointed to. */
+    using element_type = T;
+
+    /** A difference of pointers. */
+    using difference_type = std::ptrdiff_t;
+
+    /** A null pointer. */
+    tagged_pointer() noexcept = default;
+
+    // A null pointer converts to it implicitly, as the NullablePointer requirements ask.
+    /** A null pointer. */
+    // NOLINTNEXTLINE(misc-explicit-constructor)
+    tagged_pointer(std::nullptr_t /*null*/) noexcept {}
+
+    /** The pointer to `address` that carries `tag`. */
+    tagged_pointer(T* address, std::uint64_t tag) noexcept : address_(address), tag_(tag) {}
+
+    /** What `std::pointer_traits` rebuilds from an object alone: its address, with no tag. */
+    template <class U = T>
+    static tagged_pointer pointer_to(U& object) noexcept {
+        return tagged_pointer(std::addressof(object), 0);
+    }
+
+    /** The address. */
+    T* operator->() const noexcept { return address_; }
+
+    /** Whether it is not null. */
+    explicit operator bool() const noexcept { return address_ != nullptr; }
+
+    /** The tag. */
+    [[nodiscard]] std::uint64_t tag() const noexcept { return tag_; }
+
+    /** Whether two pointers have the same address and tag. */
+    friend bool operator==(const tagged_pointer& a, const tagged_pointer& b) noexcept = default;
+
+private:
+    T* address_ = nullptr;
+    std::uint64_t tag_ = 0;
+};
+
+/** What a @ref tagging_allocator counts. */
+struct tag_counts {
+    /** The allocations it made. */
+    std::uint64_t allocations = 0;
+
+    /** The deallocations it made. */
+    std::uint64_t deallocations = 0;
+
+    /** The deallocations given a pointer without the tag it handed out. */
+    std::uint64_t untagged = 0;
+};
+
+/**
+ An allocator whose pointer to the image's blocks is a @ref tagged_pointer, and to anything else a
+ plain one: it counts a block given back through a pointer that lost its tag.
+*/
+template <class T>
+class tagging_allocator {
+public:
+    /** Whether its pointer is tagged: for the image's blocks. */
+    static constexpr bool tagged = std::same_as<T, wd::detail::image_block>;
+
+    /** The type allocated. */
+    using value_type = T;
+
+    /** Its pointer. */
+    using pointer = std::conditional_t<tagged, tagged_pointer<T>, T*>;
+
+    /** An allocator that counts in `counts`, which outlives it. */
+    explicit tagging_allocator(tag_counts* counts) noexcept : counts_(counts) {}
+
+    // The Allocator requirements convert an allocator to its rebound type implicitly.
+    /** The same allocator for another type. */
+    template <class U>
+    // NOLINTNEXTLINE(misc-explicit-constructor)
+    tagging_allocator(const tagging_allocator<U>& other) noexcept : counts_(other.counts()) {}
+
+    /** Room for `n` objects of `T`, aligned for `T`. */
+    pointer allocate(std::size_t n) {
+        ++counts_->allocations;
+        auto* p = static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t{alignof(T)}));
+        if constexpr (tagged) {
+            return pointer(p, pointer_tag);
+        } else {
+            return p;
+        }
+    }
+
+    /** Gives back what @ref allocate made, counting a pointer that lost its tag. */
+    void deallocate(pointer p, std::size_t /*n*/) noexcept {
+        ++counts_->deallocations;
+        if constexpr (tagged) {
+            counts_->untagged += p.tag() == pointer_tag ? 0 : 1;
+            ::operator delete(p.operator->(), std::align_val_t{alignof(T)});
+        } else {
+            ::operator delete(p, std::align_val_t{alignof(T)});
+        }
+    }
+
+    /** The counts. */
+    [[nodiscard]] tag_counts* counts() const noexcept { return counts_; }
+
+    /** Whether two allocators count in the same place. */
+    template <class U>
+    friend bool operator==(const tagging_allocator& a, const tagging_allocator<U>& b) noexcept {
+        return a.counts_ == b.counts();
+    }
+
+private:
+    tag_counts* counts_;
 };
 
 /** The bytes of `d`'s image, copied. */
@@ -273,6 +462,88 @@ void any_allocator() {
     BOOST_TEST_EQ(counts.deallocations, 3U);
 }
 
+// An allocator that gives the image a block not aligned to 16 has it given back, and the operation
+// is errc::capacity with nothing changed: a document that cannot be made, read from an image,
+// grown, shrunk, compacted or copied; a heap at another alignment would put its first block where
+// the tree does not look for it. The allocator is given back every block it made.
+void under_aligned_image_is_capacity() {
+    using storage = wd::basic_owned<aligning_allocator<std::byte>>;
+    using document = wd::basic_document<wd::default_traits, storage>;
+    alignment_control control;
+    const aligning_allocator<std::byte> alloc(&control);
+    const wd::document source = sample();
+    {
+        control.under_align = true;
+        BOOST_TEST(document::create(alloc).error() == wd::errc::capacity);
+        BOOST_TEST(wd::from_image(source.image(), alloc).error() == wd::errc::capacity);
+        BOOST_TEST_EQ(control.allocations, 2U);
+        BOOST_TEST_EQ(control.deallocations, 2U);
+
+        control.under_align = false;
+        auto made = wd::from_image(source.image(), alloc);
+        require(BOOST_TEST(made.has_value()));
+        BOOST_TEST(made->reserve(16384).has_value());
+        const std::vector<std::byte> before = bytes_of(*made);
+        control.under_align = true;
+        BOOST_TEST(made->reserve(65536).error() == wd::errc::capacity);
+        BOOST_TEST(made->shrink_to_fit().error() == wd::errc::capacity);
+        BOOST_TEST(made->compact().error() == wd::errc::capacity);
+        BOOST_TEST(made->clone().error() == wd::errc::capacity);
+        BOOST_TEST_EQ(made->capacity(), 16384U);
+        BOOST_TEST(bytes_of(*made) == before);
+        BOOST_TEST(made->root()["name"].set("changed").has_value());
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+        // A move assignment between allocators that differ copies the image, and has no result to
+        // return the failure in: it throws std::bad_alloc and leaves both documents as they were.
+        alignment_control other_control;
+        auto target = document::create(aligning_allocator<std::byte>(&other_control));
+        require(BOOST_TEST(target.has_value()));
+        other_control.under_align = true;
+        const std::vector<std::byte> target_before = bytes_of(*target);
+        const std::vector<std::byte> source_before = bytes_of(*made);
+        bool thrown = false;
+        try {
+            *target = std::move(*made);
+        } catch (const std::bad_alloc&) {
+            thrown = true;
+        }
+        BOOST_TEST(thrown);
+        BOOST_TEST(bytes_of(*target) == target_before);
+        BOOST_TEST(bytes_of(*made) == source_before);
+        other_control.under_align = false;
+#endif
+    }
+    BOOST_TEST_EQ(control.allocations, control.deallocations);
+}
+
+// An allocator whose pointer is not a plain one is given back the very pointers it handed out, tag
+// and all: the image's pointer is kept as the allocator gave it, never rebuilt from an address,
+// whether the image is made, grown, changed, shrunk, compacted, copied or moved.
+void fancy_pointers_kept() {
+    tag_counts counts;
+    using storage = wd::basic_owned<tagging_allocator<std::byte>>;
+    using document = wd::basic_document<wd::default_traits, storage>;
+    const tagging_allocator<std::byte> alloc(&counts);
+    {
+        auto made = document::create(alloc);
+        require(BOOST_TEST(made.has_value()));
+        BOOST_TEST(made->reserve(65536).has_value());
+        BOOST_TEST(made->root()
+                       .set(wd::object{{"name", "document"}, {"list", wd::array{1, 2}}})
+                       .has_value());
+        BOOST_TEST(made->shrink_to_fit().has_value());
+        BOOST_TEST(made->compact().has_value());
+        auto copy = made->clone();
+        require(BOOST_TEST(copy.has_value()));
+        document moved(std::move(*made));
+        *copy = std::move(moved);
+        BOOST_TEST(copy->root()["name"].get<std::string_view>().value() == "document");
+    }
+    BOOST_TEST_GT(counts.allocations, 0U);
+    BOOST_TEST_EQ(counts.allocations, counts.deallocations);
+    BOOST_TEST_EQ(counts.untagged, 0U);
+}
+
 // A document that holds nothing allocates nothing, in its allocator or the global heap, reads as a
 // moved-from document does, refuses a change and a copy with errc::type, and takes an image by a
 // move assignment.
@@ -367,6 +638,8 @@ int main() {
     clone_into_resources();
     external_carries_allocator();
     any_allocator();
+    under_aligned_image_is_capacity();
+    fancy_pointers_kept();
     holding_nothing<wd::pmr::owned>();
     holding_nothing<wd::pmr::external>();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS

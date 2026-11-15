@@ -58,12 +58,19 @@ containers: `wd::pmr::document`, the default traits' document of `wd::pmr::owned
 allocator, and `get_allocator()` returns a copy of it.
 
 *An owned image* is allocated, grown and freed through the allocator rebound to blocks of 16 bytes,
-16-aligned, `std::allocator_traits<Allocator>::rebind_alloc` of a block, so that any allocator gives
-the image the alignment its heap needs: a memory resource is asked for an alignment of 16. The image
-grows by doubling, as <<document-images-reserve>> says, a new buffer allocated before the old one is
-freed. A monotonic resource never reuses what was freed, so an image built large in one is sized
-once with `reserve`. The standard allocator's image comes from the global aligned `operator new` in
-its form that returns null.
+16-aligned, `std::allocator_traits<Allocator>::rebind_alloc` of a block, so that the allocator is
+asked for the alignment the image's heap needs: a memory resource is asked for an alignment of 16,
+which it gives. The allocator must give it. A 16-aligned block is over-aligned wherever
+`std::max_align_t`'s alignment is 8, as on arm64 macOS and on MSVC, and an allocator that ignores an
+over-aligned request may give less: a buffer that is not 16-aligned is given back at once, and the
+operation returns `errc::capacity` and changes nothing, as when the allocator has no room. The
+allocator's pointer to the image is kept as the allocator gave it, and the image is given back
+through it: an allocator whose pointer is not a plain one, which may carry a segment or a tag
+besides an address, gets back what it handed out. Inside the image, every pointer is an offset
+(<<document-allocators-shareable>>). The image grows by doubling, as <<document-images-reserve>>
+says, a new buffer allocated before the old one is freed. A monotonic resource never reuses what was
+freed, so an image built large in one is sized once with `reserve`. The standard allocator's image
+comes from the global aligned `operator new` in its form that returns null.
 
 *The working state* of every operation on a document, owned or external, is in the same allocator,
 rebound: the records a change stages before it changes anything, the stack of a deep copy and of a
