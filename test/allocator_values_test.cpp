@@ -564,8 +564,10 @@ constexpr std::uint64_t unlimited = std::numeric_limits<std::uint64_t>::max();
 
 /**
  Runs `op` on a fresh copy of the document `json` in a resource that fails from its allocation
- `budget` on, for each budget from 0 until `op` succeeds: each failure must be errc::capacity with
- the document as it was. Returns how many budgets failed.
+ `budget` on, for each budget from 0 until `op` succeeds: each failure must be errc::capacity, the
+ resource's one refusal, with the document's content as it was and every byte the operation took
+ before the refusal given back, so that a leak on a path of failure fails. Returns how many budgets
+ failed.
 */
 template <class Traits, class Op>
 std::uint64_t fails_softly(const std::string& json, Op op) {
@@ -579,14 +581,19 @@ std::uint64_t fails_softly(const std::string& json, Op op) {
         failing.allow(unlimited);
         auto d = wd::from_image<Traits>(source.image(), alloc);
         require(BOOST_TEST(d.has_value()));
+        const std::uint64_t held = failing.bytes_in_use();
+        const std::uint64_t refused = failing.refusals();
         failing.allow(budget);
         const boost::system::error_code done = op(*d);
         failing.allow(unlimited);
         if (!done) {
+            BOOST_TEST_EQ(failing.refusals(), refused);
             BOOST_TEST_GT(failures, 0U);
             return failures;
         }
         BOOST_TEST(done == wd::errc::capacity);
+        BOOST_TEST_EQ(failing.refusals(), refused + 1);
+        BOOST_TEST_EQ(failing.bytes_in_use(), held);
         BOOST_TEST_EQ(d->root().stringify(), before);
         ++failures;
     }

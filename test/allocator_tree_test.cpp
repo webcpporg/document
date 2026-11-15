@@ -56,6 +56,18 @@ using pmr_tree = detail::tree<Traits, pmr_allocator>;
 
 constexpr std::size_t mebibyte = std::size_t{1} << 20U;
 
+/** The default traits, but every object's keys in order of their UTF-16 code units. */
+struct sorted_traits : wd::default_traits {
+    /** Keys sorted. */
+    using object = wd::sorted;
+};
+
+/** JavaScript's traits, but every object's keys in the order they were inserted. */
+struct insertion_traits : wd::js_traits {
+    /** Keys in insertion order. */
+    using object = wd::insertion_order;
+};
+
 /** The size an image here may grow to. */
 constexpr std::uint64_t max_bytes = std::uint64_t{64} << 20U;
 
@@ -451,7 +463,17 @@ void tree_operations_in_resource() {
         require(BOOST_TEST(assigned != nullptr));
         BOOST_TEST_EQ(assigned->id, first);
         BOOST_TEST_EQ(assigned->template load<std::int64_t>(), 3);
-        BOOST_TEST_EQ(f.t.next_sibling(*assigned)->id, x->id);
+        if constexpr (std::same_as<typename Traits::object, wd::sorted>) {
+            // Sorted keys take their places by their bytes, UTF-8 and UTF-16 alike here.
+            std::string_view previous;
+            for (const detail::node<Traits>* n = f.t.first_child(root); n != nullptr;
+                 n = f.t.next_sibling(*n)) {
+                BOOST_TEST(previous < n->key.chars());
+                previous = n->key.chars();
+            }
+        } else {
+            BOOST_TEST_EQ(f.t.next_sibling(*assigned)->id, x->id);
+        }
         const std::uint64_t literal = id_of(f.t, root, "inner");
         BOOST_TEST_EQ(f.t.count(literal), 2U);
         BOOST_TEST(f.t.member(literal, keys[2]) != nullptr);
@@ -819,9 +841,19 @@ int main() {
     copies_in_resource<wd::js_traits>();
     tree_operations_in_resource<wd::default_traits>();
     tree_operations_in_resource<wd::js_traits>();
+    members_in_resource<sorted_traits>();
+    members_in_resource<insertion_traits>();
+    arrays_in_resource<sorted_traits>();
+    arrays_in_resource<insertion_traits>();
+    copies_in_resource<sorted_traits>();
+    copies_in_resource<insertion_traits>();
+    tree_operations_in_resource<sorted_traits>();
+    tree_operations_in_resource<insertion_traits>();
     lookups_by_utf8_keys();
     erasures_allocate_nothing<wd::default_traits>();
     erasures_allocate_nothing<wd::js_traits>();
+    erasures_allocate_nothing<sorted_traits>();
+    erasures_allocate_nothing<insertion_traits>();
     erasures_keep_the_image<wd::default_traits>({
         0x38c76b4a395b0326,
         0x2c14970cfa6dc330,
@@ -853,6 +885,10 @@ int main() {
     handles_fail_softly<wd::js_traits>();
     tree_fails_softly<wd::default_traits>();
     tree_fails_softly<wd::js_traits>();
+    handles_fail_softly<sorted_traits>();
+    handles_fail_softly<insertion_traits>();
+    tree_fails_softly<sorted_traits>();
+    tree_fails_softly<insertion_traits>();
 #endif
     return boost::report_errors();
 }
