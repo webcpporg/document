@@ -77,6 +77,22 @@ document's tests are lightweight_test programs, one per subject, under `test/`, 
   operations, no byte left of an erased secret, shrunk, a full external buffer, a buffer that is
   not 16-aligned, and a header whose container offset lies.
 
+| `allocator`
+| A document's allocator, with the global `operator new` counted: the image created, grown, shrunk,
+  cloned, moved and move-assigned in a memory resource and between two, with no call of it; the
+  same image in any allocator, one of the test's own among them; external documents that carry
+  their allocator; the copy's allocator; and, with exceptions, an allocator with no room,
+  `errc::capacity` with nothing changed (<<document-allocators-proof>>).
+
+| `allocator_tree`, `allocator_values`, `allocator_parse`, `allocator_stringify`
+| The working state of each operation in the document's allocator, with no call of the global
+  `operator new`: what a change stages and compaction's walk; the handles, missing members' keys,
+  deep equality, `Object.assign`, the array methods and the containers' views; a whole text parsed,
+  with selectors and revivers; `stringify_to` into a `std::pmr::string`. A parse in chunks calls it
+  exactly as often as Boost.JSON's stack grows, and `stringify` as often as its string does. Both
+  traits, strings and keys longer than any small-string buffer, and, with exceptions, a resource
+  that fails at each allocation in turn, every failure `errc::capacity` with the document unchanged.
+
 | `stringify`
 | `stringify` and `stringify_to` against Node's text: indentation, empty containers, escapes,
   numbers, dates, bytes under each policy, a lone surrogate under `js_traits`, an undefined root,

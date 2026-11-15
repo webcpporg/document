@@ -1,0 +1,283 @@
+// Copyright (c) 2026 WebCpp.org
+//
+// Distributed under the Boost Software License, Version 1.0. (See
+// accompanying file LICENSE_1_0.txt or copy at
+// https://www.boost.org/LICENSE_1_0.txt)
+
+[#document-allocators]
+== Allocators
+
+A document's storage carries an allocator, as a standard container does, and the document allocates
+through it: its image, when it owns one, and the working state of every operation on it. The
+default is `std::allocator<std::byte>`, the global heap. A program that gives a
+`std::pmr::memory_resource` instead keeps a document's memory where it chooses: in a buffer of its
+own, in an arena released at the end of a request, or in a resource that counts. This section names
+the storages, shows a document in a resource, lists how documents are made in an allocator, how
+moves and copies treat it and what happens when it has no room, names what stays outside it, and
+says which of document's types can be shared between processes.
+
+[#document-allocators-storages]
+=== The storages
+
+A document's second template parameter is its storage, `wd::basic_owned<Allocator>` or
+`wd::basic_external<Allocator>`, of any allocator of `std::byte`:
+
+[cols="2,2,3",options="header"]
+|===
+| Storage | Allocator | The image
+
+| `wd::owned`, the default
+| `std::allocator<std::byte>`
+| the document's own, from the global aligned `operator new`
+
+| `wd::external`
+| `std::allocator<std::byte>`
+| a buffer its user owns (<<document-images-storage>>)
+
+| `wd::pmr::owned`
+| `std::pmr::polymorphic_allocator<std::byte>`
+| the document's own, from the allocator's `std::pmr::memory_resource`
+
+| `wd::pmr::external`
+| `std::pmr::polymorphic_allocator<std::byte>`
+| a buffer its user owns
+
+| `wd::basic_owned<Allocator>`
+| any allocator of `std::byte`, a stateful one of the program's own among them
+| the document's own, from the allocator
+
+| `wd::basic_external<Allocator>`
+| any allocator of `std::byte`
+| a buffer its user owns
+|===
+
+The namespace `wd::pmr` names the rest for a memory resource, as `std::pmr` does for the standard
+containers: `wd::pmr::document`, the default traits' document of `wd::pmr::owned`;
+`wd::pmr::basic_document<Traits>`, the same for other traits; its handles `wd::pmr::value` and
+`wd::pmr::const_value`; and its parser, `wd::pmr::parser`. A document's `allocator_type` names the
+allocator, and `get_allocator()` returns a copy of it.
+
+*An owned image* is allocated, grown and freed through the allocator rebound to blocks of 16 bytes,
+16-aligned, `std::allocator_traits<Allocator>::rebind_alloc` of a block, so that any allocator gives
+the image the alignment its heap needs: a memory resource is asked for an alignment of 16. The image
+grows by doubling, as <<document-images-reserve>> says, a new buffer allocated before the old one is
+freed. A monotonic resource never reuses what was freed, so an image built large in one is sized
+once with `reserve`. The standard allocator's image comes from the global aligned `operator new` in
+its form that returns null.
+
+*The working state* of every operation on a document, owned or external, is in the same allocator,
+rebound: the records a change stages before it changes anything, the stack of a deep copy and of a
+compaction, the parser's frames, path and pending text, its selectors and their callbacks, the
+writer's stack and the piece it holds back for its sink, the key a handle of a missing member
+holds, the buffers in which a value is prepared to be stored, and the keys `Object.assign` takes
+from its source. For an external document that is all the allocator holds. A lookup by key
+allocates nothing, whatever the key's length, and neither does a comparison with `==`, which walks
+both trees through their nodes' links, nor an erasure, `delete` of a member, `pop_back` or a
+truncation, which lists the nodes it erases through the erased nodes themselves and so cannot fail.
+
+[#document-allocators-resource]
+=== A document in a resource
+
+This program gives a document 64 KiB of its own memory, through a
+`std::pmr::monotonic_buffer_resource` whose upstream is `std::pmr::null_memory_resource()`, which
+refuses every allocation: what passes the buffer's end fails, and nothing of the document reaches
+the global heap. It parses a text into a `wd::pmr::document`, changes it, and writes it with
+`stringify_to` into a `std::pmr::string` of the same resource:
+
+[source]
+----
+include::{examples}/document_allocators.cpp[tag=resource,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_allocators.expected[lines=1]
+----
+
+The program's output is {cpp}'s alone: its JSON text is what Node prints for the same steps, and its
+other lines say where each document lives, which JavaScript does not show.
+
+[#document-allocators-making]
+=== Making documents in an allocator
+
+Each way to make a document has a form that takes its allocator:
+
+[cols="2,3",options="header"]
+|===
+| Call | The document
+
+| `wd::pmr::document::create(alloc, max_bytes)`, the static `create` of any owned document's type
+| a new owned document, holding `null`
+
+| `wd::parse(text, options, alloc)`
+| the document of a JSON text (<<document-parsing>>)
+
+| `wd::parse_into(buffer, text, options, alloc)`
+| the same in a buffer of the program's, the allocator holding the working state
+
+| `wd::basic_parser<Traits, Storage>(options, alloc)`, or `(buffer, options, alloc)` for an external
+  document
+| the document a parser builds, the parser's own working state in the same allocator
+  (<<document-parsing-chunks>>)
+
+| `wd::from_image(bytes, alloc)`
+| an owned copy of an image (<<document-images-bytes>>)
+
+| `wd::format(buffer, alloc)`, `wd::open(buffer, alloc)`
+| an external document, formatted or opened in place
+
+| `doc.clone()`, `doc.clone(alloc)`
+| a copy, owned, in the document's own allocator or in the one given
+
+| `wd::pmr::document::nothing(alloc)`, the static `nothing` of any document's type
+| a document that holds nothing, as a moved-from one does: no image, nothing allocated and no
+  failure, its root reading `undefined`, a change and `clone` refused with `errc::type`, until a
+  move assignment gives it an image
+
+| `doc.compact_into(buffer)`
+| the compact image in a buffer, an external document in the document's allocator
+  (<<document-images-compact>>)
+
+| `pop`, `shift`, `splice`, `slice`, `concat`
+| the values they return, owned documents in the source's allocator, an external source's
+  included (<<document-arrays>>)
+|===
+
+`clone(alloc)` copies a document into another allocator, which is how a document crosses from one
+resource to another. The copy below is made in a second buffer, where it changes alone, and
+`stringify_to` writes it to the standard output piece by piece, with no text kept whole:
+
+[source]
+----
+include::{examples}/document_allocators.cpp[tag=clone,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_allocators.expected[lines=2..3]
+----
+
+[#document-allocators-moves]
+=== Moves and copies
+
+A document is allocator-aware as the standard containers are:
+
+* *A move* takes the image and the allocator. The document moved from holds nothing.
+* *A move assignment* takes the image when the allocator propagates on a move assignment, or when
+  two of its allocators are always equal, as the standard allocator's are. Polymorphic allocators
+  of different resources do neither: an owned image is then copied into the target's resource, one
+  copy of its bytes, the source's image is freed in its own resource, and the source holds nothing
+  after it. An external image, which no allocator holds, is taken as it is. The copy can fail, and
+  an assignment has no result to return the failure in: it throws `std::bad_alloc` through
+  `boost::throw_exception`, and leaves both documents as they were; without exceptions,
+  `boost::throw_exception` is the program's own, which does not return. For allocators that
+  propagate or are always equal, the move assignment is `noexcept`.
+* *The copy constructor,* with exceptions only (<<document-exceptions>>), asks the allocator's
+  `select_on_container_copy_construction`, which for a polymorphic allocator gives the default
+  resource, `std::pmr::get_default_resource()`, and not the source's. The allocator-extended copy,
+  `wd::pmr::document copy(doc, alloc);`, takes the allocator given, and
+  `wd::pmr::document empty(alloc);` makes a document holding `null` in it.
+
+The program's first document is assigned the copy, of the second resource, by a move: the image is
+copied into the first resource, at its 4,096 bytes, and the copy holds nothing after it:
+
+[source]
+----
+include::{examples}/document_allocators.cpp[tag=move,indent=0]
+----
+
+[listing]
+----
+include::{examples}/document_allocators.expected[lines=4..5]
+----
+
+[#document-allocators-failure]
+=== When an allocator has no room
+
+*With exceptions,* an allocator that has no room throws `std::bad_alloc`, and the document catches
+it where the operation can still return: the operation returns `errc::capacity` and changes
+nothing, as for a full image. A change allocates all of its working state before its first change
+to the document, which then changes by steps that cannot allocate, so a failure at any of its
+allocations leaves the document as it was. A few places have their own way to say it:
+
+* a parser that runs out fails with `errc::capacity` and stays failed until `reset()`, as after
+  any error, and a selector it has no room for is not added: `on` and `observe` return
+  `errc::capacity`;
+* `stringify_to` stops with `errc::capacity`, its sink not called again, so the sink holds a part
+  of the text;
+* a handle of a missing member whose key finds no room reads `undefined`, and a change through it
+  is `errc::capacity`;
+* what has no result to return the failure in throws `std::bad_alloc`: `stringify`, whose result is
+  the text, and the move assignment between allocators that differ (<<document-allocators-moves>>);
+  and the sugar throws its `wd::capacity_error` (<<document-exceptions>>).
+
+*Without exceptions,* an allocator cannot return null, so an allocator that fails ends the program,
+as it does for any standard container. A program built without exceptions sizes its resource for
+what it does, as the example's 64 KiB are sized for its documents, or gives the resource an upstream
+that does not fail. The standard allocator's image is the exception: the `operator new` it comes
+from returns null, so an image the global heap has no room for is `errc::capacity` in either build.
+
+[#document-allocators-outside]
+=== What stays outside the allocator
+
+A few allocations are not in the document's allocator, each for a reason of its own:
+
+* *A parse in chunks.* When a chunk ends inside a value, Boost.JSON's parser saves where it stopped
+  on a stack of its own, so that the next chunk resumes there, and allocates that stack in the
+  global heap: Boost.JSON offers no way to place it. It allocates once at the first suspension,
+  and again at each suspension deeper than every earlier one, and keeps the last stack until the
+  parser is destroyed, across `reset()`. A complete text, given to `wd::parse`, to `wd::parse_into`
+  or to the `finish(last)` of a parser that was given no text before, never suspends, and
+  allocates nothing there.
+* *What the program gets back.* A value returned to the program is of the program's own type, in
+  the standard allocator: the `std::string` that `stringify` returns, the `std::string` of
+  `get<std::string>()` and the other reads into a type that owns its memory, the text of
+  `path_view::to_string()`, the message of an error code, and the exceptions of the sugar, which
+  hold that message. `get` is `noexcept`, so the standard allocator's failure in a read ends the
+  program. `stringify_to` writes to a sink, and so into a string of the program's choosing, as the
+  example's `std::pmr::string` is.
+* *Literals.* `wd::object`, `wd::array` and `wd::literal` hold their values in the standard
+  allocator, as the program builds them. Storing one copies it into the document, in the document's
+  allocator.
+* *Streams and pools.* The streams of documents, `wd::basic_stream_parser` and
+  `wd::async_read_document` (<<document-streams>>), and the shared and leased documents,
+  `wd::shared_document` and `wd::leased_document` (<<document-sharing>>, <<document-wire>>), keep
+  the default storage: their documents are `wd::owned` or `wd::external`. A `wd::image_pool`
+  allocates its blocks once, from the global heap; a `wd::shared_pool` formats memory the program
+  gives.
+
+[#document-allocators-shareable]
+=== What can be shared
+
+A shareable type is one that can be built in memory that several processes map, each at an address
+of its own, and used there in place. document's is the image. Every pointer inside it is an offset
+from where it is stored, and every size a 64-bit integer, so it is relocatable and the same bytes at
+any address and on every target (<<document-images>>): a `wd::shared_pool` in a segment of shared
+memory, the blocks of a `wd::image_pool`, `wd::open` over bytes another process wrote,
+`wd::from_image` of them, and external storage over a segment of shared memory all use it as it is.
+
+A `basic_document` object is not shareable, nor are its handles, its parsers, its writers or the
+views of the pools: each holds addresses of the process that made it, the image's and its
+allocator's among them. Each process that maps an image opens it with a document of its own
+(<<document-sharing-processes>>).
+
+[#document-allocators-proof]
+=== How it is proven
+
+The tests `allocator`, `allocator_tree`, `allocator_values`, `allocator_parse` and
+`allocator_stringify` replace the global `operator new` and `operator delete`, every form, and count
+their calls. Each runs the operations it lists on documents in a counting resource over a monotonic
+buffer whose upstream is the null resource, and checks that they made no call of the global
+`operator new` and that the resource is given back all it handed out: the image made, grown, copied
+and moved; the tree's changes and compaction; the handles, the conversions, `Object.assign`, the
+array methods and the containers' views; a parse of a whole text, with selectors and revivers; and
+`stringify_to` into a `std::pmr::string` of the same resource, at every indent and chunk, a
+document nested 10,000 levels deep among them. Where the global heap is reached on purpose, the
+count is exact: a parse in chunks calls `operator new` as often as Boost.JSON's stack grows, and
+`stringify` as often as its `std::string` does. With exceptions, each operation runs again over a
+resource that fails at its first allocation, then its second, and so on until the operation
+succeeds, and every failure must be `errc::capacity`, or the `std::bad_alloc` of the places that
+throw it, with the document equal to what it was. Both traits are covered, `js_traits` with its
+UTF-16 strings and keys among them, with strings and keys longer than any small-string buffer. The
+tests run on every target, natively, on emscripten, and for wasm32-wasip2 and wasm32-wasip3
+(<<document-testing>>).

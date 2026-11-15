@@ -35,7 +35,8 @@ unchanged, in its own category.
 | `wd::range_error`
 
 | `capacity`, 4
-| no room: a full external buffer, an owned document at its `max_bytes`, a parser's limit
+| no room: a full external buffer, an owned document at its `max_bytes`, a parser's limit, an
+  allocator that has none, with exceptions (<<document-allocators-failure>>)
 | none; `RangeError` from the module
 | `wd::capacity_error`
 
@@ -90,8 +91,11 @@ include::{examples}/document_no_exceptions.cpp[tag=compare,indent=0]
 include::{examples}/document_no_exceptions.expected[lines=9]
 ----
 
-A failure of the process heap is not an error value. The image's heap is never exhausted by
-surprise, since every operation finds its room first, but a few things live on the process heap:
-the text `stringify` returns, the key a handle of a missing member holds, and the parser's frames.
-The standard library's `std::bad_alloc` there is thrown with exceptions and ends the program
-without them, as it does for any {cpp} container.
+The image's heap is never exhausted by surprise, since every operation finds its room first, and
+the working state of an operation, the records of a change, the parser's frames and the key a
+handle of a missing member holds among them, is in the document's allocator. With exceptions, an
+allocator that has no room is `errc::capacity`, and the operation changes nothing; without them, an
+allocator that fails ends the program, as it does for any {cpp} container
+(<<document-allocators-failure>>). What the program gets back in the standard allocator, the text
+`stringify` returns among them, fails as any `std::string` does, with `std::bad_alloc`
+(<<document-allocators-outside>>).

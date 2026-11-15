@@ -15,8 +15,10 @@ document's parser never throws: its input is the network's, and every failure is
 
 `wd::parse<Traits>` parses into a document of other traits, as `wd::parse<wd::js_traits>(text)`
 does in <<document-numbers>>; `wd::parse_into(buffer, text)` parses into a buffer the program owns
-(<<document-images>>); and `wd::parse_or_throw(text)`, with exceptions only, throws as
-`JSON.parse` does (<<document-exceptions>>).
+(<<document-images>>); `wd::parse(text, options, alloc)` and
+`wd::parse_into(buffer, text, options, alloc)` parse into a document of an allocator's, which holds
+the parse's working state too (<<document-allocators>>); and `wd::parse_or_throw(text)`, with
+exceptions only, throws as `JSON.parse` does (<<document-exceptions>>).
 
 [#document-parsing-options]
 === Limits and revivers
@@ -71,8 +73,9 @@ builds itself, with `create`, keeps a limit of 1 GiB (<<document-images>>).
 `wd::parser` is the parser itself, `wd::basic_parser<Traits, Storage>` for other traits or a
 buffer of the program's: `write(chunk)` takes the text in chunks of any size, split anywhere,
 inside a string, a number, an escape or a character's bytes, down to one byte at a time, and
-`finish()` ends the text and returns the document. The document a parser builds is the one a
-whole parse builds, however the text is split:
+`finish()` ends the text and returns the document; `finish(last)` takes a last chunk, or the whole
+text, and ends it. The document a parser builds is the one a whole parse builds, however the text
+is split:
 
 [source]
 ----
@@ -86,7 +89,11 @@ include::{examples}/document_streaming.expected[lines=1]
 
 The parser builds the document node by node as each chunk arrives, so the document may grow and
 its image move between two chunks; `finish` returns it. `reset()` makes the parser ready for
-another text, its selectors kept (<<document-selectors>>).
+another text, its selectors kept (<<document-selectors>>). The parser's working state, its frames,
+the path and the pending text of a value, and its selectors and their callbacks, is in its
+document's allocator, a memory resource's for `wd::pmr::parser`. The stack where Boost.JSON's
+parser saves its place when a chunk ends inside a value is in the global heap; a text given whole
+to `finish(last)`, as `wd::parse` gives it, never needs one (<<document-allocators-outside>>).
 
 [#document-parsing-errors]
 === Errors and offsets
@@ -94,7 +101,9 @@ another text, its selectors kept (<<document-selectors>>).
 Malformed text is `errc::syntax`, JavaScript's `SyntaxError`. `offset()` is the count of bytes
 consumed, which after a syntax error is the offset where it was found, the same however the text
 was split, and `cause()` is the code of Boost.JSON's parser behind it. A number the traits refuse
-is `errc::range` (<<document-numbers-refused>>), and a limit passed `errc::capacity`.
+is `errc::range` (<<document-numbers-refused>>), and a limit passed `errc::capacity`, as is, with
+exceptions, an allocator that has no room for the document or for the parse's working state
+(<<document-allocators-failure>>).
 
 A parser reads one text: anything but whitespace after it is `errc::syntax`, whose `cause()` is
 Boost.JSON's `extra_data`, at the offset where the second text begins, whether it comes in the same

@@ -16,6 +16,10 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* Added allocators to the storages, `pmr::document` among them, holding the image and every
+  operation's working state.
+* Improved allocation failures: with exceptions, an allocator with no room returns
+  `errc::capacity` and changes nothing.
 * Added `quote`, which appends a string to a string of the caller's as `JSON.stringify` quotes it.
 // end::unreleased[]
 
