@@ -204,7 +204,7 @@ result<basic_document<Traits, basic_owned<Allocator>>> splice_elements(
     } else {
         removed = bad_alloc_as_capacity([&] {
             std::vector<literal_entry<Traits>, rebound<Allocator, literal_entry<Traits>>> entries(
-                t.get_allocator());
+                rebound<Allocator, literal_entry<Traits>>(t.get_allocator()));
             entries.reserve(static_cast<std::size_t>(n));
             copy_elements<Traits>(t, array, at, n, entries);
             return owned_holding(array_of<Traits>(entries), t.get_allocator());
@@ -357,7 +357,8 @@ result<basic_document<Traits, detail::owned_of<Storage>>> basic_const_value<Trai
     return detail::bad_alloc_as_capacity([&] {
         std::vector<detail::literal_entry<Traits>,
                     detail::rebound<allocator_type, detail::literal_entry<Traits>>>
-            entries(t.get_allocator());
+            entries(
+                detail::rebound<allocator_type, detail::literal_entry<Traits>>(t.get_allocator()));
         if (last > first) {
             entries.reserve(static_cast<std::size_t>(last - first));
             detail::copy_elements<Traits>(t, id, first, last - first, entries);

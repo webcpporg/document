@@ -293,14 +293,15 @@ public:
      @return This document.
      @throws std::bad_alloc When an owned image is copied and this document's allocator has no room
      for it, through `boost::throw_exception`, as a failure that cannot be returned: never for
-     allocators that propagate or are always equal, the standard one among them, for which it is
-     `noexcept`.
+     allocators that propagate or are always equal, the standard one among them, nor for an
+     external document, whose image no allocator holds, for which it is `noexcept`.
      @see "Allocators", in the guide.
     */
-    // It is noexcept only for allocators that propagate or are always equal, which never take
-    // the copy, the one path that throws.
+    // It is noexcept for allocators that propagate or are always equal and for an external
+    // document, none of which takes the copy, the one path that throws.
     // NOLINTNEXTLINE(bugprone-exception-escape)
-    basic_document& operator=(basic_document&& other) noexcept(moves_cheaply) {
+    basic_document& operator=(basic_document&& other) noexcept(moves_cheaply ||
+                                                               detail::external_storage<Storage>) {
         if (this == &other) {
             return *this;
         }

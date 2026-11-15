@@ -180,7 +180,8 @@ A document is allocator-aware as the standard containers are:
   an assignment has no result to return the failure in: it throws `std::bad_alloc` through
   `boost::throw_exception`, and leaves both documents as they were; without exceptions,
   `boost::throw_exception` is the program's own, which does not return. For allocators that
-  propagate or are always equal, the move assignment is `noexcept`.
+  propagate or are always equal, and for an external document, whose image is taken as it is, the
+  move assignment is `noexcept`.
 * *The copy constructor,* with exceptions only (<<document-exceptions>>), asks the allocator's
   `select_on_container_copy_construction`, which for a polymorphic allocator gives the default
   resource, `std::pmr::get_default_resource()`, and not the source's. The allocator-extended copy,

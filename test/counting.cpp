@@ -13,6 +13,7 @@
 
 #include <boost/config.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -37,10 +38,13 @@ void* plain_memory(std::size_t size) noexcept {
 }
 
 // Memory of `size` bytes aligned to `alignment`, or null; the UCRT of MSVC has no aligned_alloc,
-// and memory from its _aligned_malloc is given back with _aligned_free.
+// and memory from its _aligned_malloc is given back with _aligned_free. The aligned operator new
+// takes any power of two, as an allocator of char asks 1; aligned_alloc may refuse one below the
+// fundamental alignment, as macOS's does, so that one is asked at least that.
 void* aligned_memory(std::size_t size, std::align_val_t alignment) noexcept {
     ++news;
-    const auto align = static_cast<std::size_t>(alignment);
+    const std::size_t align =
+        std::max(static_cast<std::size_t>(alignment), alignof(std::max_align_t));
     const std::size_t rounded = size == 0 ? align : (size + align - 1) / align * align;
 #ifdef _MSC_VER
     return _aligned_malloc(rounded, align);

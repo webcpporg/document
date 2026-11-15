@@ -66,7 +66,9 @@ public:
     /** An allocator that counts in `counts`, which outlives it. */
     explicit tallying_allocator(allocator_counts* counts) noexcept : counts_(counts) {}
 
-    // The Allocator requirements convert an allocator to its rebound type implicitly.
+    // The Allocator requirements construct a rebound allocator from this one, `A a(b)`, and ask no
+    // conversion; this one converts implicitly, as std::allocator does, and explicit_allocator
+    // below does not.
     /** The same allocator for another type. */
     template <class U>
     // NOLINTNEXTLINE(misc-explicit-constructor)
@@ -97,6 +99,85 @@ private:
     allocator_counts* counts_;
 };
 
+/**
+ How an allocator of the test's own propagates: on a move assignment, and whether two of them are
+ always equal.
+*/
+enum class propagation : std::uint8_t {
+    /** Neither: a move assignment between two that differ copies the image. */
+    none,
+
+    /** It propagates on a move assignment. */
+    on_move,
+
+    /** Two of them are always equal, whatever they count in. */
+    always_equal,
+};
+
+/**
+ A stateful allocator of the program's own, neither standard nor polymorphic, whose rebinding
+ constructor is explicit, as the Allocator requirements allow: a rebound allocator is constructed
+ from it, `A a(b)`, never converted to. It counts through a pointer, and `How` says how it
+ propagates.
+*/
+template <class T, propagation How = propagation::none>
+class explicit_allocator {
+public:
+    /** The type allocated. */
+    using value_type = T;
+
+    /** Whether it propagates on a move assignment. */
+    using propagate_on_container_move_assignment = std::bool_constant<How == propagation::on_move>;
+
+    /** Whether two of them are always equal. */
+    using is_always_equal = std::bool_constant<How == propagation::always_equal>;
+
+    /** The same allocator for another type. */
+    template <class U>
+    struct rebind {
+        /** The allocator of `U`. */
+        using other = explicit_allocator<U, How>;
+    };
+
+    /** An allocator that counts in `counts`, which outlives it. */
+    explicit explicit_allocator(allocator_counts* counts) noexcept : counts_(counts) {}
+
+    /** The same allocator for another type, constructed from it and never converted to. */
+    template <class U>
+    explicit explicit_allocator(const explicit_allocator<U, How>& other) noexcept
+        : counts_(other.counts()) {}
+
+    /** Room for `n` objects of `T`, aligned for `T`. */
+    T* allocate(std::size_t n) {
+        ++counts_->allocations;
+        return static_cast<T*>(::operator new(n * sizeof(T), std::align_val_t{alignof(T)}));
+    }
+
+    /** Gives back what @ref allocate made. */
+    void deallocate(T* p, std::size_t /*n*/) noexcept {
+        ++counts_->deallocations;
+        ::operator delete(p, std::align_val_t{alignof(T)});
+    }
+
+    /** The counts. */
+    [[nodiscard]] allocator_counts* counts() const noexcept { return counts_; }
+
+    /** Whether two allocators count in the same place, or are always equal. */
+    template <class U>
+    friend bool operator==(const explicit_allocator& a,
+                           const explicit_allocator<U, How>& b) noexcept {
+        return How == propagation::always_equal || a.counts_ == b.counts();
+    }
+
+private:
+    allocator_counts* counts_;
+};
+
+/** A document of `Traits` whose storage owns its image in an @ref explicit_allocator. */
+template <class Traits, propagation How = propagation::none>
+using explicit_document =
+    wd::basic_document<Traits, wd::basic_owned<explicit_allocator<std::byte, How>>>;
+
 /** What an allocator of @ref aligning_allocator does: its counts, and whether it under-aligns. */
 struct alignment_control {
     /** The allocations it made. */
@@ -123,7 +204,7 @@ public:
     /** An allocator that does as `control` says and counts there; `control` outlives it. */
     explicit aligning_allocator(alignment_control* control) noexcept : control_(control) {}
 
-    // The Allocator requirements convert an allocator to its rebound type implicitly.
+    // Implicit, as std::allocator's conversion is: the Allocator requirements ask only `A a(b)`.
     /** The same allocator for another type. */
     template <class U>
     // NOLINTNEXTLINE(misc-explicit-constructor)
@@ -243,7 +324,7 @@ public:
     /** An allocator that counts in `counts`, which outlives it. */
     explicit tagging_allocator(tag_counts* counts) noexcept : counts_(counts) {}
 
-    // The Allocator requirements convert an allocator to its rebound type implicitly.
+    // Implicit, as std::allocator's conversion is: the Allocator requirements ask only `A a(b)`.
     /** The same allocator for another type. */
     template <class U>
     // NOLINTNEXTLINE(misc-explicit-constructor)
@@ -461,6 +542,122 @@ void any_allocator() {
     }
     BOOST_TEST_EQ(counts.allocations, 3U);
     BOOST_TEST_EQ(counts.deallocations, 3U);
+}
+
+// A move assignment is noexcept where it never copies: for the standard allocator, for an external
+// document whatever its allocator, and for an allocator that propagates or is always equal; an
+// owned document of polymorphic allocators, which may differ, may copy and throw.
+static_assert(std::is_nothrow_move_assignable_v<wd::document>);
+static_assert(
+    std::is_nothrow_move_assignable_v<wd::basic_document<wd::default_traits, wd::external>>);
+static_assert(
+    std::is_nothrow_move_assignable_v<wd::basic_document<wd::default_traits, wd::pmr::external>>);
+static_assert(std::is_nothrow_move_assignable_v<
+              explicit_document<wd::default_traits, propagation::always_equal>>);
+static_assert(
+    std::is_nothrow_move_assignable_v<explicit_document<wd::default_traits, propagation::on_move>>);
+static_assert(!std::is_nothrow_move_assignable_v<wd::pmr::document>);
+static_assert(!std::is_nothrow_move_assignable_v<explicit_document<wd::default_traits>>);
+
+// An allocator that propagates on a move assignment is taken with the image: the target's own image
+// is given back to its own allocator, nothing is copied, and the target allocates in the source's
+// allocator from then on.
+void propagating_allocator() {
+    allocator_counts target_counts;
+    allocator_counts source_counts;
+    using document = explicit_document<wd::default_traits, propagation::on_move>;
+    using allocator = explicit_allocator<std::byte, propagation::on_move>;
+    auto target = document::create(allocator(&target_counts));
+    auto source = document::create(allocator(&source_counts));
+    require(BOOST_TEST(target.has_value() && source.has_value()));
+    BOOST_TEST(source->root().set(wd::object{{"name", "document"}}).has_value());
+    const std::byte* image = source->image().data();
+    const std::uint64_t made = source_counts.allocations;
+    *target = std::move(*source);
+    BOOST_TEST(target->image().data() == image);
+    BOOST_TEST(target->get_allocator().counts() == &source_counts);
+    BOOST_TEST_EQ(source_counts.allocations, made);
+    BOOST_TEST_EQ(target_counts.allocations, target_counts.deallocations);
+    BOOST_TEST(target->reserve(65536).has_value());
+    BOOST_TEST_EQ(source_counts.allocations, made + 1);
+    BOOST_TEST((*target)["name"].get<std::string_view>().value() == "document");
+}
+
+// An allocator whose instances are always equal, though each counts in its own place, lets a move
+// assignment take the image as it is, with no copy; what it allocated is given back through the
+// target's, which equals it.
+void always_equal_allocator() {
+    allocator_counts target_counts;
+    allocator_counts source_counts;
+    {
+        using document = explicit_document<wd::default_traits, propagation::always_equal>;
+        using allocator = explicit_allocator<std::byte, propagation::always_equal>;
+        auto target = document::create(allocator(&target_counts));
+        auto source = document::create(allocator(&source_counts));
+        require(BOOST_TEST(target.has_value() && source.has_value()));
+        const std::byte* image = source->image().data();
+        const std::uint64_t made = target_counts.allocations + source_counts.allocations;
+        *target = std::move(*source);
+        BOOST_TEST(target->image().data() == image);
+        BOOST_TEST(target->get_allocator().counts() == &target_counts);
+        BOOST_TEST_EQ(target_counts.allocations + source_counts.allocations, made);
+    }
+    BOOST_TEST_EQ(target_counts.allocations + source_counts.allocations,
+                  target_counts.deallocations + source_counts.deallocations);
+}
+
+// A stateful allocator of the program's own, neither standard nor polymorphic, whose rebinding
+// constructor is explicit, holds the image and every operation's working state, under both traits:
+// a parse whole and in chunks with a selector, the changes through handles, a missing member's key
+// and its copy, Object.assign, the array methods, compaction, a copy, and stringify_to of a value
+// deeper than its stack's own room in chunks larger than its piece's. It is given back all it gave.
+template <class Traits>
+void explicit_rebinding() {
+    allocator_counts counts;
+    const explicit_allocator<std::byte> alloc(&counts);
+    using parser = wd::basic_parser<Traits, wd::basic_owned<explicit_allocator<std::byte>>>;
+    const std::string key(120, 'k');
+    const std::string text(120, 't');
+    const std::string json = R"({"list":[1,")" + text + R"(",{"x":true}],")" + key + R"(":)" +
+                             std::string(40, '[') + std::string(40, ']') + "}";
+    {
+        auto whole = wd::parse<Traits>(json, {}, alloc);
+        require(BOOST_TEST(whole.has_value()));
+        parser p({}, alloc);
+        std::uint64_t seen = 0;
+        BOOST_TEST(p.on("$.list[*]", [&seen](const auto&, wd::path_view) { ++seen; }).has_value());
+        for (std::size_t at = 0; at < json.size(); at += 7) {
+            BOOST_TEST(p.write(std::string_view(json).substr(at, 7)).has_value());
+        }
+        auto chunked = p.finish();
+        require(BOOST_TEST(chunked.has_value()));
+        BOOST_TEST_EQ(seen, 3U);
+        auto& d = *whole;
+        const auto missing = d[std::string(150, 'm')];
+        auto copy = missing;
+        BOOST_TEST(copy.set(wd::object{{key, text}, {"list", wd::array{1, text}}}).has_value());
+        BOOST_TEST(d["o"].set(wd::object()).has_value());
+        BOOST_TEST(d["o"].assign_from(d["list"]).has_value());
+        BOOST_TEST(d["list"].push(text, d["o"]).has_value());
+        auto sliced = d["list"].slice(1);
+        auto joined = d["list"].concat(d["list"], text);
+        auto popped = d["list"].pop();
+        auto spliced = d["list"].splice(0, 1, text);
+        require(BOOST_TEST(sliced.has_value() && joined.has_value() && popped.has_value() &&
+                           spliced.has_value()));
+        BOOST_TEST(d.compact().has_value());
+        auto cloned = d.clone();
+        require(BOOST_TEST(cloned.has_value()));
+        BOOST_TEST(*cloned == d);
+        std::string out;
+        BOOST_TEST(wd::stringify_to(
+                       d, [&out](std::string_view piece) { out.append(piece); }, 10, 1U << 20U)
+                       .has_value());
+        BOOST_TEST(out == wd::stringify(d, 10));
+        BOOST_TEST_GT(out.size(), 8192U);
+    }
+    BOOST_TEST_GT(counts.allocations, 0U);
+    BOOST_TEST_EQ(counts.allocations, counts.deallocations);
 }
 
 // An allocator that gives the image a block not aligned to 16 has it given back, and the operation
@@ -752,6 +949,10 @@ int main() {
     clone_into_resources();
     external_carries_allocator();
     any_allocator();
+    propagating_allocator();
+    always_equal_allocator();
+    explicit_rebinding<wd::default_traits>();
+    explicit_rebinding<wd::js_traits>();
     under_aligned_image_is_capacity();
     fancy_pointers_kept();
     holding_nothing<wd::pmr::owned>();

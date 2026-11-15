@@ -126,7 +126,12 @@ public:
 
     /** A value holding `null`, its buffers in `alloc`. */
     explicit prepared(const Allocator& alloc) noexcept
-        : alloc_(alloc), utf8_(alloc), utf16_(alloc), bytes_(alloc), entries_(alloc) {}
+        // Each list's allocator is constructed from `alloc`, which need not convert to it.
+        : alloc_(alloc),
+          utf8_(rebound<Allocator, buffer<char>>(alloc)),
+          utf16_(rebound<Allocator, buffer<char16_t>>(alloc)),
+          bytes_(rebound<Allocator, buffer<std::byte>>(alloc)),
+          entries_(rebound<Allocator, buffer<literal_entry<Traits>>>(alloc)) {}
 
     /** A prepared value is not copied: its item points into it. */
     prepared(const prepared&) = delete;

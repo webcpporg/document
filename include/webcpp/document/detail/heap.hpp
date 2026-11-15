@@ -116,8 +116,9 @@ public:
     /** Allocates in the heap `h`, which outlives the allocator. */
     explicit allocator(heap* h) noexcept : heap_(h) {}
 
-    // The Allocator requirements convert an allocator to its rebound type implicitly, hence the
-    // exemption from misc-explicit-constructor.
+    // The Allocator requirements ask only that a rebound allocator be constructed from this one,
+    // `A a(b)`; the conversion is kept implicit, as std::allocator's is, for the tree's
+    // Boost.MultiIndex container, hence the exemption from misc-explicit-constructor.
     /** The allocator of another type over the same heap. */
     template <class U>
     allocator(const allocator<U>& other) noexcept  // NOLINT(misc-explicit-constructor)
