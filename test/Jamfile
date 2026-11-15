@@ -133,9 +133,12 @@ webcpp.run shared_interprocess : shared_test.cpp
 webcpp.run allocator : allocator_test.cpp counting.cpp ;
 # The working state of a document's operations in its allocator, with no call
 # of the global operator new: the tree's changes, the handles' and the
-# conversions', the parser's and the writer's.
-webcpp.run allocator_tree : allocator_tree_test.cpp counting.cpp ;
-webcpp.run allocator_values : allocator_values_test.cpp counting.cpp ;
+# conversions', the parser's and the writer's. Their arenas of several MB
+# outgrow Emscripten's initial 16 MB, so its memory may grow.
+webcpp.run allocator_tree : allocator_tree_test.cpp counting.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
+webcpp.run allocator_values : allocator_values_test.cpp counting.cpp
+  : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 webcpp.run allocator_parse : allocator_parse_test.cpp counting.cpp
   : <toolset>emscripten:<linkflags>-sALLOW_MEMORY_GROWTH ;
 webcpp.run allocator_stringify : allocator_stringify_test.cpp counting.cpp

@@ -27,6 +27,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <memory_resource>
 #include <optional>
 #include <span>
@@ -433,15 +434,22 @@ void external_scenario(Document& d, const sample_values& f, Kept& kept) {
     kept.keep(d["list"].concat(f.elements));
 }
 
+/** The buffer of an external document, 16-aligned. */
+struct alignas(16) external_buffer {
+    /** Its bytes. */
+    std::array<std::byte, 65536> bytes{};
+};
+
 void external_document() {
     arena a(16 * mebibyte);
     const sample_values f;
     auto reference = parsed<wd::default_traits>("null");
     kept_documents<wd::document> expected;
     external_scenario(reference, f, expected);
-    alignas(16) std::array<std::byte, 65536> buffer{};
+    // On the heap, before anything is counted: Emscripten's stack is 64 KiB.
+    const auto buffer = std::make_unique<external_buffer>();
     {
-        auto made = wd::format(std::span(buffer), a.allocator());
+        auto made = wd::format(std::span(buffer->bytes), a.allocator());
         require(BOOST_TEST(made.has_value()));
         kept_documents<wd::pmr::document> kept;
         {
