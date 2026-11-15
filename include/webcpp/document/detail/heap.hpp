@@ -19,6 +19,7 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/errors.hpp>
 
 #include <boost/assert.hpp>
@@ -622,8 +623,9 @@ private:
 
     /**
      A new buffer of `size` bytes, 16-aligned and uninitialized, or none when the allocator has
-     none: its `std::bad_alloc` is caught, with exceptions. A buffer the allocator gives at another
-     alignment, as one that ignores an over-aligned request may, is given back, and is none too.
+     none: with exceptions, its failure is caught (@ref unless_allocation_fails). A buffer the
+     allocator gives at another alignment, as one that ignores an over-aligned request may, is
+     given back, and is none too.
     */
     buffer allocate(std::uint64_t size) noexcept {
         if constexpr (standard) {
@@ -637,15 +639,12 @@ private:
             if (count > block_traits::max_size(blocks)) {
                 return {};
             }
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-            try {
-                return aligned_or_given_back(blocks, block_traits::allocate(blocks, count), count);
-            } catch (const std::bad_alloc&) {
-                return {};
-            }
-#else
-            return aligned_or_given_back(blocks, block_traits::allocate(blocks, count), count);
-#endif
+            return unless_allocation_fails(
+                [&] {
+                    return aligned_or_given_back(blocks, block_traits::allocate(blocks, count),
+                                                 count);
+                },
+                [] { return buffer{}; });
         }
     }
 

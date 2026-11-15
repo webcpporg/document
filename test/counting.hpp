@@ -13,6 +13,7 @@
 #ifndef WEBCPP_TEST_DOCUMENT_COUNTING_HPP
 #define WEBCPP_TEST_DOCUMENT_COUNTING_HPP
 
+#include <boost/interprocess/exceptions.hpp>
 #include <boost/throw_exception.hpp>
 
 #include <cstddef>
@@ -94,13 +95,17 @@ private:
 
 /**
  A memory resource that hands out what `upstream` gives for its first `budget` allocations and fails
- every later one with `std::bad_alloc`, through `boost::throw_exception`: an allocator that runs out
- at a chosen step of an operation, for tests built with exceptions.
+ every later one with `Failure`, through `boost::throw_exception`: an allocator that runs out at a
+ chosen step of an operation, for tests built with exceptions.
+
+ @tparam Failure What a refusal throws: `std::bad_alloc`, or Boost.Interprocess's `bad_alloc`, which
+ an allocator of Boost.Interprocess throws and which derives from `std::exception` alone.
 */
-class failing_resource final : public std::pmr::memory_resource {
+template <class Failure>
+class basic_failing_resource final : public std::pmr::memory_resource {
 public:
     /** A resource over `upstream`, which outlives it, that allows `budget` allocations. */
-    failing_resource(std::pmr::memory_resource* upstream, std::uint64_t budget) noexcept
+    basic_failing_resource(std::pmr::memory_resource* upstream, std::uint64_t budget) noexcept
         : upstream_(upstream), budget_(budget) {}
 
     /** Allows `budget` more allocations from now. */
@@ -116,7 +121,7 @@ private:
     void* do_allocate(std::size_t bytes, std::size_t alignment) override {
         if (budget_ == 0) {
             ++refusals_;
-            boost::throw_exception(std::bad_alloc());
+            boost::throw_exception(Failure());
         }
         --budget_;
         void* memory = upstream_->allocate(bytes, alignment);
@@ -138,6 +143,12 @@ private:
     std::uint64_t refusals_ = 0;
     std::uint64_t in_use_ = 0;
 };
+
+/** A resource that fails with `std::bad_alloc`, as every standard allocator does. */
+using failing_resource = basic_failing_resource<std::bad_alloc>;
+
+/** A resource that fails with Boost.Interprocess's `bad_alloc`, as its allocators do. */
+using interprocess_failing_resource = basic_failing_resource<boost::interprocess::bad_alloc>;
 
 /**
  A monotonic resource over `bytes` bytes taken when it is built, whose upstream is the null

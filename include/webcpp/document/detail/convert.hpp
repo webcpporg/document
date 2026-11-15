@@ -53,26 +53,20 @@
 
 namespace webcpp::document::detail {
 
-// Only the allocator's std::bad_alloc can leave `f`: the sizes it asks are of what memory already
-// holds, below every container's max_size, so no std::length_error.
+// Only the allocator's failure can leave `f`: the sizes it asks are of what memory already holds,
+// below every container's max_size, so no std::length_error.
 // NOLINTBEGIN(bugprone-exception-escape)
 
 /**
- Calls `f`, which returns a `result`, and with exceptions turns an allocator's `std::bad_alloc`
- into @ref errc::capacity, what an operation whose working state did not fit returns before it
- changed anything. Without exceptions an allocator that fails ends the program, as it does.
+ Calls `f`, which returns a `result`, and with exceptions turns an allocator's failure
+ (@ref unless_allocation_fails) into @ref errc::capacity, what an operation whose working state
+ did not fit returns before it changed anything. Without exceptions an allocator that fails ends
+ the program, as it does.
 */
 template <class F>
 auto bad_alloc_as_capacity(F&& f) noexcept -> decltype(std::forward<F>(f)()) {
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-    try {
-        return std::forward<F>(f)();
-    } catch (const std::bad_alloc&) {
-        return errc::capacity;
-    }
-#else
-    return std::forward<F>(f)();
-#endif
+    using result_type = decltype(std::forward<F>(f)());
+    return unless_allocation_fails(std::forward<F>(f), [] { return result_type(errc::capacity); });
 }
 
 // NOLINTEND(bugprone-exception-escape)

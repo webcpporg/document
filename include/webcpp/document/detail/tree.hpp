@@ -33,6 +33,7 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/detail/heap.hpp>
 #include <webcpp/document/detail/utf.hpp>
 #include <webcpp/document/errors.hpp>
@@ -1647,21 +1648,14 @@ private:
     // NOLINTBEGIN(bugprone-exception-escape)
     /**
      Runs `stage`, which allocates in the allocator what an operation needs before it changes
-     anything, and returns its result: with exceptions, the allocator's `std::bad_alloc` is
-     @ref errc::capacity, nothing having changed; without them, an allocator that fails ends the
-     program, as it does itself.
+     anything, and returns its result: with exceptions, the allocator's failure
+     (@ref unless_allocation_fails) is @ref errc::capacity, nothing having changed; without them,
+     an allocator that fails ends the program, as it does itself.
     */
     template <class Stage>
     static result<void> staging(Stage&& stage) noexcept {
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-        try {
-            return std::forward<Stage>(stage)();
-        } catch (const std::bad_alloc&) {
-            return errc::capacity;
-        }
-#else
-        return std::forward<Stage>(stage)();
-#endif
+        return unless_allocation_fails(std::forward<Stage>(stage),
+                                       [] { return result<void>(errc::capacity); });
     }
 
     // NOLINTEND(bugprone-exception-escape)

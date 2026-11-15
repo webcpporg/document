@@ -27,6 +27,7 @@
 #include <memory_resource>
 #include <new>
 #include <span>
+#include <string>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -626,6 +627,119 @@ void full_allocator_is_capacity() {
     BOOST_TEST(same_image(*full, source));
 }
 
+/** The error of `made`; none when it holds a document. */
+template <class Document>
+boost::system::error_code error_of(const wd::result<Document>& made) {
+    return made.has_value() ? boost::system::error_code() : made.error();
+}
+
+/**
+ Runs `op` over `failing`, which allows each budget from 0 until `op` succeeds: each failure must be
+ errc::capacity, and at least one budget must fail.
+*/
+template <class Op>
+void capacity_until_it_fits(webcpp::test::interprocess_failing_resource& failing, Op op) {
+    constexpr std::uint64_t unlimited = std::uint64_t{1} << 40U;
+    for (std::uint64_t budget = 0;; ++budget) {
+        failing.allow(budget);
+        const boost::system::error_code failed = op();
+        failing.allow(unlimited);
+        if (!failed) {
+            BOOST_TEST_GT(budget, 0U);
+            return;
+        }
+        BOOST_TEST(failed == wd::errc::capacity);
+        // An operation that kept failing would never end the loop.
+        if (!BOOST_TEST_LT(budget, 10000U)) {
+            return;
+        }
+    }
+}
+
+// An allocator of Boost.Interprocess fails with its own bad_alloc, which derives from
+// std::exception alone: it is errc::capacity as std::bad_alloc is, at every allocation of the
+// image, of a change's staging, of a prepared value, of a missing member's key, of the parser's
+// working state and selectors, of the writer's, and of the array methods' copies; and a move
+// assignment that cannot copy throws std::bad_alloc.
+void interprocess_failure_is_capacity() {
+    webcpp::test::interprocess_failing_resource failing(std::pmr::new_delete_resource(), 0);
+    const std::pmr::polymorphic_allocator<std::byte> alloc(&failing);
+    const std::string key(120, 'k');
+    const std::string text(120, 't');
+    const std::string json = R"({"list":[1,")" + text + R"(",[true]],")" + key + R"(":)" +
+                             std::string(40, '[') + std::string(40, ']') + "}";
+    const wd::object members{{key, text}, {"list", wd::array{1, text, wd::object{{key, true}}}}};
+    const auto source = wd::parse(json);
+    require(BOOST_TEST(source.has_value()));
+    capacity_until_it_fits(failing, [&] { return error_of(wd::pmr::document::create(alloc)); });
+    capacity_until_it_fits(failing, [&] {
+        auto d = wd::from_image(source->image(), alloc);
+        return d.has_value() ? d->reserve(1U << 20U).error() : d.error();
+    });
+    capacity_until_it_fits(failing, [&] { return error_of(wd::parse(json, {}, alloc)); });
+    capacity_until_it_fits(failing, [&]() -> boost::system::error_code {
+        wd::pmr::parser p({}, alloc);
+        if (const auto added = p.on("$.list[*]", [](const auto&, wd::path_view) {}); !added) {
+            return added.error();
+        }
+        for (std::size_t at = 0; at < json.size(); ++at) {
+            if (const auto written = p.write(std::string_view(json).substr(at, 1)); !written) {
+                return written.error();
+            }
+        }
+        return error_of(p.finish());
+    });
+    capacity_until_it_fits(failing, [&]() -> boost::system::error_code {
+        auto d = wd::from_image(source->image(), alloc);
+        if (!d.has_value()) {
+            return d.error();
+        }
+        if (const auto set = (*d)["o"].set(wd::object()); !set) {
+            return set.error();
+        }
+        return (*d)["o"][key].set(members).error();
+    });
+    capacity_until_it_fits(failing, [&]() -> boost::system::error_code {
+        auto d = wd::from_image(source->image(), alloc);
+        if (!d.has_value()) {
+            return d.error();
+        }
+        std::string out;
+        return wd::stringify_to(
+                   *d, [&out](std::string_view piece) { out.append(piece); }, 10, 1U << 20U)
+            .error();
+    });
+    capacity_until_it_fits(failing, [&]() -> boost::system::error_code {
+        auto d = wd::from_image(source->image(), alloc);
+        if (!d.has_value()) {
+            return d.error();
+        }
+        if (const auto copied = (*d)["list"].concat((*d)["list"], members); !copied) {
+            return copied.error();
+        }
+        return d->compact().error();
+    });
+    auto target = wd::pmr::document::create(alloc);
+    auto other = wd::from_image(source->image());
+    require(BOOST_TEST(target.has_value() && other.has_value()));
+    wd::pmr::document from = wd::pmr::document::nothing();
+    {
+        auto copied = wd::from_image(source->image(), std::pmr::polymorphic_allocator<std::byte>());
+        require(BOOST_TEST(copied.has_value()));
+        from = std::move(*copied);
+    }
+    failing.allow(0);
+    bool thrown = false;
+    try {
+        *target = std::move(from);
+    } catch (const std::bad_alloc&) {
+        thrown = true;
+    }
+    failing.allow(std::uint64_t{1} << 40U);
+    BOOST_TEST(thrown);
+    BOOST_TEST(same_image(from, *other));
+}
+
 #endif  // WEBCPP_DOCUMENT_NO_EXCEPTIONS
 
 }  // namespace
@@ -645,6 +759,7 @@ int main() {
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     copies_select_allocator();
     full_allocator_is_capacity();
+    interprocess_failure_is_capacity();
 #endif
     return boost::report_errors();
 }

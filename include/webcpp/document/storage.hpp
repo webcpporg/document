@@ -32,7 +32,9 @@ namespace webcpp::document {
 
  The image is allocated as blocks of 16 bytes, 16-aligned, and the allocator rebound to them must
  give them that alignment: a buffer it gives at another alignment is given back, and the operation
- returns @ref errc::capacity.
+ returns @ref errc::capacity. With exceptions, an allocator that has no room throws
+ `std::bad_alloc`, a type derived from it, or Boost.Interprocess's `bad_alloc`, and the operation
+ returns @ref errc::capacity; anything else it throws ends the program.
 
  @tparam Allocator An allocator of `std::byte`; `std::allocator<std::byte>` by default, whose
  documents are those of @ref owned.
@@ -50,7 +52,9 @@ struct basic_owned {
  it is full, an operation returns @ref errc::capacity and changes nothing.
 
  The image never grows, and `Allocator` holds only the working state of the document's operations:
- the parser's, the tree's and the writer's.
+ the parser's, the tree's and the writer's. With exceptions, an allocator that has no room throws
+ `std::bad_alloc`, a type derived from it, or Boost.Interprocess's `bad_alloc`, and the operation
+ returns @ref errc::capacity; anything else it throws ends the program.
 
  @tparam Allocator An allocator of `std::byte`; `std::allocator<std::byte>` by default, whose
  documents are those of @ref external.

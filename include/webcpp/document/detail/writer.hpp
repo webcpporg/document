@@ -19,6 +19,7 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/detail/tree.hpp>
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/number.hpp>
@@ -78,21 +79,17 @@ concept output = requires(Out& out, std::string_view text) {
 
 /**
  Runs `allocate`, which allocates through the writer's allocator: with exceptions, the allocator's
- `std::bad_alloc` is @ref errc::capacity; without, an allocator that fails ends the program, as it
- does itself.
+ failure (@ref unless_allocation_fails) is @ref errc::capacity; without, an allocator that fails
+ ends the program, as it does itself.
 */
 template <class Allocate>
 result<void> allocating(Allocate&& allocate) {
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-    try {
-        std::forward<Allocate>(allocate)();
-    } catch (const std::bad_alloc&) {
-        return errc::capacity;
-    }
-#else
-    std::forward<Allocate>(allocate)();
-#endif
-    return {};
+    return unless_allocation_fails(
+        [&]() -> result<void> {
+            std::forward<Allocate>(allocate)();
+            return {};
+        },
+        [] { return result<void>(errc::capacity); });
 }
 
 /** The output of `stringify`: the text appended to a string. */

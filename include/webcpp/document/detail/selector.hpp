@@ -19,6 +19,7 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/errors.hpp>
 #include <webcpp/document/storage.hpp>
 
@@ -103,20 +104,14 @@ public:
 
      Without exceptions an allocator that fails ends the program, as the allocator itself does.
     */
-    // Only an allocation throws here, and std::bad_alloc is caught: the std::length_error of a
-    // string or a vector past its max_size() cannot come of a text that a std::string_view holds.
+    // Only an allocation throws here, and an allocator's failure is caught: the std::length_error
+    // of a string or a vector past its max_size() cannot come of a text that a std::string_view
+    // holds.
     // NOLINTNEXTLINE(bugprone-exception-escape)
     static result<basic_selector> parse(std::string_view text,
                                         const Allocator& alloc = Allocator()) noexcept {
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-        try {
-            return read(text, alloc);
-        } catch (const std::bad_alloc&) {
-            return errc::capacity;
-        }
-#else
-        return read(text, alloc);
-#endif
+        return unless_allocation_fails([&] { return read(text, alloc); },
+                                       [] { return result<basic_selector>(errc::capacity); });
     }
 
     /** Whether a path matches: as many steps as the selector, each matched by its step. */

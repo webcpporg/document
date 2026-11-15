@@ -201,9 +201,12 @@ include::{examples}/document_allocators.expected[lines=4..5]
 [#document-allocators-failure]
 === When an allocator has no room
 
-*With exceptions,* an allocator that has no room throws `std::bad_alloc`, and the document catches
-it where the operation can still return: the operation returns `errc::capacity` and changes
-nothing, as for a full image. A change allocates all of its working state before its first change
+*With exceptions,* an allocator that has no room throws `std::bad_alloc`, a type derived from it,
+or Boost.Interprocess's `boost::interprocess::bad_alloc`, which its allocators throw and which
+derives from `std::exception` alone. The document catches these where the operation can still
+return: the operation returns `errc::capacity` and changes nothing, as for a full image. An
+allocator that throws anything else ends the program, since what it throws leaves a `noexcept`
+operation. A change allocates all of its working state before its first change
 to the document, which then changes by steps that cannot allocate, so a failure at any of its
 allocations leaves the document as it was. A few places have their own way to say it:
 

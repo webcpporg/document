@@ -14,6 +14,7 @@
 
 #include <webcpp/document/config.hpp>
 
+#include <webcpp/document/detail/allocation.hpp>
 #include <webcpp/document/detail/fwd.hpp>
 #include <webcpp/document/detail/selector.hpp>
 #include <webcpp/document/document.hpp>
@@ -619,20 +620,17 @@ private:
 
      With exceptions, an allocation that fails, of the handler in the allocator or of Boost.JSON's
      suspension stack, propagates out of Boost.JSON's parser, which lets its handler throw and
-     fails itself; it is @ref errc::capacity, which fails the parser until @ref reset.
+     fails itself: `std::bad_alloc`, a type derived from it, or Boost.Interprocess's `bad_alloc`.
+     It is @ref errc::capacity, which fails the parser until @ref reset.
     */
     std::size_t feed(bool more, std::string_view chunk, boost::system::error_code& ec) {
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-        try {
-            return json_.write_some(more, chunk.data(), chunk.size(), ec);
-        } catch (const std::bad_alloc&) {
-            failure_ = errc::capacity;
-            ec = failure_.error();
-            return 0;
-        }
-#else
-        return json_.write_some(more, chunk.data(), chunk.size(), ec);
-#endif
+        return detail::unless_allocation_fails(
+            [&] { return json_.write_some(more, chunk.data(), chunk.size(), ec); },
+            [&]() -> std::size_t {
+                failure_ = errc::capacity;
+                ec = failure_.error();
+                return 0;
+            });
     }
 
     /** Boost.JSON's options: numbers left as text, and the depth limit. */
@@ -698,15 +696,8 @@ private:
     */
     template <class F>
     result<void> subscribe(std::string_view text, F&& f, bool take) {
-#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
-        try {
-            return add(text, std::forward<F>(f), take);
-        } catch (const std::bad_alloc&) {
-            return errc::capacity;
-        }
-#else
-        return add(text, std::forward<F>(f), take);
-#endif
+        return detail::unless_allocation_fails([&] { return add(text, std::forward<F>(f), take); },
+                                               [] { return result<void>(errc::capacity); });
     }
 
     /**
