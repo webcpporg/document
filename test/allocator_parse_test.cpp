@@ -759,6 +759,66 @@ void running_out() {
 
 }  // namespace
 
+/** The allocations of a parse of `text` in an arena, with `revive_bytes` or without. */
+template <class Traits>
+std::uint64_t parse_allocations(std::string_view text, bool revive_bytes) {
+    arena a(16 * mebibyte);
+    wd::parse_options o;
+    o.revive_bytes = revive_bytes;
+    const auto made = wd::parse<Traits>(text, o, a.allocator());
+    require(BOOST_TEST(made.has_value()));
+    return a.resource().allocations();
+}
+
+// A parse allocates what a value needs only once it needs it: reviving bytes, text that is not
+// base64 and objects of another shape than a Uint8Array's take no buffer, so that a parse that
+// revives bytes allocates as often as one that does not; and the parser's prepared value keeps its
+// buffers, so that strings transcoded to UTF-16 one after another allocate as often as the longest
+// grows, not once each.
+void allocations_when_needed() {
+    std::string strings = "[";
+    std::string objects = "[";
+    for (std::size_t i = 0; i < 64; ++i) {
+        strings += std::string(i == 0 ? "" : ",") + R"("not base64, )" + std::string(i, 'x') + '"';
+        objects += std::string(i == 0 ? "" : ",") + R"({"a":1,"0":2})";
+    }
+    strings += "]";
+    objects += "]";
+    BOOST_TEST_EQ(parse_allocations<wd::default_traits>(strings, true),
+                  parse_allocations<wd::default_traits>(strings, false));
+    BOOST_TEST_EQ(parse_allocations<wd::js_traits>(objects, true),
+                  parse_allocations<wd::js_traits>(objects, false));
+
+    arena a(mebibyte);
+    wd::detail::prepared<wd::js_traits, std::pmr::polymorphic_allocator<std::byte>> p(
+        a.allocator());
+    const std::string longest(200, 'u');
+    BOOST_TEST(wd::detail::prepare_string(longest, false, false, p).has_value());
+    const std::uint64_t first = a.resource().allocations();
+    BOOST_TEST_GT(first, 0U);
+    for (std::size_t size = 0; size <= longest.size(); size += 10) {
+        BOOST_TEST(
+            wd::detail::prepare_string(std::string_view(longest).substr(0, size), false, false, p)
+                .has_value());
+        BOOST_TEST(p.value().text.size() == size * sizeof(char16_t));
+    }
+    BOOST_TEST_EQ(a.resource().allocations(), first);
+
+    wd::detail::prepared<wd::default_traits, std::pmr::polymorphic_allocator<std::byte>> b(
+        a.allocator());
+    const std::uint64_t before = a.resource().allocations();
+    BOOST_TEST(wd::detail::prepare_string("not base64!", false, true, b).has_value());
+    BOOST_TEST(b.value().kind == wd::kind::string);
+    BOOST_TEST_EQ(a.resource().allocations(), before);
+    BOOST_TEST(wd::detail::prepare_string("aGVsbG8=", false, true, b).has_value());
+    BOOST_TEST(b.value().kind == wd::kind::bytes);
+    BOOST_TEST_EQ(b.value().text.size(), 5U);
+    const std::uint64_t decoded = a.resource().allocations();
+    BOOST_TEST(wd::detail::prepare_string("d29ybGQ=", false, true, b).has_value());
+    BOOST_TEST_EQ(b.value().text.size(), 5U);
+    BOOST_TEST_EQ(a.resource().allocations(), decoded);
+}
+
 int main() {
     const std::vector<sample> texts = samples();
     for (const sample& s : texts) {
@@ -777,6 +837,7 @@ int main() {
     the_stack_rule();
     finish_is_write_then_finish<wd::default_traits>();
     finish_is_write_then_finish<wd::js_traits>();
+    allocations_when_needed();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     running_out();
 #endif

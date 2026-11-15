@@ -126,12 +126,8 @@ public:
 
     /** A value holding `null`, its buffers in `alloc`. */
     explicit prepared(const Allocator& alloc) noexcept
-        // Each list's allocator is constructed from `alloc`, which need not convert to it.
-        : alloc_(alloc),
-          utf8_(rebound<Allocator, buffer<char>>(alloc)),
-          utf16_(rebound<Allocator, buffer<char16_t>>(alloc)),
-          bytes_(rebound<Allocator, buffer<std::byte>>(alloc)),
-          entries_(rebound<Allocator, buffer<literal_entry<Traits>>>(alloc)) {}
+        // Each list constructs its allocator from `alloc`, which need not convert to it.
+        : alloc_(alloc), utf8_(alloc), utf16_(alloc), bytes_(alloc), entries_(alloc) {}
 
     /** A prepared value is not copied: its item points into it. */
     prepared(const prepared&) = delete;
@@ -190,25 +186,69 @@ private:
     template <class T>
     using buffer = std::vector<T, rebound<Allocator, T>>;
 
-    /** A list of buffers of `T`, each in the allocator. */
+    /**
+     The buffers of `T` in the allocator, and how many of them hold the item's values: those past
+     them are kept, with their room, for the values prepared next.
+    */
     template <class T>
-    using buffers = std::vector<buffer<T>, rebound<Allocator, buffer<T>>>;
+    struct buffers {
+        /** No buffer, in `alloc`. */
+        explicit buffers(const Allocator& alloc) noexcept
+            : list(rebound<Allocator, buffer<T>>(alloc)) {}
 
-    /** A new buffer of `size` values of `T` in the allocator, added to `list`. */
+        /** Buffers are not copied: an item points into them. */
+        buffers(const buffers&) = delete;
+
+        /** Buffers are not copied: an item points into them. */
+        buffers& operator=(const buffers&) = delete;
+
+        /** Takes the buffers of `other`, which holds none after it. */
+        buffers(buffers&& other) noexcept
+            : list(std::move(other.list)), used(std::exchange(other.used, 0)) {}
+
+        /** Takes the buffers of `other`, of the same allocator, which holds none after it. */
+        buffers& operator=(buffers&& other) noexcept {
+            list = std::move(other.list);
+            used = std::exchange(other.used, 0);
+            return *this;
+        }
+
+        /** Gives back every buffer. */
+        ~buffers() = default;
+
+        /** The buffers, each in the allocator. */
+        std::vector<buffer<T>, rebound<Allocator, buffer<T>>> list;
+
+        /** How many of them hold the item's values. */
+        std::size_t used = 0;
+    };
+
+    /**
+     A buffer of `size` values of `T`, each value-initialized, in the allocator: the next of `b`'s
+     kept buffers when there is one, which allocates only when it has less room, else a new one.
+    */
     template <class T>
-    buffer<T>& add(buffers<T>& list, std::size_t size) {
+    buffer<T>& add(buffers<T>& b, std::size_t size) {
+        if (b.used < b.list.size()) {
+            buffer<T>& kept = b.list[b.used];
+            kept.assign(size, T{});
+            ++b.used;
+            return kept;
+        }
         // Made, then moved in: a polymorphic allocator constructs an element with itself after the
         // arguments, which a size and an allocator already are.
-        return list.emplace_back(buffer<T>(size, rebound<Allocator, T>(alloc_)));
+        buffer<T>& made = b.list.emplace_back(buffer<T>(size, rebound<Allocator, T>(alloc_)));
+        ++b.used;
+        return made;
     }
 
-    /** Holds `null` again, and owns nothing. */
+    /** Holds `null` again, its buffers kept, with their room, for the values prepared next. */
     void clear() noexcept {
         item_ = item<Traits>{};
-        utf8_.clear();
-        utf16_.clear();
-        bytes_.clear();
-        entries_.clear();
+        utf8_.used = 0;
+        utf16_.used = 0;
+        bytes_.used = 0;
+        entries_.used = 0;
     }
 
     /** The allocator. */
@@ -478,13 +518,14 @@ struct converter {
                 return hold_form(owner, owner.item_, *date);
             }
         }
-        // Under javascript_bytes, bytes are an object's shape, which no string has.
+        // Under javascript_bytes, bytes are an object's shape, which no string has. Text that is
+        // not base64 is known for it before anything is allocated.
         if constexpr (!javascript_shape) {
             if (revive_bytes) {
-                if (result<bytes_in<Allocator>> decoded = decode(text, owner.alloc_);
-                    decoded.has_value()) {
-                    const auto& bytes =
-                        owner.bytes_.emplace_back(std::move(decoded.unsafe_value()));
+                if (const result<std::uint64_t> size = base64_bytes(text); size.has_value()) {
+                    auto& bytes =
+                        owner.add(owner.bytes_, static_cast<std::size_t>(size.unsafe_value()));
+                    decode_into(text, bytes.data());
                     return hold_form(owner, owner.item_, std::span<const std::byte>(bytes));
                 }
             }
@@ -663,25 +704,47 @@ struct converter {
         return {};
     }
 
-    /** Room for the bytes of base64 text of `size` characters, in `alloc`. */
-    template <class A>
-    static bytes_in<A> room_for_base64(std::size_t size, const A& alloc) {
-        // Four characters make at most three bytes, and the last group of base64url's fewer.
-        return bytes_in<A>(((size / 4) * 3) + 3, rebound<A, std::byte>(alloc));
-    }
-
     /**
-     Base64 or base64url text, by the policy, decoded into a buffer of `alloc`: @ref errc::type when
-     it is not.
+     The size of the bytes that base64 or base64url text, by the policy, holds, read without
+     allocating: @ref errc::type when it is not such text.
     */
-    template <class A>
-    static result<bytes_in<A>> decode(std::string_view text, const A& alloc) {
-        bytes_in<A> out = room_for_base64(text.size(), alloc);
-        const result<std::uint64_t> size = read_base64(text, out.data(), url);
+    static result<std::uint64_t> base64_bytes(std::string_view text) noexcept {
+        const result<std::uint64_t> size = read_base64(text, nullptr, url);
         if (!size.has_value()) {
             return errc::type;
         }
-        out.resize(static_cast<std::size_t>(size.unsafe_value()));
+        return size;
+    }
+
+    /** As @ref base64_bytes, of UTF-16 text. */
+    static result<std::uint64_t> base64_bytes(std::u16string_view units) noexcept {
+        return read_units(units, nullptr);
+    }
+
+    /** Decodes text that @ref base64_bytes read into `out`, which has room for its bytes. */
+    static void decode_into(std::string_view text, std::byte* out) noexcept {
+        static_cast<void>(read_base64(text, out, url));
+    }
+
+    /** As @ref decode_into, of UTF-16 text. */
+    static void decode_into(std::u16string_view units, std::byte* out) noexcept {
+        static_cast<void>(read_units(units, out));
+    }
+
+    /**
+     Base64 or base64url text, by the policy, decoded into a buffer of `alloc` of exactly its
+     bytes' size, read first, so that text that is not base64 allocates nothing:
+     @ref errc::type when it is not.
+    */
+    template <class A, class Text>
+    static result<bytes_in<A>> decode(Text text, const A& alloc) {
+        const result<std::uint64_t> size = base64_bytes(text);
+        if (!size.has_value()) {
+            return size.error();
+        }
+        bytes_in<A> out(static_cast<std::size_t>(size.unsafe_value()),
+                        rebound<A, std::byte>(alloc));
+        decode_into(text, out.data());
         return out;
     }
 
@@ -691,17 +754,16 @@ struct converter {
     }
 
     /**
-     UTF-16 base64 text, by the policy, decoded into a buffer of `alloc` a block at a time, made
-     ASCII on the stack, so that no copy of the text is allocated: @ref errc::type when it is not.
+     Reads UTF-16 base64 text, by the policy, a block at a time, made ASCII on the stack, so that no
+     copy of the text is allocated, its bytes written at `out` when it is not null: their size, or
+     @ref errc::type when it is not base64.
     */
-    template <class A>
-    static result<bytes_in<A>> decode(std::u16string_view units, const A& alloc) {
-        bytes_in<A> out = room_for_base64(units.size(), alloc);
+    static result<std::uint64_t> read_units(std::u16string_view units, std::byte* out) noexcept {
         // Every block but the last holds whole groups, which decode alone, three bytes each; as
         // padding only ends the text, one of them that ends in '=' is not base64.
         std::array<char, ascii_block> chars{};
         std::size_t done = 0;
-        std::size_t written = 0;
+        std::uint64_t written = 0;
         do {
             const std::size_t count = std::min(units.size() - done, ascii_block);
             std::ranges::transform(units.substr(done, count), chars.begin(), ascii_of);
@@ -710,14 +772,14 @@ struct converter {
                 return errc::type;
             }
             const result<std::uint64_t> size =
-                read_base64(std::string_view(chars.data(), count), out.data() + written, url);
+                read_base64(std::string_view(chars.data(), count),
+                            out == nullptr ? nullptr : out + written, url);
             if (!size.has_value()) {
                 return errc::type;
             }
-            written += static_cast<std::size_t>(size.unsafe_value());
+            written += size.unsafe_value();
         } while (done != units.size());
-        out.resize(written);
-        return out;
+        return written;
     }
 
     /** Reads a node of a kind @ref read reads, as `T`. */
@@ -990,30 +1052,37 @@ struct converter {
 
     /**
      An object as bytes in a buffer of `alloc` when it has the shape `JSON.stringify` gives a
-     Uint8Array: keys exactly `"0"` to `"n-1"`, each holding an integer from 0 to 255.
+     Uint8Array: keys exactly `"0"` to `"n-1"`, each holding an integer from 0 to 255. The shape is
+     checked before the buffer is allocated, so that an object of another shape allocates nothing.
     */
     template <class A>
     static result<bytes_in<A>> read_byte_object(const tree_t& t, const node_t& n, const A& alloc) {
         // As many keys as the indices, each found: the keys are exactly those.
         const std::uint64_t count = t.count(n.id);
-        bytes_in<A> out{rebound<A, std::byte>(alloc)};
-        out.reserve(static_cast<std::size_t>(count));
         for (std::uint64_t i = 0; i < count; ++i) {
-            std::array<char, 24> key{};
-            const std::to_chars_result written =
-                std::to_chars(key.data(), key.data() + key.size(), i);
-            const node_t* element = t.member(
-                n.id,
-                std::string_view(key.data(), static_cast<std::size_t>(written.ptr - key.data())));
-            const result<std::uint8_t> byte = element == nullptr
-                                                  ? result<std::uint8_t>(errc::type)
-                                                  : read_integer<std::uint8_t>(*element);
-            if (!byte.has_value()) {
+            if (!byte_at(t, n, i).has_value()) {
                 return errc::type;
             }
-            out.push_back(static_cast<std::byte>(byte.unsafe_value()));
+        }
+        bytes_in<A> out(static_cast<std::size_t>(count), rebound<A, std::byte>(alloc));
+        for (std::uint64_t i = 0; i < count; ++i) {
+            out[static_cast<std::size_t>(i)] =
+                static_cast<std::byte>(byte_at(t, n, i).unsafe_value());
         }
         return out;
+    }
+
+    /** The byte the member `"i"` of the object `n` holds: @ref errc::type when it holds none. */
+    static result<std::uint8_t> byte_at(const tree_t& t, const node_t& n,
+                                        std::uint64_t i) noexcept {
+        std::array<char, 24> key{};
+        const std::to_chars_result written = std::to_chars(key.data(), key.data() + key.size(), i);
+        const node_t* element = t.member(
+            n.id, std::string_view(key.data(), static_cast<std::size_t>(written.ptr - key.data())));
+        if (element == nullptr) {
+            return errc::type;
+        }
+        return read_integer<std::uint8_t>(*element);
     }
 
     /** Whether two nodes have the same kind and scalar, and a container the same size. */
