@@ -352,7 +352,9 @@ struct subscription {
  every earlier one, the last kept until the parser is destroyed, across @ref reset.
 
  @tparam Traits The traits of the document.
- @tparam Storage @ref owned, or @ref external to build it in a buffer of its user's.
+ @tparam Storage @ref basic_owned or @ref basic_external of an allocator of `std::byte`: @ref owned
+ and `pmr::owned`, or @ref external and `pmr::external` to build it in a buffer of its user's. The
+ allocator holds an owned document's image and the parser's working state.
  @see "Parsing", in the guide.
 */
 template <class Traits, class Storage>

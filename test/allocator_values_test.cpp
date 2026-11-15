@@ -11,7 +11,7 @@
 // took; the documents the array methods make are in the same resource; a change a place cannot
 // take is refused first, with nothing allocated; and, with exceptions, an allocator that runs out
 // at any step of set, push, concat, splice or Object.assign is errc::capacity with the document as
-// it was, while an erasure asks the allocator for nothing and cannot fail.
+// it was, while an erasure asks the allocator for nothing and cannot run out of room.
 
 #include <webcpp/document.hpp>
 

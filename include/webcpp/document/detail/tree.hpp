@@ -23,9 +23,10 @@
  first, listed through their own nodes.
 
  An erasure alone, of a member or of elements with nothing inserted, needs no room: it allocates
- nothing at all and cannot fail. Without exceptions, an allocator that fails ends the program, as
- it does itself. A lookup by a key in UTF-8 allocates nothing, whatever the encoding and the key's
- length.
+ nothing at all and cannot run out of room, though it still returns @ref errc::type for what is no
+ object or no array and @ref errc::range for elements past the end. Without exceptions, an
+ allocator that fails ends the program, as it does itself. A lookup by a key in UTF-8 allocates
+ nothing, whatever the encoding and the key's length.
 */
 
 #ifndef WEBCPP_DOCUMENT_DETAIL_TREE_HPP
@@ -2109,7 +2110,7 @@ private:
         set_scalar(array, s);
     }
 
-    /** Erases the member `id` of the object `o` and its subtree, the key count kept. */
+    /** Erases the member `id` of the object `o` and its subtree, its key count lowered by one. */
     void erase_child(const node_type& o, std::uint64_t id) noexcept {
         scalar_type counts = o.scalar;
         const std::uint64_t object = o.id;

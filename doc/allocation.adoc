@@ -61,10 +61,10 @@ allocator, and `get_allocator()` returns a copy of it.
 *An owned image* is allocated, grown and freed through the allocator rebound to blocks of 16 bytes,
 16-aligned, `std::allocator_traits<Allocator>::rebind_alloc` of a block, so that the allocator is
 asked for the alignment the image's heap needs: a memory resource is asked for an alignment of 16,
-which it gives. The allocator must give it. A 16-aligned block is over-aligned wherever
-`std::max_align_t`'s alignment is 8, as on arm64 macOS and on MSVC, and an allocator that ignores an
-over-aligned request may give less: a buffer that is not 16-aligned is given back at once, and the
-operation returns `errc::capacity` and changes nothing, as when the allocator has no room. The
+which it gives. The allocator must give it. A 16-aligned block is over-aligned wherever the
+alignment of `std::max_align_t` is 8, as on arm64 macOS and on MSVC, and an allocator that ignores
+an over-aligned request may give less: a buffer that is not 16-aligned is given back at once, and
+the operation returns `errc::capacity` and changes nothing, as when the allocator has no room. The
 allocator's pointer to the image is kept as the allocator gave it, and the image is given back
 through it: an allocator whose pointer is not a plain one, which may carry a segment or a tag
 besides an address, gets back what it handed out. Inside the image, every pointer is an offset
@@ -76,13 +76,15 @@ comes from the global aligned `operator new` in its form that returns null.
 *The working state* of every operation on a document, owned or external, is in the same allocator,
 rebound: the records a change stages before it changes anything, the stack of a deep copy and of a
 compaction, the parser's frames, path and pending text, its selectors and their callbacks, the
-frames of `stringify_to`'s stack past the 16 it has room for and the piece it holds back for its
-sink once it holds more than its own room of 4096 bytes, the key a handle of a missing member
+frames of the stack of `stringify_to` past the 16 it has room for and the piece it holds back for
+its sink once it holds more than its own room of 4096 bytes, the key a handle of a missing member
 holds, the buffers in which a value is prepared to be stored, and the keys `Object.assign` takes
-from its source. For an external document that is all the allocator holds. A lookup by key
-allocates nothing, whatever the key's length, and neither does a comparison with `==`, which walks
-both trees through their nodes' links, nor an erasure, `delete` of a member, `pop_back` or a
-truncation, which lists the nodes it erases through the erased nodes themselves and so cannot fail.
+from its source. For an external document that is all the allocator holds. A lookup by key allocates
+nothing, whatever the key's length, and neither does a comparison with `==`, which walks both trees
+through their nodes' links, nor an erasure, `delete` of a member, `pop_back` or a truncation, which
+lists the nodes it erases through the erased nodes themselves and so cannot run out of room, though
+it still returns `errc::type` for what is no object or no array and `errc::range` for elements past
+the end.
 
 [#document-allocators-resource]
 === A document in a resource
@@ -204,14 +206,16 @@ include::{examples}/document_allocators.expected[lines=4..5]
 [#document-allocators-failure]
 === When an allocator has no room
 
-*With exceptions,* an allocator that has no room throws `std::bad_alloc`, a type derived from it,
-or Boost.Interprocess's `boost::interprocess::bad_alloc`, which its allocators throw and which
-derives from `std::exception` alone. The document catches these where the operation can still
-return: the operation returns `errc::capacity` and changes nothing, as for a full image. An
+*With exceptions,* an allocator that has no room throws `std::bad_alloc`, a type derived from it, or
+Boost.Interprocess's `boost::interprocess::bad_alloc`, which its allocators throw and which derives
+from `std::exception` alone. The document catches these where the operation can still return: the
+operation returns `errc::capacity` and the document's content is as it was, as for a full image. Its
+bytes may differ where the heap keeps its free space (<<document-images-bytes>>), and a failed
+`wd::parse_into` leaves its buffer formatted, with the part of the document it had built. An
 allocator that throws anything else ends the program, since what it throws leaves a `noexcept`
-operation. A change allocates all of its working state before its first change
-to the document, which then changes by steps that cannot allocate, so a failure at any of its
-allocations leaves the document as it was. A few places have their own way to say it:
+operation. A change allocates all of its working state before its first change to the document,
+which then changes by steps that cannot allocate, so a failure at any of its allocations leaves the
+document's content as it was. A few places have their own way to say it:
 
 * a parser that runs out fails with `errc::capacity` and stays failed until `reset()`, as after
   any error, and a selector it has no room for is not added: `on` and `observe` return

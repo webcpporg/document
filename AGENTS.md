@@ -33,9 +33,14 @@ specific to document.
   (`emplace`), never copied from a temporary; the allocator zeroes every block it hands out and
   frees.
 - Every allocation an operation makes outside the image goes through the document's allocator,
-  rebound (`detail::rebound`), and is made before the operation's first change, so that with
-  exceptions a `std::bad_alloc` is `errc::capacity` with nothing changed; an erasure, a lookup and
-  `==` allocate nothing. The `allocator*` tests count the global `operator new` and fail an
+  rebound (`detail::rebound`, constructed from it, never converted to), and is made before the
+  operation's first change, so that with exceptions an allocator's failure, which
+  `detail::unless_allocation_fails` alone catches (`std::bad_alloc`, a type derived from it, or
+  Boost.Interprocess's `bad_alloc`), is `errc::capacity` with the document's content as it was; an
+  erasure, a lookup and `==` allocate nothing, and a `const` operation allocates in the document's
+  allocator only as the page's "Reads from several threads" lists. An image's blocks the allocator
+  gives at another alignment than 16 are given back, and a change a place cannot take is refused
+  before its value is prepared. The `allocator*` tests count the global `operator new` and fail an
   operation at each of its allocations: a container of the standard allocator in an operation fails
   them. Boost.JSON's suspension stack, in a parse fed in chunks, is the one exception.
 - The values of `errc` and `kind`, the category's identity `0x646f63756d656e74` ("document") and the

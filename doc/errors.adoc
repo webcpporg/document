@@ -79,7 +79,7 @@ include::{examples}/document_no_exceptions.cpp[tag=errors,indent=0]
 include::{examples}/document_no_exceptions.expected[lines=1..8]
 ----
 
-An operation that fails changes nothing, so the program goes on with the document as it was:
+An operation that fails leaves the document's content as it was, so the program goes on with it:
 
 [source]
 ----
@@ -91,10 +91,10 @@ include::{examples}/document_no_exceptions.cpp[tag=compare,indent=0]
 include::{examples}/document_no_exceptions.expected[lines=9]
 ----
 
-The image's heap is never exhausted by surprise, since every operation finds its room first, and
-the working state of an operation, the records of a change, the parser's frames and the key a
-handle of a missing member holds among them, is in the document's allocator. With exceptions, an
-allocator that has no room is `errc::capacity`, and the operation changes nothing; without them, an
+The image's heap is never exhausted by surprise, since every operation finds its room first, and the
+working state of an operation, the records of a change, the parser's frames and the key a handle of
+a missing member holds among them, is in the document's allocator. With exceptions, an allocator
+that has no room is `errc::capacity`, and the document's content is as it was; without them, an
 allocator that fails ends the program, as it does for any {cpp} container
 (<<document-allocators-failure>>). What the program gets back in the standard allocator, the text
 `stringify` returns among them, fails as any `std::string` does, with `std::bad_alloc`

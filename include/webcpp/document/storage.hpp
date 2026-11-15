@@ -26,7 +26,10 @@ namespace webcpp::document {
  twice the size each time, up to its `max_bytes`, allocated, grown and freed through `Allocator`.
 
  The same allocator, rebound, holds what the document's operations need while they run: the
- parser's, the tree's and the writer's working state. A move takes the allocator with the image,
+ records a change stages, the stacks of a deep copy and of a compaction, the parser's frames,
+ path, pending text and selectors, the writer's stack and the piece it holds back past their own
+ room, a missing member's key, the buffers a value is prepared in, and the keys `Object.assign`
+ takes. A move takes the allocator with the image,
  and a move assignment between allocators that are not equal and do not propagate copies the image
  into the target's allocator.
 
@@ -51,8 +54,8 @@ struct basic_owned {
  The storage of a document whose image is a buffer its user owns, such as a browser's memory: when
  it is full, an operation returns @ref errc::capacity and changes nothing.
 
- The image never grows, and `Allocator` holds only the working state of the document's operations:
- the parser's, the tree's and the writer's. With exceptions, an allocator that has no room throws
+ The image never grows, and `Allocator` holds only the working state of the document's operations,
+ as @ref basic_owned lists it. With exceptions, an allocator that has no room throws
  `std::bad_alloc`, a type derived from it, or Boost.Interprocess's `bad_alloc`, and the operation
  returns @ref errc::capacity; anything else it throws ends the program.
 
