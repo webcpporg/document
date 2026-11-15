@@ -345,7 +345,7 @@ struct subscription {
  Its working state, the handler's frames, path and pending text, the selectors and their
  callbacks, is allocated through the document's allocator, rebound. With exceptions, an allocator
  that has no room is @ref errc::capacity, and fails the parser; without them it ends the program,
- as the allocator itself does. A text given whole to @ref finish never suspends Boost.JSON's
+ as the allocator itself does. A text given whole to @ref finish_with never suspends Boost.JSON's
  parser, and allocates nothing else. A text fed in chunks by @ref write suspends it at each
  chunk's end, and Boost.JSON keeps its suspension stack in the global heap, which no allocator
  reaches: one allocation at the first suspension, and one more at each suspension deeper than
@@ -447,11 +447,11 @@ public:
      @return The document; the errors of @ref write, and @ref errc::syntax for text that ends
      early.
     */
-    result<basic_document<Traits, Storage>> finish() { return finish(std::string_view()); }
+    result<basic_document<Traits, Storage>> finish() { return finish_with(std::string_view()); }
 
     /**
      Feeds the last chunk of the text, ends the text and returns the document, without the values
-     `on` took: what @ref write of `last` then `finish()` return.
+     `on` took: what @ref write of `last` then @ref finish return.
 
      Boost.JSON's parser is told that no text follows, so that it never suspends: a text given
      whole, to a parser that was given none before, allocates nothing outside the allocator, where
@@ -462,7 +462,7 @@ public:
      @return The document; the errors of @ref write, and @ref errc::syntax for text that ends
      early.
     */
-    result<basic_document<Traits, Storage>> finish(std::string_view last) {
+    result<basic_document<Traits, Storage>> finish_with(std::string_view last) {
         if (!failure_.has_value()) {
             return failed().error();
         }

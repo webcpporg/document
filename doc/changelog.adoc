@@ -16,10 +16,14 @@ of every version are on webcpp's index page.
 === Unreleased
 
 // tag::unreleased[]
+* *Breaking change:* Changed `owned` and `external` into aliases of `basic_owned<>` and
+  `basic_external<>`: a forward declaration `struct owned;` includes `<webcpp/document/storage.hpp>`
+  instead.
 * Added allocators to the storages, `pmr::document` among them, holding the image and every
   operation's working state.
-* Improved allocation failures: with exceptions, an allocator with no room returns
-  `errc::capacity` and changes nothing.
+* Improved allocation failures: with exceptions, an allocator with no room, Boost.Interprocess's
+  among them, makes an operation return `errc::capacity`.
+* Added `finish_with`, which ends a parser's text with its last chunk or the whole text.
 * Added `quote`, which appends a string to a string of the caller's as `JSON.stringify` quotes it.
 // end::unreleased[]
 

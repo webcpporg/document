@@ -240,7 +240,7 @@ A few allocations are not in the document's allocator, each for a reason of its 
   global heap: Boost.JSON offers no way to place it. It allocates once at the first suspension,
   and again at each suspension deeper than every earlier one, and keeps the last stack until the
   parser is destroyed, across `reset()`. A complete text, given to `wd::parse`, to `wd::parse_into`
-  or to the `finish(last)` of a parser that was given no text before, never suspends, and
+  or to the `finish_with(last)` of a parser that was given no text before, never suspends, and
   allocates nothing there.
 * *What the program gets back.* A value returned to the program is of the program's own type, in
   the standard allocator: the `std::string` that `stringify` returns, with the stack it writes it

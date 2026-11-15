@@ -73,9 +73,9 @@ builds itself, with `create`, keeps a limit of 1 GiB (<<document-images>>).
 `wd::parser` is the parser itself, `wd::basic_parser<Traits, Storage>` for other traits or a
 buffer of the program's: `write(chunk)` takes the text in chunks of any size, split anywhere,
 inside a string, a number, an escape or a character's bytes, down to one byte at a time, and
-`finish()` ends the text and returns the document; `finish(last)` takes a last chunk, or the whole
-text, and ends it. The document a parser builds is the one a whole parse builds, however the text
-is split:
+`finish()` ends the text and returns the document; `finish_with(last)` takes a last chunk, or the
+whole text, and ends it. The document a parser builds is the one a whole parse builds, however the
+text is split:
 
 [source]
 ----
@@ -93,7 +93,7 @@ another text, its selectors kept (<<document-selectors>>). The parser's working 
 the path and the pending text of a value, and its selectors and their callbacks, is in its
 document's allocator, a memory resource's for `wd::pmr::parser`. The stack where Boost.JSON's
 parser saves its place when a chunk ends inside a value is in the global heap; a text given whole
-to `finish(last)`, as `wd::parse` gives it, never needs one (<<document-allocators-outside>>).
+to `finish_with(last)`, as `wd::parse` gives it, never needs one (<<document-allocators-outside>>).
 
 [#document-parsing-errors]
 === Errors and offsets

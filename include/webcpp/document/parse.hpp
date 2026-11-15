@@ -81,7 +81,7 @@ template <class Traits = default_traits>
 result<basic_document<Traits, owned>> parse(std::string_view text,
                                             const parse_options& o = {}) noexcept {
     basic_parser<Traits, owned> p(o);
-    return p.finish(text);
+    return p.finish_with(text);
 }
 
 /**
@@ -109,7 +109,7 @@ result<basic_document<Traits, basic_owned<Allocator>>> parse(std::string_view te
                                                              const parse_options& o,
                                                              const Allocator& alloc) noexcept {
     basic_parser<Traits, basic_owned<Allocator>> p(o, alloc);
-    return p.finish(text);
+    return p.finish_with(text);
 }
 
 /**
@@ -129,7 +129,7 @@ result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
                                                     std::string_view text,
                                                     const parse_options& o = {}) noexcept {
     basic_parser<Traits, external> p(buffer, o);
-    return p.finish(text);
+    return p.finish_with(text);
 }
 
 /**
@@ -157,7 +157,7 @@ result<basic_document<Traits, basic_external<Allocator>>> parse_into(
     std::span<std::byte> buffer, std::string_view text, const parse_options& o,
     const Allocator& alloc) noexcept {
     basic_parser<Traits, basic_external<Allocator>> p(buffer, o, alloc);
-    return p.finish(text);
+    return p.finish_with(text);
 }
 
 /**
@@ -182,7 +182,7 @@ template <class Traits>
     requires detail::exceptions_enabled<Traits>
 basic_document<Traits, owned> parse_or_throw(std::string_view text, const parse_options& o) {
     basic_parser<Traits, owned> p(o);
-    result<basic_document<Traits, owned>> made = p.finish(text);
+    result<basic_document<Traits, owned>> made = p.finish_with(text);
     if (!made.has_value()) {
         detail::raise(made.error(), p.offset());
     }

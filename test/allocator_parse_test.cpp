@@ -8,7 +8,7 @@
 // parse_into or to a parser's finish, with selectors or without, under both traits and with the
 // revivers, makes no call of the global operator new, and the resource gets back all it gave. A
 // text fed in chunks calls it only for Boost.JSON's suspension stack, exactly as often as that
-// stack's rule says. finish(text) is write(text) then finish(), its errors, offsets and causes
+// stack's rule says. finish_with(text) is write(text) then finish(), its errors, offsets and causes
 // included. With exceptions, an allocator that runs out at any step is errc::capacity, with no
 // document, and a selector it cannot hold is not added.
 
@@ -29,6 +29,7 @@
 #include <memory_resource>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace wd = webcpp::document;
@@ -372,14 +373,14 @@ tally selected_tally() {
     tally t;
     wd::basic_parser<Traits> p;
     require(BOOST_TEST(all_added(subscribe(p, t, s))));
-    require(BOOST_TEST(p.finish(s.text).has_value()));
+    require(BOOST_TEST(p.finish_with(s.text).has_value()));
     // The items, taken; the metadata; the deep value; the members of meta and of the long key's
     // object; the long key's object.
     BOOST_TEST((t == tally{.deliveries = {3, 1, 1, 4, 1}, .wrong = 0}));
     return t;
 }
 
-// A pmr parser registers selectors and is given a whole text by finish(text): registration,
+// A pmr parser registers selectors and is given a whole text by finish_with(text): registration,
 // parsing and deliveries call no global operator new; the selectors, their callbacks, the path and
 // its long keys are in the resource, which gets all of it back.
 template <class Traits>
@@ -389,7 +390,7 @@ void selectors_call_no_global_new() {
     tally reference_tally;
     wd::basic_parser<Traits> reference_parser;
     require(BOOST_TEST(all_added(subscribe(reference_parser, reference_tally, s))));
-    const auto reference = reference_parser.finish(s.text);
+    const auto reference = reference_parser.finish_with(s.text);
     require(BOOST_TEST(reference.has_value()));
 
     arena a(16 * mebibyte);
@@ -400,7 +401,7 @@ void selectors_call_no_global_new() {
         {
             pmr_parser<Traits> p({}, a.allocator());
             BOOST_TEST(all_added(subscribe(p, t, s)));
-            const auto made = p.finish(s.text);
+            const auto made = p.finish_with(s.text);
             BOOST_TEST(made.has_value() && same_image(*made, *reference));
         }
         news = global.news();
@@ -480,7 +481,7 @@ void chunks_call_only_the_stack(std::string_view text, bool selectors) {
     if (selectors) {
         require(BOOST_TEST(all_added(subscribe(reference_parser, reference_tally, s))));
     }
-    const auto reference = reference_parser.finish(text);
+    const auto reference = reference_parser.finish_with(text);
     require(BOOST_TEST(reference.has_value()));
     for (const std::size_t size : {std::size_t{1}, std::size_t{7}, std::size_t{64}}) {
         const std::uint64_t expected = stack_allocations(text, size);
@@ -526,13 +527,13 @@ void the_stack_rule() {
 }
 
 /**
- Checks that `finish(text)` gives what `write(text)` then `finish()` give: the same document or
+ Checks that `finish_with(text)` gives what `write(text)` then `finish()` give: the same document or
  error, offset and cause, and the same answer to a later call.
 */
 template <class Traits>
 void finish_is_write_then_finish(std::string_view text, const wd::parse_options& o) {
     wd::basic_parser<Traits> whole(o);
-    const auto at_once = whole.finish(text);
+    const auto at_once = whole.finish_with(text);
     wd::basic_parser<Traits> split(o);
     const wd::result<void> written = split.write(text);
     const auto in_two = written.has_value()
@@ -552,9 +553,9 @@ void finish_is_write_then_finish(std::string_view text, const wd::parse_options&
     }
 }
 
-// finish(text) is write(text) then finish(), for every prefix of every text of the corpus, which
-// makes every error of a text that ends early, and for texts that fail otherwise: malformed, a
-// second text, a number past the traits, past the depth, past the bytes.
+// finish_with(text) is write(text) then finish(), for every prefix of every text of the corpus,
+// which makes every error of a text that ends early, and for texts that fail otherwise: malformed,
+// a second text, a number past the traits, past the depth, past the bytes.
 template <class Traits>
 void finish_is_write_then_finish() {
     for (const std::string& text : webcpp::test::parse_corpus()) {
@@ -676,7 +677,7 @@ void refused_selectors_were_not_added(Parser& p, webcpp::test::failing_resource&
                                       const std::array<bool, selector_count>& added, const tally& t,
                                       const tally& expected, std::string_view text) {
     failing.allow(plenty);
-    BOOST_TEST(p.finish(text).has_value());
+    BOOST_TEST(p.finish_with(text).has_value());
     for (std::size_t i = 0; i < selector_count; ++i) {
         BOOST_TEST_EQ(t.deliveries[i], added[i] ? expected.deliveries[i] : 0U);
     }
@@ -694,9 +695,9 @@ void a_parser_that_ran_out_stays_failed(Parser& p, webcpp::test::failing_resourc
     BOOST_TEST_GT(failing.refusals(), 0U);
     failing.allow(plenty);
     BOOST_TEST(p.write(" ").error() == wd::errc::capacity);
-    BOOST_TEST(p.finish("[1]").error() == wd::errc::capacity);
+    BOOST_TEST(p.finish_with("[1]").error() == wd::errc::capacity);
     p.reset();
-    BOOST_TEST(p.finish("[1]").has_value());
+    BOOST_TEST(p.finish_with("[1]").has_value());
 }
 
 // A parser whose allocator runs out while it registers its selectors returns errc::capacity and
@@ -709,7 +710,7 @@ void parser_runs_out(bool in_chunks) {
     tally reference_tally;
     wd::basic_parser<Traits> reference_parser;
     require(BOOST_TEST(all_added(subscribe(reference_parser, reference_tally, s))));
-    const auto reference = reference_parser.finish(s.text);
+    const auto reference = reference_parser.finish_with(s.text);
     require(BOOST_TEST(reference.has_value()));
     std::uint64_t failed = 0;
     for (std::uint64_t budget = 0;; ++budget) {
@@ -723,7 +724,7 @@ void parser_runs_out(bool in_chunks) {
                 ++failed;
                 refused_selectors_were_not_added(p, failing, added, t, expected, s.text);
             } else if (in_chunks ? write_in_chunks(p, s.text, 7, *reference)
-                                 : p.finish(s.text).has_value()) {
+                                 : p.finish_with(s.text).has_value()) {
                 parsed = true;
                 BOOST_TEST(t == expected);
                 BOOST_TEST_EQ(failing.refusals(), 0U);
@@ -758,6 +759,11 @@ void running_out() {
 #endif  // WEBCPP_DOCUMENT_NO_EXCEPTIONS
 
 }  // namespace
+
+// finish is the parser's member as it was published, whose address is taken without a cast; the
+// last chunk is finish_with's.
+static_assert(
+    std::is_same_v<decltype(&wd::parser::finish), wd::result<wd::document> (wd::parser::*)()>);
 
 /** The allocations of a parse of `text` in an arena, with `revive_bytes` or without. */
 template <class Traits>
