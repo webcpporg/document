@@ -145,7 +145,7 @@ using owned_of = basic_owned<typename S::allocator_type>;
 
 /** The allocator `A` gives for objects of `T`. */
 template <class A, class T>
-using rebound = typename std::allocator_traits<A>::template rebind_alloc<T>;
+using rebound = std::allocator_traits<A>::template rebind_alloc<T>;
 
 }  // namespace detail
 

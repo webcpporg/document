@@ -66,9 +66,8 @@ public:
     // The Allocator requirements convert an allocator to its rebound type implicitly.
     /** The same allocator for another type. */
     template <class U>
-    tallying_allocator(
-        const tallying_allocator<U>& other) noexcept  // NOLINT(misc-explicit-constructor)
-        : counts_(other.counts()) {}
+    // NOLINTNEXTLINE(misc-explicit-constructor)
+    tallying_allocator(const tallying_allocator<U>& other) noexcept : counts_(other.counts()) {}
 
     /** Room for `n` objects of `T`, aligned for `T`. */
     T* allocate(std::size_t n) {
@@ -148,7 +147,7 @@ void image_in_resource() {
 void default_storage_unchanged() {
     {
         const global_count global;
-        auto made = wd::document::create();
+        const auto made = wd::document::create();
         require(BOOST_TEST(made.has_value()));
         BOOST_TEST_EQ(global.news(), 1U);
     }
@@ -274,6 +273,32 @@ void any_allocator() {
     BOOST_TEST_EQ(counts.deallocations, 3U);
 }
 
+// A document that holds nothing allocates nothing, in its allocator or the global heap, reads as a
+// moved-from document does, refuses a change and a copy with errc::type, and takes an image by a
+// move assignment.
+template <class Storage>
+void holding_nothing() {
+    using document = wd::basic_document<wd::default_traits, Storage>;
+    arena a(mebibyte);
+    const wd::document source = sample();
+    const global_count global;
+    document none = document::nothing(a.allocator());
+    BOOST_TEST(none.get_allocator().resource() == &a.resource());
+    BOOST_TEST(none.root().is_undefined());
+    BOOST_TEST(none.image().empty());
+    BOOST_TEST_EQ(none.capacity(), 0U);
+    BOOST_TEST(none.root().set(1).error() == wd::errc::type);
+    BOOST_TEST(none.clone().error() == wd::errc::type);
+    BOOST_TEST_EQ(global.news(), 0U);
+    BOOST_TEST_EQ(a.resource().allocations(), 0U);
+    if constexpr (wd::detail::owned_storage<Storage>) {
+        auto made = wd::from_image(source.image(), a.allocator());
+        require(BOOST_TEST(made.has_value()));
+        none = std::move(*made);
+        BOOST_TEST(same_image(none, source));
+    }
+}
+
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
 
 // The sugar's copy asks select_on_container_copy_construction, which gives a polymorphic
@@ -284,7 +309,8 @@ void copies_select_allocator() {
     const wd::document source = sample();
     auto made = wd::from_image(source.image(), a.allocator());
     require(BOOST_TEST(made.has_value()));
-    const wd::pmr::document copied(*made);
+    // The copy constructor itself is what is tested, hence a copy where a reference would read.
+    const wd::pmr::document copied(*made);  // NOLINT(performance-unnecessary-copy-initialization)
     BOOST_TEST(copied.get_allocator().resource() == std::pmr::get_default_resource());
     const wd::pmr::document placed(*made, b.allocator());
     BOOST_TEST(placed.get_allocator().resource() == &b.resource());
@@ -341,6 +367,8 @@ int main() {
     clone_into_resources();
     external_carries_allocator();
     any_allocator();
+    holding_nothing<wd::pmr::owned>();
+    holding_nothing<wd::pmr::external>();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     copies_select_allocator();
     full_allocator_is_capacity();

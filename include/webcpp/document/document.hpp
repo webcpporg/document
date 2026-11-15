@@ -171,7 +171,7 @@ class basic_document {
 
 public:
     /** The allocator of the image, when owned, and of the working state of the operations. */
-    using allocator_type = typename Storage::allocator_type;
+    using allocator_type = Storage::allocator_type;
 
     /**
      Makes a new owned document, holding `null`, in a default-constructed allocator.
@@ -209,6 +209,21 @@ public:
             return formatted.error();
         }
         return basic_document(std::move(made.unsafe_value()));
+    }
+
+    /**
+     A document that holds nothing, as a moved-from document does: it has no image, allocates
+     nothing and cannot fail, so a library can hand one out where it has no document to give.
+
+     Its root reads `undefined`, it writes no text, @ref image is empty, a change and @ref clone
+     return @ref errc::type, and a move assignment gives it an image.
+
+     @param alloc The allocator it keeps, as a moved-from document keeps its own.
+     @return The document.
+     @see "Allocators", in the guide.
+    */
+    static basic_document nothing(const allocator_type& alloc = allocator_type()) noexcept {
+        return basic_document(region_type(alloc));
     }
 
     /**
@@ -282,6 +297,9 @@ public:
      `noexcept`.
      @see "Allocators", in the guide.
     */
+    // It is noexcept only for allocators that propagate or are always equal, which never take
+    // the copy, the one path that throws.
+    // NOLINTNEXTLINE(bugprone-exception-escape)
     basic_document& operator=(basic_document&& other) noexcept(moves_cheaply) {
         if (this == &other) {
             return *this;

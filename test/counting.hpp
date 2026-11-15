@@ -20,6 +20,7 @@
 #include <memory>
 #include <memory_resource>
 #include <new>
+#include <vector>
 
 namespace webcpp::test {
 
@@ -147,8 +148,8 @@ class arena {
 public:
     /** An arena of `bytes` bytes. */
     explicit arena(std::size_t bytes)
-        : buffer_(std::make_unique<std::byte[]>(bytes)),
-          monotonic_(buffer_.get(), bytes, std::pmr::null_memory_resource()),
+        : buffer_(bytes),
+          monotonic_(buffer_.data(), buffer_.size(), std::pmr::null_memory_resource()),
           counted_(&monotonic_) {}
 
     /** An arena is not copied: its resources refer to its buffer. */
@@ -171,11 +172,11 @@ public:
 
     /** A polymorphic allocator of the counted resource. */
     [[nodiscard]] std::pmr::polymorphic_allocator<std::byte> allocator() noexcept {
-        return std::pmr::polymorphic_allocator<std::byte>(&counted_);
+        return {&counted_};
     }
 
 private:
-    std::unique_ptr<std::byte[]> buffer_;
+    std::vector<std::byte> buffer_;
     std::pmr::monotonic_buffer_resource monotonic_;
     counting_resource counted_;
 };

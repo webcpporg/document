@@ -337,6 +337,9 @@ struct alignas(16) image_block {
     std::array<std::byte, 16> bytes;
 };
 
+template <class Allocator>
+class basic_region;
+
 /**
  The bytes of an image, whatever allocated them: where they are, how many, the size an owned image
  never grows past, and whether they are owned. The tree reads an image through it.
@@ -375,6 +378,10 @@ protected:
         max_bytes_ = std::exchange(other.max_bytes_, 0);
         owned_ = std::exchange(other.owned_, false);
     }
+
+private:
+    template <class>
+    friend class basic_region;
 
     /** The first byte, or null. */
     std::byte* data_ = nullptr;
@@ -566,8 +573,7 @@ public:
 
 private:
     /** The allocator of the image's blocks. */
-    using block_allocator =
-        typename std::allocator_traits<Allocator>::template rebind_alloc<image_block>;
+    using block_allocator = std::allocator_traits<Allocator>::template rebind_alloc<image_block>;
 
     /** Its traits. */
     using block_traits = std::allocator_traits<block_allocator>;
@@ -626,7 +632,7 @@ private:
             ::operator delete(bytes, std::align_val_t{16});
         } else {
             block_allocator blocks(alloc_);
-            using pointer = typename block_traits::pointer;
+            using pointer = block_traits::pointer;
             block_traits::deallocate(
                 blocks,
                 std::pointer_traits<pointer>::pointer_to(*reinterpret_cast<image_block*>(bytes)),
