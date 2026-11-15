@@ -29,6 +29,8 @@
 #include <webcpp/document/storage.hpp>
 #include <webcpp/document/traits.hpp>
 
+#include <boost/config.hpp>
+
 #include <algorithm>
 #include <array>
 #include <concepts>
@@ -37,6 +39,7 @@
 #include <functional>
 #include <limits>
 #include <new>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -116,6 +119,10 @@ private:
  The output of `stringify_to`: the text handed to a sink in pieces of at most `chunk` bytes, the
  piece it holds back until it is full in room of its own of @ref first_piece_room bytes, or, for a
  larger chunk, in `Allocator`, rebound, once it holds more.
+
+ Tip: the larger room's string of bytes is made only when the piece first outgrows its own room, so
+ that a piece that keeps to it makes no standard container: a standard library may allocate for
+ one when it is made, as the MSVC STL's checked iterators allocate a proxy for each.
 */
 template <class Sink, class Allocator>
 class chunked_output {
@@ -129,7 +136,7 @@ public:
         : sink_(&sink),
           chunk_(static_cast<std::size_t>(
               std::clamp<std::uint64_t>(chunk, 1, std::numeric_limits<std::size_t>::max()))),
-          larger_(piece_allocator(alloc)) {}
+          alloc_(alloc) {}
 
     /**
      Takes `text`, handing the sink each full piece; the sink's failure is returned, and with
@@ -177,8 +184,13 @@ private:
     /** The allocator of a piece larger than its own room. */
     using piece_allocator = rebound<Allocator, char>;
 
+    /** The room of a piece larger than its own. */
+    using piece_room = std::vector<char, piece_allocator>;
+
     /** The first byte of the piece held back: in its own room, or in the larger one. */
-    [[nodiscard]] char* piece() noexcept { return larger_.empty() ? own_.data() : larger_.data(); }
+    [[nodiscard]] char* piece() noexcept {
+        return larger_.has_value() ? larger_->data() : own_.data();
+    }
 
     /** Hands one piece to the sink, a sink returning `void` succeeding. */
     result<void> hand(std::string_view piece) {
@@ -196,7 +208,7 @@ private:
      moved into it, so that each growth is one allocation.
     */
     result<void> make_room(std::size_t size) {
-        const std::size_t room = larger_.empty() ? own_.size() : larger_.size();
+        const std::size_t room = larger_.has_value() ? larger_->size() : own_.size();
         if (size <= room) {
             return {};
         }
@@ -204,13 +216,16 @@ private:
         while (grown < size) {
             grown = grown > chunk_ / 2 ? chunk_ : 2 * grown;
         }
-        std::vector<char, piece_allocator> larger(larger_.get_allocator());
+        piece_room larger(alloc_);
         if (const result<void> made = allocating([&larger, grown] { larger.resize(grown); });
             !made) {
             return made;
         }
         std::ranges::copy(std::string_view(piece(), held_), larger.data());
-        larger_.swap(larger);
+        if (!larger_.has_value()) {
+            larger_.emplace(alloc_);
+        }
+        larger_->swap(larger);
         return {};
     }
 
@@ -226,21 +241,27 @@ private:
     /** The piece's room of its own. */
     std::array<char, first_piece_room> own_{};
 
-    /** The piece's room once it holds more than its own, empty until then. */
-    std::vector<char, piece_allocator> larger_;
+    /** The allocator of a piece larger than its own room. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS piece_allocator alloc_;
+
+    /** The piece's room once it holds more than its own, none until then. */
+    std::optional<piece_room> larger_;
 };
 
 /**
  The writer's stack: room of its own for @ref first_frames frames, and the deeper ones in
  `Allocator`, rebound, room for @ref first_frames at first and twice the room each time it is
  full.
+
+ Tip: the list of the deeper frames is made with the first of them, so that a stack that keeps to
+ its own room makes no standard container: a standard library may allocate for one when it is
+ made, as the MSVC STL's checked iterators allocate a proxy for each.
 */
 template <class Frame, class Allocator>
 class frame_stack {
 public:
     /** An empty stack, its deeper frames in `alloc`. */
-    explicit frame_stack(const Allocator& alloc) noexcept
-        : deeper_(rebound<Allocator, Frame>(alloc)) {}
+    explicit frame_stack(const Allocator& alloc) noexcept : alloc_(alloc) {}
 
     /** How many frames it holds. */
     [[nodiscard]] std::size_t size() const noexcept { return size_; }
@@ -250,13 +271,13 @@ public:
 
     /** The innermost frame; the stack holds one. */
     [[nodiscard]] Frame& back() noexcept {
-        return size_ <= first_frames ? own_[size_ - 1] : deeper_.back();
+        return size_ > first_frames && deeper_.has_value() ? deeper_->back() : own_[size_ - 1];
     }
 
     /** Removes the innermost frame; the stack holds one. */
     void pop_back() noexcept {
-        if (size_ > first_frames) {
-            deeper_.pop_back();
+        if (size_ > first_frames && deeper_.has_value()) {
+            deeper_->pop_back();
         }
         --size_;
     }
@@ -270,26 +291,35 @@ public:
             own_[size_++] = f;
             return {};
         }
-        if (deeper_.size() == deeper_.capacity()) {
-            const std::size_t room =
-                deeper_.capacity() == 0 ? first_frames : 2 * deeper_.capacity();
-            if (const result<void> made = allocating([this, room] { deeper_.reserve(room); });
+        if (!deeper_.has_value()) {
+            deeper_.emplace(alloc_);
+        }
+        frames& deeper = *deeper_;
+        if (deeper.size() == deeper.capacity()) {
+            const std::size_t room = deeper.capacity() == 0 ? first_frames : 2 * deeper.capacity();
+            if (const result<void> made = allocating([&deeper, room] { deeper.reserve(room); });
                 !made) {
                 return made;
             }
         }
         // There is room: it does not allocate.
-        deeper_.push_back(f);
+        deeper.push_back(f);
         ++size_;
         return {};
     }
 
 private:
+    /** A list of frames, in the allocator. */
+    using frames = std::vector<Frame, rebound<Allocator, Frame>>;
+
     /** The outermost frames. */
     std::array<Frame, first_frames> own_{};
 
-    /** The frames past them, innermost last. */
-    std::vector<Frame, rebound<Allocator, Frame>> deeper_;
+    /** The allocator of the frames past them. */
+    BOOST_ATTRIBUTE_NO_UNIQUE_ADDRESS rebound<Allocator, Frame> alloc_;
+
+    /** The frames past them, innermost last; none until the first of them. */
+    std::optional<frames> deeper_;
 
     /** How many frames it holds. */
     std::size_t size_ = 0;
