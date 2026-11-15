@@ -522,7 +522,10 @@ void the_stack_rule() {
     BOOST_TEST_EQ(stack_allocations(deep, 7), 7U);
     BOOST_TEST_EQ(stack_allocations(deep, 64), 1U);
     BOOST_TEST_EQ(stack_allocations("[1,2,3]", 1), 1U);
-    BOOST_TEST_EQ(stack_allocations(R"(["[[[",{"a":"]\"]"}])", 1), 2U);
+    // A raw string that holds a quote and a backslash stays out of the macro's arguments: MSVC 14.3
+    // splits them without reading it as one, and its escape then stands outside any literal.
+    constexpr std::string_view quoted_brackets = R"(["[[[",{"a":"]\"]"}])";
+    BOOST_TEST_EQ(stack_allocations(quoted_brackets, 1), 2U);
     chunks_call_only_the_stack<wd::default_traits>(deep, false);
 }
 

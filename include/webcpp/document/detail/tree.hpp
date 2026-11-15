@@ -519,8 +519,10 @@ public:
             return nullptr;
         }
         // Text that is not UTF-8 is no stored key's, and the UTF-16 order decodes only UTF-8.
-        if (utf16_text && !valid_utf8(key)) {
-            return nullptr;
+        if constexpr (utf16_text) {
+            if (!valid_utf8(key)) {
+                return nullptr;
+            }
         }
         return member_in(*nodes, object, lookup_key(key));
     }

@@ -68,8 +68,12 @@ struct insertion_traits : wd::js_traits {
     using object = wd::insertion_order;
 };
 
-/** The size an image here may grow to. */
-constexpr std::uint64_t max_bytes = std::uint64_t{64} << 20U;
+/**
+ The size an image here may grow to. Named apart from the `max_bytes` parameter of the document's
+ `create`: a parameter of a class template's member that hides a global of its name makes MSVC
+ warn (C4459, an error under /WX) wherever it compiles that member.
+*/
+constexpr std::uint64_t image_limit = std::uint64_t{64} << 20U;
 
 /** A string past any small-string buffer, which `set` stores without copying it. */
 constexpr std::string_view long_text =
@@ -315,12 +319,12 @@ template <class Traits>
 struct pmr_fixture {
     /** A new tree holding null, in `alloc`. */
     explicit pmr_fixture(const pmr_allocator& alloc)
-        : r(take(pmr_region::owned(4096, max_bytes, alloc))),
+        : r(take(pmr_region::owned(4096, image_limit, alloc))),
           t(take(pmr_tree<Traits>::format(r))) {}
 
     /** A tree over a copy of the image of `other`, in `alloc`. */
     pmr_fixture(const pmr_fixture& other, const pmr_allocator& alloc)
-        : r(take(pmr_region::owned_copy(other.image(), max_bytes, alloc))),
+        : r(take(pmr_region::owned_copy(other.image(), image_limit, alloc))),
           t(take(pmr_tree<Traits>::attach(r))) {}
 
     pmr_fixture(const pmr_fixture&) = delete;

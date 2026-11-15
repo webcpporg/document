@@ -210,13 +210,19 @@ public:
     }
 
 private:
-    /** What a callable of one type does: be called, and be destroyed with its storage. */
+    /**
+     What a callable of one type does: be called, and be destroyed with its storage.
+
+     Tip: each member has an initializer, else MSVC 14.3 and 14.5 warn (C4268, an error under /WX)
+     that `operations_of`, which sets every member, is filled with zeros; it is not, and the
+     callback it builds is called and destroyed as it should be.
+    */
     struct operations {
         /** Calls the callable at `object` with a value and its path. */
-        result<void> (*call)(void* object, const handle& v, path_view where);
+        result<void> (*call)(void* object, const handle& v, path_view where) = nullptr;
 
         /** Destroys the callable at `object` and gives its storage back to `alloc`. */
-        void (*destroy)(void* object, const allocator_type& alloc) noexcept;
+        void (*destroy)(void* object, const allocator_type& alloc) noexcept = nullptr;
     };
 
     /**
