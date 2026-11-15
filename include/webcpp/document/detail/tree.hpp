@@ -9,13 +9,23 @@
  with three ordered indices, the key order of the traits' object policy, and the operations that
  change it, each of which finds its room before it changes anything.
 
- Every mutation runs in three phases. Room: it lists the blocks it will take (@ref node_probe_bytes
+ Every mutation that writes runs in three phases. Room: it stages what it writes in the region's
+ allocator, rebound, the only memory outside the image it takes: the nodes it writes, the values
+ still to read, the roots of the subtrees it erases, the sizes of its blocks (@ref node_probe_bytes
  per node it creates, counting a literal's entries and a copied subtree's nodes, and each string's
- exact size) and probes the heap for them; while the probe fails, an owned region grows, and when it
- cannot, the operation returns @ref errc::capacity before anything changed. Growth moves the image,
- so no pointer into it is held across this phase. Allocate: the strings, then each node by
- `emplace`, built in place. Arrange: what allocates nothing, a `modify` that swaps a prepared
- string or scalar into a node, ordinals shifted, a subtree erased children first.
+ exact size), and, when the image must grow, a copy of what it views there; with exceptions, an
+ allocator that fails is @ref errc::capacity, before anything changed. Then it probes the heap for
+ its blocks; while the probe fails, an owned region grows, and when it cannot, the operation returns
+ @ref errc::capacity before anything changed. Growth moves the image, so no pointer into it is held
+ across this phase. Allocate: the strings, a key given in UTF-8 written as UTF-16 straight into its
+ block, then each node by `emplace`, built in place. Arrange: what allocates nothing, a `modify`
+ that swaps a prepared string or scalar into a node, ordinals shifted, subtrees erased children
+ first, listed through their own nodes.
+
+ An erasure alone, of a member or of elements with nothing inserted, needs no room: it allocates
+ nothing at all and cannot fail. Without exceptions, an allocator that fails ends the program, as
+ it does itself. A lookup by a key in UTF-8 allocates nothing, whatever the encoding and the key's
+ length.
 */
 
 #ifndef WEBCPP_DOCUMENT_DETAIL_TREE_HPP
@@ -41,12 +51,12 @@
 
 #include <algorithm>
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
-#include <map>
 #include <memory>
 #include <new>
 #include <optional>
@@ -184,11 +194,39 @@ struct with_zero_byte : F {
 };
 
 /**
+ A key in valid UTF-8 that the index @ref by_key looks up whatever the traits' encoding: under
+ `utf16` its order compares the UTF-16 code units it decodes to with a stored key's, one character
+ at a time, so that a lookup transcodes nothing into memory.
+*/
+struct utf8_lookup {
+    /** The key's bytes, valid UTF-8. */
+    std::string_view text;
+};
+
+/**
  The order of keys in the index @ref by_key, by their UTF-16 code units, whatever the encoding: the
  order the `sorted` policy writes, as JavaScript's sort and RFC 8785 order keys.
 */
 template <class Traits>
 struct key_less {
+    /** Whether the key `a`, in UTF-8, comes before the stored key `b`. */
+    bool operator()(utf8_lookup a, std::string_view b) const noexcept {
+        if constexpr (std::same_as<typename Traits::string, utf16>) {
+            return std::is_lt(units_order(a.text, b));
+        } else {
+            return (*this)(a.text, b);
+        }
+    }
+
+    /** Whether the stored key `a` comes before the key `b`, in UTF-8. */
+    bool operator()(std::string_view a, utf8_lookup b) const noexcept {
+        if constexpr (std::same_as<typename Traits::string, utf16>) {
+            return std::is_gt(units_order(b.text, a));
+        } else {
+            return (*this)(a, b.text);
+        }
+    }
+
     /** Whether `a` comes before `b`, each the bytes of a key in the traits' encoding. */
     bool operator()(std::string_view a, std::string_view b) const noexcept {
         if constexpr (std::same_as<typename Traits::string, utf16>) {
@@ -236,6 +274,39 @@ struct key_less {
             // equivalent unless they are equal.
             return byte_at(a, i) < byte_at(b, i);
         }
+    }
+
+private:
+    /**
+     The order of valid UTF-8 text and a stored key's UTF-16 code units, held in the machine's
+     byte order, by their code units, as the order of two stored keys is.
+    */
+    static std::strong_ordering units_order(std::string_view utf8,
+                                            std::string_view stored) noexcept {
+        const std::size_t units = stored.size() / sizeof(char16_t);
+        std::size_t unit = 0;
+        std::size_t i = 0;
+        while (i < utf8.size()) {
+            // One character, decoded to its one unit or its surrogate pair; a byte that starts
+            // none, which valid UTF-8 has not, is taken alone.
+            const std::size_t length = std::max<std::size_t>(lead_of(byte_at(utf8, i)).length, 1);
+            const std::string_view character(utf8.data() + i, std::min(length, utf8.size() - i));
+            std::array<char16_t, 2> decoded{};
+            const auto count = static_cast<std::size_t>(to_utf16(character, decoded.data()));
+            i += character.size();
+            for (std::size_t k = 0; k < count; ++k, ++unit) {
+                if (unit == units) {
+                    return std::strong_ordering::greater;
+                }
+                char16_t stored_unit = 0;
+                std::memcpy(&stored_unit, stored.data() + (unit * sizeof(char16_t)),
+                            sizeof stored_unit);
+                if (decoded[k] != stored_unit) {
+                    return decoded[k] <=> stored_unit;
+                }
+            }
+        }
+        return unit == units ? std::strong_ordering::equal : std::strong_ordering::less;
     }
 };
 
@@ -435,39 +506,22 @@ public:
         return nodes == nullptr ? nullptr : find_in(*nodes, id);
     }
 
-    // A lookup ends the program where the process heap cannot hold a long key's UTF-16, as the
-    // library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
-    /** The member `key`, in UTF-8, of the object `object`, or null. */
+    /**
+     The member `key`, in UTF-8, of the object `object`, or null: under `utf16` the key is compared
+     with the stored ones as it is decoded, so a key of any length allocates nothing.
+    */
     [[nodiscard]] const node<Traits>* member(std::uint64_t object,
                                              std::string_view key) const noexcept {
         const nodes_type* nodes = nodes_of();
         if (nodes == nullptr || !is_kind(find_in(*nodes, object), kind_t::object)) {
             return nullptr;
         }
-        if constexpr (utf16_text) {
-            if (!valid_utf8(key)) {
-                return nullptr;
-            }
-            // Most keys are short: they are transcoded on the stack.
-            std::array<char16_t, 64> small{};
-            std::vector<char16_t> large;
-            const std::uint64_t units = utf16_length(key);
-            char16_t* out = small.data();
-            if (units > small.size()) {
-                large.resize(static_cast<std::size_t>(units));
-                out = large.data();
-            }
-            to_utf16(key, out);
-            return member_in(
-                *nodes, object,
-                as_chars(std::as_bytes(std::span(out, static_cast<std::size_t>(units)))));
-        } else {
-            return member_in(*nodes, object, key);
+        // Text that is not UTF-8 is no stored key's, and the UTF-16 order decodes only UTF-8.
+        if (utf16_text && !valid_utf8(key)) {
+            return nullptr;
         }
+        return member_in(*nodes, object, lookup_key(key));
     }
-
-    // NOLINTEND(bugprone-exception-escape)
 
     /**
      The member of the object `object` whose key is `stored`, its bytes in the traits' encoding, as
@@ -716,9 +770,25 @@ protected:
         return it == ids.end() ? nullptr : &*it;
     }
 
-    /** The child of `object` whose key is `key`, in the traits' encoding, or null. */
+    /**
+     A key in UTF-8 as the index @ref by_key looks it up: itself under `utf8`, which stores keys
+     so, else a @ref utf8_lookup.
+    */
+    static auto lookup_key(std::string_view utf8) noexcept {
+        if constexpr (utf16_text) {
+            return utf8_lookup{utf8};
+        } else {
+            return utf8;
+        }
+    }
+
+    /**
+     The child of `object` whose key is `key`, in the traits' encoding as a `std::string_view`, or
+     in UTF-8 as a @ref utf8_lookup; or null.
+    */
+    template <class Key>
     static const node_type* member_in(const nodes_type& nodes, std::uint64_t object,
-                                      std::string_view key) noexcept {
+                                      const Key& key) noexcept {
         const auto& keys = nodes.template get<by_key>();
         const auto it = keys.find(std::make_tuple(object, key));
         return it == keys.end() ? nullptr : &*it;
@@ -764,6 +834,10 @@ protected:
         return header;
     }
 
+private:
+    template <class, class>
+    friend class tree;
+
     /** The bytes of the image it reads, or null when it is attached to nothing. */
     region_bytes* region_ = nullptr;
 };
@@ -773,12 +847,14 @@ protected:
  stays valid when the region grows and its bytes move.
 
  Every operation that changes the tree either completes or changes nothing, and returns
- @ref errc::capacity when there is no room. Keys are given in UTF-8; with `utf16` the tree
- transcodes them before it stores or looks them up, and a key it cannot transcode finds nothing.
+ @ref errc::capacity when there is no room, in the image or, with exceptions, in the allocator.
+ Keys are given in UTF-8; with `utf16` the tree writes them as UTF-16 into the image when it stores
+ them and compares them unit by unit when it looks them up, and a key that is not UTF-8 finds
+ nothing.
 
  @tparam Traits The traits.
- @tparam Allocator The allocator of the region, which grows an owned image and, rebound, holds what
- an operation stages before it changes anything.
+ @tparam Allocator The allocator of the region, which grows an owned image and, rebound, holds all
+ an operation stages before it changes anything, and compaction's walk.
 */
 template <class Traits, class Allocator>
 class tree : public tree_view<Traits> {
@@ -797,6 +873,7 @@ class tree : public tree_view<Traits> {
     using view::is_kind;
     using view::key_count_at;
     using view::length_at;
+    using view::lookup_key;
     using view::measure_costs;
     using view::member_in;
     using view::next_insertion_at;
@@ -821,9 +898,9 @@ public:
     using view::member_stored;
     using view::next_sibling;
 
-    // An operation ends the program where the process heap, which holds what it stages, runs
-    // out, as the library tolerates, and where an allocation in the image fails after its probe
-    // passed, a bug of the document's, which the allocator reports by boost::throw_exception.
+    // Formatting allocates nothing but in the image, after its probe; an allocation there that
+    // fails, a bug of the document's, which the image's allocator reports by
+    // boost::throw_exception, ends the program.
     // NOLINTBEGIN(bugprone-exception-escape)
     /**
      Formats a region that holds an empty heap: the header, the container, a root holding `null`.
@@ -923,9 +1000,10 @@ public:
     /** The allocator of its region, which holds what an operation stages. */
     [[nodiscard]] Allocator get_allocator() const noexcept { return storage().get_allocator(); }
 
-    // An operation ends the program where the process heap, which holds what it stages, runs
-    // out, as the library tolerates, and where an allocation in the image fails after its probe
-    // passed, a bug of the document's, which the allocator reports by boost::throw_exception.
+    // An operation stages in the allocator, which with exceptions makes its std::bad_alloc
+    // errc::capacity before anything changes; an allocation in the image that fails after its
+    // probe passed, a bug of the document's, which the image's allocator reports by
+    // boost::throw_exception, ends the program.
     // NOLINTBEGIN(bugprone-exception-escape)
     /**
      Replaces the value of node `id` with `v`, its children erased after the new value is in place.
@@ -937,11 +1015,13 @@ public:
             return errc::type;
         }
         change c = start_change();
-        add_existing(c, *target, v, id == root_id);
-        if (const auto read = read_values(c); !read.has_value()) {
-            return read;
-        }
-        return write(c, [] {});
+        return write(
+            c,
+            [&]() -> result<void> {
+                add_existing(c, *target, v, id == root_id);
+                return read_values(c);
+            },
+            [] {});
     }
 
     /**
@@ -955,12 +1035,10 @@ public:
         if (!is_kind(o, kind_t::object)) {
             return errc::type;
         }
-        change c = start_change();
-        const auto stored = encode_key(c, key);
-        if (!stored.has_value()) {
+        if (!valid_utf8(key)) {
             return errc::type;
         }
-        if (const node_type* existing = member_in(*nodes, object, as_chars(*stored))) {
+        if (const node_type* existing = member_in(*nodes, object, lookup_key(key))) {
             const std::uint64_t id = existing->id;
             if (const auto done = assign(id, v); !done.has_value()) {
                 return done.error();
@@ -969,11 +1047,16 @@ public:
         }
         scalar_type counts = o->scalar;
         std::uint64_t next = word(counts, next_insertion_at);
-        const std::uint64_t id = add_member(c, object, key, *stored, next, v);
-        if (const auto read = read_values(c); !read.has_value()) {
-            return read.error();
-        }
-        if (const auto done = write(c, [] {}); !done.has_value()) {
+        std::uint64_t id = 0;
+        change c = start_change();
+        if (const auto done = write(
+                c,
+                [&]() -> result<void> {
+                    id = add_member(c, object, key, next, v);
+                    return read_values(c);
+                },
+                [] {});
+            !done.has_value()) {
             return done.error();
         }
         set_word(counts, next_insertion_at, next);
@@ -990,18 +1073,21 @@ public:
         if (!is_kind(o, kind_t::object)) {
             return errc::type;
         }
-        change c = start_change();
         scalar_type counts = o->scalar;
         std::uint64_t next = word(counts, next_insertion_at);
         std::uint64_t added = 0;
-        auto placed = place_members(c, object, members, next, added, true);
-        if (!placed.has_value()) {
-            return placed;
-        }
-        if (const auto read = read_values(c); !read.has_value()) {
-            return read;
-        }
-        if (const auto done = write(c, [] {}); !done.has_value()) {
+        change c = start_change();
+        if (const auto done = write(
+                c,
+                [&]() -> result<void> {
+                    if (const auto placed = place_members(c, object, members, next, added, true);
+                        !placed.has_value()) {
+                        return placed;
+                    }
+                    return read_values(c);
+                },
+                [] {});
+            !done.has_value()) {
             return done;
         }
         set_word(counts, next_insertion_at, next);
@@ -1010,7 +1096,10 @@ public:
         return {};
     }
 
-    /** Erases the member `key` and its subtree; whether it was there. */
+    /**
+     Erases the member `key` and its subtree; whether it was there. It allocates nothing and
+     cannot run out of room.
+    */
     result<bool> erase_member(std::uint64_t object, std::string_view key) noexcept {
         const node_type* o = find(object);
         if (!is_kind(o, kind_t::object)) {
@@ -1020,11 +1109,26 @@ public:
         if (m == nullptr) {
             return false;
         }
-        scalar_type counts = o->scalar;
-        erase_subtree(m->id);
-        set_word(counts, key_count_at, word(counts, key_count_at) - 1);
-        set_scalar(object, counts);
-        sync_header(read_header().next_id);
+        erase_child(*o, m->id);
+        return true;
+    }
+
+    /**
+     Erases the member of `object` whose node is `id`, and its subtree: the erasure of a member
+     found by walking, with no key to look up. It allocates nothing and cannot run out of room.
+
+     @return Whether `id` is a member of `object`; @ref errc::type when `object` is no object.
+    */
+    result<bool> erase_member_by_id(std::uint64_t object, std::uint64_t id) noexcept {
+        const node_type* o = find(object);
+        if (!is_kind(o, kind_t::object)) {
+            return errc::type;
+        }
+        const node_type* m = find(id);
+        if (m == nullptr || m->parent != object) {
+            return false;
+        }
+        erase_child(*o, id);
         return true;
     }
 
@@ -1051,12 +1155,18 @@ public:
         return splice(array, at, 0, v);
     }
 
-    /** Erases `n` elements from `at` and their subtrees, the later elements renumbered. */
+    /**
+     Erases `n` elements from `at` and their subtrees, the later elements renumbered. It allocates
+     nothing and cannot run out of room.
+    */
     result<void> erase_elements(std::uint64_t array, std::uint64_t at, std::uint64_t n) noexcept {
         return splice(array, at, n, {});
     }
 
-    /** Erases `remove` elements from `at` and inserts `v` there, as one operation. */
+    /**
+     Erases `remove` elements from `at` and inserts `v` there, as one operation; with nothing to
+     insert, an erasure, which allocates nothing and cannot run out of room.
+    */
     result<void> splice(std::uint64_t array, std::uint64_t at, std::uint64_t remove,
                         std::span<const item<Traits>> v) noexcept {
         const node_type* a = find(array);
@@ -1067,19 +1177,23 @@ public:
         if (at > length || remove > length - at) {
             return errc::range;
         }
-        change c = start_change();
-        for (std::uint64_t i = 0; i < remove; ++i) {
-            c.doomed.push_back(element_in(*nodes_of(), array, at + i)->id);
-        }
-        for (std::size_t i = 0; i < v.size(); ++i) {
-            add_element(c, array, at + i, &v[i]);
-        }
-        if (const auto read = read_values(c); !read.has_value()) {
-            return read;
+        if (v.empty()) {
+            erase_range(array, length, at, remove);
+            return {};
         }
         const std::uint64_t added = v.size();
+        change c = start_change();
+        const auto stage = [&]() -> result<void> {
+            for (std::uint64_t i = 0; i < remove; ++i) {
+                c.doomed.push_back(element_in(*nodes_of(), array, at + i)->id);
+            }
+            for (std::size_t i = 0; i < v.size(); ++i) {
+                add_element(c, array, at + i, &v[i]);
+            }
+            return read_values(c);
+        };
         // The removed elements have left the index group: the later ones move into their place.
-        auto done = write(c, [&] {
+        const auto arrange = [&] {
             if (added > remove) {
                 for (std::uint64_t o = length; o > at + remove; --o) {
                     renumber(array, o - 1, o - 1 + (added - remove));
@@ -1089,8 +1203,8 @@ public:
                     renumber(array, o, o - (remove - added));
                 }
             }
-        });
-        if (!done.has_value()) {
+        };
+        if (const auto done = write(c, stage, arrange); !done.has_value()) {
             return done;
         }
         set_length_word(array, length - remove + added);
@@ -1176,18 +1290,22 @@ public:
         return {};
     }
 
-    // The walk keeps its stack on the process heap, whose exhaustion ends the program, as the
-    // library tolerates.
+    // The walk's stack is in the allocator of `to`, whose std::bad_alloc is errc::capacity with
+    // exceptions; an allocation in the image that fails after the heap was found to hold it, a bug
+    // of the document's, which the image's allocator reports by boost::throw_exception, ends the
+    // program.
     // NOLINTBEGIN(bugprone-exception-escape)
     /**
      Builds into `to` a copy of `from` in document order: ids from the first, insertion numbers
      from 0, and for each node its key, its text, then the node, each block right after the last.
 
      `to` is a fresh region of exactly `bytes`, @ref compact_bytes of `from`, over a heap that holds
-     nothing, so that its blocks fill it, with no hole and no free block.
+     nothing, so that its blocks fill it, with no hole and no free block. The walk keeps its stack
+     in the allocator of `to`, rebound; `from` is never changed.
 
      @return The tree over `to`; @ref errc::type when `from` is attached to nothing,
-     @ref errc::capacity when `to` is not of `bytes` bytes.
+     @ref errc::capacity when `to` is not of `bytes` bytes, or, with exceptions, when the allocator
+     has no room for the walk's stack, `to` then holding part of the copy and no header.
     */
     static result<tree> compact_to(region_type& to, const view& from,
                                    std::uint64_t bytes) noexcept {
@@ -1237,6 +1355,12 @@ public:
     // NOLINTEND(bugprone-exception-escape)
 
 private:
+    /** Where the scalar of a node @ref erase_subtree lists holds the id of the next one. */
+    static constexpr std::size_t next_listed_at = 0;
+
+    /** Where the scalar of a node @ref erase_subtree lists holds the id of the one before. */
+    static constexpr std::size_t previous_listed_at = 8;
+
     /**
      The group a node of `group` takes while an operation sets it aside, erased or renumbered: no
      node is ever left there, and no other node of its parent is in it.
@@ -1245,8 +1369,10 @@ private:
         return static_cast<std::uint8_t>(group + 2);
     }
 
-    // The walk keeps its stack on the process heap, whose exhaustion ends the program, as the
-    // library tolerates.
+    // The walk's stack is in the allocator, whose std::bad_alloc is a failed copy with
+    // exceptions; an allocation in the image that fails after the heap was found to hold it, a bug
+    // of the document's, which the image's allocator reports by boost::throw_exception, ends the
+    // program.
     // NOLINTBEGIN(bugprone-exception-escape)
     /**
      What @ref compact_to builds a compact image with: the source tree, the costs of its blocks,
@@ -1343,14 +1469,30 @@ private:
             return true;
         }
 
-        /** Copies `root` and everything under it in document order, on a stack of its own. */
+        /** The walk's stack, in the allocator. */
+        using stack_type = std::vector<frame, rebound<Allocator, frame>>;
+
+        /** Pushes `f` on the walk's stack; false when the allocator has no room for it. */
+        [[nodiscard]] static bool push(stack_type& stack, const frame& f) noexcept {
+            return staging([&]() -> result<void> {
+                       stack.push_back(f);
+                       return {};
+                   })
+                .has_value();
+        }
+
+        /**
+         Copies `root` and everything under it in document order, on a stack of its own; false
+         when the heap or the allocator has no room.
+        */
         [[nodiscard]] bool copy_tree(const node_type& root) noexcept {
             if (!copy(root, 0, index_group, 0)) {
                 return false;
             }
-            std::vector<frame, rebound<Allocator, frame>> stack(alloc);
-            if (const node_type* first = from.first_child(root_id)) {
-                stack.push_back({first, root_id, 0});
+            stack_type stack{rebound<Allocator, frame>(alloc)};
+            if (const node_type* first = from.first_child(root_id);
+                first != nullptr && !push(stack, {first, root_id, 0})) {
+                return false;
             }
             while (!stack.empty()) {
                 frame& top = stack.back();
@@ -1367,8 +1509,9 @@ private:
                           ordinal)) {
                     return false;
                 }
-                if (const node_type* first = from.first_child(child.id)) {
-                    stack.push_back({first, id, 0});
+                if (const node_type* first = from.first_child(child.id);
+                    first != nullptr && !push(stack, {first, id, 0})) {
+                    return false;
                 }
             }
             return true;
@@ -1392,9 +1535,16 @@ private:
         std::uint64_t ordinal = 0;
 
         /**
-         Its key in the traits' encoding; nothing for a node already there, which keeps its own.
+         Its key, in the traits' encoding, or in UTF-8 when `utf8_key`; nothing for a node already
+         there, which keeps its own.
         */
         std::span<const std::byte> key;
+
+        /**
+         Whether `key` is UTF-8 that the allocate phase writes into the image as the traits'
+         UTF-16, so that no copy of it is transcoded first.
+        */
+        bool utf8_key = false;
 
         /** Its kind. */
         kind_t kind = kind_t::null;
@@ -1410,6 +1560,12 @@ private:
 
         /** Whether the node is already there and only its value is replaced. */
         bool existing = false;
+
+        /** The key's string in the image, which the allocate phase makes for a new node. */
+        byte_string made_key;
+
+        /** The text's string in the image, which the allocate phase makes. */
+        byte_string made_text;
     };
 
     /** A value still to be read into a staged node: an item, or a node of a tree to copy. */
@@ -1430,22 +1586,44 @@ private:
         bool may_be_undefined = false;
     };
 
-    /** What an operation writes, gathered before it changes anything. */
-    struct change {
-        /** The nodes it writes, in the order their blocks are probed and allocated. */
-        std::vector<staged> nodes;
+    /** A list of `T` in the region's allocator, rebound. */
+    template <class T>
+    using list = std::vector<T, rebound<Allocator, T>>;
 
-        /** The subtrees it erases once the new nodes are in place. */
-        std::vector<std::uint64_t> doomed;
+    /**
+     What an operation writes, gathered before it changes anything, in the region's allocator:
+     the room phase allocates all of it, so that the others allocate only in the image.
+    */
+    struct change {
+        /** An empty change, its lists in `alloc`, which allocates nothing yet. */
+        explicit change(const Allocator& alloc) noexcept
+            : nodes(rebound<Allocator, staged>(alloc)),
+              doomed(rebound<Allocator, std::uint64_t>(alloc)),
+              work(rebound<Allocator, pending>(alloc)),
+              sizes(rebound<Allocator, std::uint64_t>(alloc)),
+              copies(rebound<Allocator, std::byte>(alloc)) {}
+
+        /** The nodes it writes, in the order their blocks are probed and allocated. */
+        list<staged> nodes;
+
+        /** The roots of the subtrees it erases once the new nodes are in place. */
+        list<std::uint64_t> doomed;
 
         /** Values still to be read into staged nodes. */
-        std::vector<pending> work;
+        list<pending> work;
 
-        /** Keys transcoded to UTF-16. */
-        std::vector<std::vector<char16_t>> keys16;
+        /** The sizes of the blocks it allocates in the image, in the order it allocates them. */
+        list<std::uint64_t> sizes;
 
-        /** Copies of what pointed into the image, taken before it moves. */
-        std::vector<std::vector<std::byte>> copies;
+        /** The sum of `sizes`, or the largest value when that overflows. */
+        std::uint64_t total = 0;
+
+        /** Whether the blocks fit in the image; the room phase grows it until they do. */
+        bool fits = false;
+
+        /** The bytes of what its keys and strings viewed inside the image, before the image grew.
+         */
+        list<std::byte> copies;
 
         /** The id the change's first new node takes. */
         std::uint64_t next_id = 0;
@@ -1453,6 +1631,40 @@ private:
         /** How many new nodes it creates. */
         std::uint64_t created = 0;
     };
+
+    /** An entry of a literal by its key: what @ref place_members sorts. */
+    struct keyed {
+        /** The key, in UTF-8. */
+        std::string_view key;
+
+        /** The entry's place among the literal's, or the largest value once it is placed. */
+        std::size_t entry = 0;
+    };
+
+    // A list's std::length_error cannot escape: no list a change keeps reaches its max_size
+    // before its allocator runs out, each holding less per node than the node's block in an image
+    // that fits in memory, and the copies of views are checked against it.
+    // NOLINTBEGIN(bugprone-exception-escape)
+    /**
+     Runs `stage`, which allocates in the allocator what an operation needs before it changes
+     anything, and returns its result: with exceptions, the allocator's `std::bad_alloc` is
+     @ref errc::capacity, nothing having changed; without them, an allocator that fails ends the
+     program, as it does itself.
+    */
+    template <class Stage>
+    static result<void> staging(Stage&& stage) noexcept {
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+        try {
+            return std::forward<Stage>(stage)();
+        } catch (const std::bad_alloc&) {
+            return errc::capacity;
+        }
+#else
+        return std::forward<Stage>(stage)();
+#endif
+    }
+
+    // NOLINTEND(bugprone-exception-escape)
 
     /** The size a region grows to for blocks of `total` bytes: its size and twice the blocks. */
     static std::uint64_t grown_size(const region_bytes& r, std::uint64_t total) noexcept {
@@ -1471,9 +1683,9 @@ private:
         std::memcpy(storage().data(), &header, sizeof header);
     }
 
-    /** An empty change, its new nodes numbered from the header's next id. */
+    /** An empty change in the region's allocator, its new nodes numbered from the next id. */
     [[nodiscard]] change start_change() const noexcept {
-        change c;
+        change c(get_allocator());
         c.next_id = read_header().next_id;
         return c;
     }
@@ -1481,21 +1693,12 @@ private:
     /** The id of the change's next new node. */
     static std::uint64_t take_id(change& c) noexcept { return c.next_id + c.created++; }
 
-    /**
-     A key, valid UTF-8, in the traits' encoding, held by the change when transcoded; or nothing.
-    */
-    static std::optional<std::span<const std::byte>> encode_key(change& c, std::string_view utf8) {
-        if (!valid_utf8(utf8)) {
-            return std::nullopt;
+    /** The size of a staged node's key as the image holds it. */
+    static std::uint64_t stored_key_bytes(const staged& n) noexcept {
+        if (n.utf8_key) {
+            return utf16_length(as_chars(n.key)) * sizeof(char16_t);
         }
-        if constexpr (utf16_text) {
-            std::vector<char16_t>& units =
-                c.keys16.emplace_back(static_cast<std::size_t>(utf16_length(utf8)));
-            to_utf16(utf8, units.data());
-            return std::as_bytes(std::span(units));
-        } else {
-            return std::as_bytes(std::span(utf8.data(), utf8.size()));
-        }
+        return n.key.size();
     }
 
     /** The group and ordinal of a new member by the object policy; `next` advances when taken. */
@@ -1533,15 +1736,18 @@ private:
         }
     }
 
-    /** Stages a new member of `object` holding `v`; its id. */
+    /**
+     Stages a new member of `object` at the key `utf8_key`, valid UTF-8, holding `v`; its id. The
+     key is written into the image in the traits' encoding when the node's blocks are allocated.
+    */
     static std::uint64_t add_member(change& c, std::uint64_t object, std::string_view utf8_key,
-                                    std::span<const std::byte> stored_key, std::uint64_t& next,
-                                    const item<Traits>& v) {
+                                    std::uint64_t& next, const item<Traits>& v) {
         staged n;
         n.id = take_id(c);
         n.parent = object;
         std::tie(n.group, n.ordinal) = member_place(utf8_key, n.id, next);
-        n.key = stored_key;
+        n.key = std::as_bytes(std::span(utf8_key.data(), utf8_key.size()));
+        n.utf8_key = utf16_text;
         c.nodes.push_back(n);
         c.work.push_back({c.nodes.size() - 1, &v, nullptr, 0, false});
         return n.id;
@@ -1570,29 +1776,33 @@ private:
                                std::span<const literal_entry<Traits>> entries, std::uint64_t& next,
                                std::uint64_t& added, bool assign_existing) const {
         constexpr std::size_t placed = std::numeric_limits<std::size_t>::max();
-        std::map<std::string_view, std::size_t> last;
+        // Sorted by key, then by place, the entries of a key are a run whose first place is where
+        // its member goes and whose last entry holds its value.
+        list<keyed> runs{rebound<Allocator, keyed>(get_allocator())};
+        runs.reserve(entries.size());
         for (std::size_t i = 0; i < entries.size(); ++i) {
             if (!valid_utf8(entries[i].key)) {
                 return errc::type;
             }
-            last.insert_or_assign(entries[i].key, i);
+            runs.push_back({entries[i].key, i});
         }
+        std::ranges::sort(runs, [](const keyed& a, const keyed& b) noexcept {
+            return a.key != b.key ? a.key < b.key : a.entry < b.entry;
+        });
         for (const literal_entry<Traits>& entry : entries) {
-            const auto it = last.find(entry.key);
-            if (it->second == placed) {
+            const auto run =
+                std::ranges::equal_range(runs, entry.key, std::ranges::less{}, &keyed::key);
+            if (run.front().entry == placed) {
                 continue;
             }
-            const item<Traits>& value = entries[std::exchange(it->second, placed)].value;
-            const auto stored = encode_key(c, entry.key);
-            if (!stored.has_value()) {
-                return errc::type;
-            }
+            const item<Traits>& value = entries[run.back().entry].value;
+            run.front().entry = placed;
             const node_type* existing =
-                assign_existing ? member_in(*nodes_of(), object, as_chars(*stored)) : nullptr;
+                assign_existing ? member_in(*nodes_of(), object, lookup_key(entry.key)) : nullptr;
             if (existing != nullptr) {
                 add_existing(c, *existing, value, false);
             } else {
-                add_member(c, object, entry.key, *stored, next, value);
+                add_member(c, object, entry.key, next, value);
                 ++added;
             }
         }
@@ -1693,39 +1903,60 @@ private:
 
     /**
      Copies what the change's keys and strings view inside the image, before the image moves: a
-     value of this tree, or a key or text a caller read from it.
+     value of this tree, or a key or text a caller read from it; all of them into one buffer,
+     allocated once. @ref errc::capacity when they are more bytes than a buffer holds.
     */
-    void own_views(change& c) const {
+    result<void> own_views(change& c) const {
         const std::byte* first = storage().data();
         const std::byte* last = first + storage().size();
         const std::less<> before;
+        const auto inside = [&](std::span<const std::byte> view) {
+            return !view.empty() && before(view.data(), last) &&
+                   before(first, view.data() + view.size());
+        };
+        std::uint64_t bytes = 0;
+        for (const staged& n : c.nodes) {
+            bytes = saturated_sum(bytes, inside(n.key) ? n.key.size() : 0);
+            bytes = saturated_sum(bytes, inside(n.text) ? n.text.size() : 0);
+        }
+        if (bytes > c.copies.max_size()) {
+            return errc::capacity;
+        }
+        // Reserved whole, the buffer never moves while views are taken into it.
+        c.copies.reserve(static_cast<std::size_t>(bytes));
         const auto own = [&](std::span<const std::byte>& view) {
-            if (view.empty() || !before(view.data(), last) ||
-                !before(first, view.data() + view.size())) {
+            if (!inside(view)) {
                 return;
             }
-            view = c.copies.emplace_back(view.begin(), view.end());
+            const std::size_t at = c.copies.size();
+            c.copies.insert(c.copies.end(), view.begin(), view.end());
+            view = std::span<const std::byte>(c.copies).subspan(at, view.size());
         };
         for (staged& n : c.nodes) {
             own(n.key);
             own(n.text);
         }
+        return {};
     }
 
     /**
-     Finds room for the change's blocks, its strings then its nodes, growing an owned region while
-     they do not fit; changes nothing but the region's size when there is no room.
+     Lists, in the allocator, what the change's later phases need, so that they allocate only in
+     the image: the sizes of the blocks to allocate, the strings then the nodes; and when the blocks
+     do not fit an owned image, which must then grow, copies of what the change views inside it.
     */
-    result<void> find_room(change& c) {
-        std::vector<std::uint64_t> sizes;
-        std::uint64_t total = 0;
-        const auto add = [&](std::uint64_t size) {
-            sizes.push_back(size);
-            total = saturated_sum(total, size);
+    result<void> plan(change& c) const {
+        std::size_t count = 0;
+        for (const staged& n : c.nodes) {
+            count += n.existing ? 1 : 3;
+        }
+        c.sizes.reserve(count);
+        const auto add = [&c](std::uint64_t size) {
+            c.sizes.push_back(size);
+            c.total = saturated_sum(c.total, size);
         };
         for (const staged& n : c.nodes) {
             if (!n.existing) {
-                add(n.key.size());
+                add(stored_key_bytes(n));
             }
             add(n.text.size());
         }
@@ -1734,19 +1965,24 @@ private:
                 add(node_probe_bytes<Traits>);
             }
         }
-        bool owned = false;
-        while (!probe(heap_of(storage()), sizes)) {
-            if (!storage().is_owned()) {
-                return errc::capacity;
-            }
-            if (!owned) {
-                own_views(c);
-                owned = true;
-            }
-            if (!storage().grow(grown_size(storage(), total))) {
+        c.fits = probe(heap_of(storage()), c.sizes);
+        if (!c.fits && storage().is_owned()) {
+            return own_views(c);
+        }
+        return {};
+    }
+
+    /**
+     Finds room for the change's blocks, growing an owned region while they do not fit; changes
+     nothing but the region's size when there is no room, and allocates nothing outside it.
+    */
+    result<void> find_room(change& c) noexcept {
+        while (!c.fits) {
+            if (!storage().is_owned() || !storage().grow(grown_size(storage(), c.total))) {
                 return errc::capacity;
             }
             sync_header(c.next_id);
+            c.fits = probe(heap_of(storage()), c.sizes);
         }
         return {};
     }
@@ -1762,53 +1998,85 @@ private:
     }
 
     /**
-     Writes a change in its three phases: the room found, the strings then the nodes allocated, then
-     what allocates nothing: the doomed set aside, `arrange`, the values replaced, the doomed
-     erased.
+     The key of a new staged node, which the probe has found room for: its bytes, or its UTF-8
+     written straight into its block as UTF-16.
     */
-    template <class Arrange>
-    result<void> write(change& c, Arrange&& arrange) {
+    static byte_string make_key(heap& h, const staged& n) {
+        if (!n.utf8_key) {
+            return make_probed(h, n.key);
+        }
+        const std::string_view utf8 = as_chars(n.key);
+        const std::uint64_t bytes = utf16_length(utf8) * sizeof(char16_t);
+        if (bytes == 0) {
+            return byte_string{};
+        }
+        void* block = h.allocate(bytes);
+        if (block == nullptr) {
+            // The probe has found its room: a failure here is the document's bug.
+            boost::throw_exception(std::bad_alloc());
+        }
+        // A block of the heap is 16-aligned, so it holds char16_t's.
+        to_utf16(utf8, static_cast<char16_t*>(block));
+        byte_string made;
+        made.data = static_cast<std::byte*>(block);
+        made.size = bytes;
+        return made;
+    }
+
+    /**
+     Writes a change in its three phases. Room: `stage` gathers it, @ref plan lists the rest of
+     what it allocates outside the image, all before anything changes, and the image grows until
+     its blocks fit. Allocate: the strings, then the nodes. Arrange, which allocates nothing: the
+     doomed set aside, `arrange`, the values replaced, the doomed erased.
+    */
+    template <class Stage, class Arrange>
+    result<void> write(change& c, Stage&& stage, Arrange&& arrange) {
+        if (const auto planned = staging([&]() -> result<void> {
+                if (const auto gathered = std::forward<Stage>(stage)(); !gathered.has_value()) {
+                    return gathered;
+                }
+                return plan(c);
+            });
+            !planned.has_value()) {
+            return planned;
+        }
         if (const auto room = find_room(c); !room.has_value()) {
             return room;
         }
         heap& h = heap_of(storage());
-        std::vector<std::array<byte_string, 2>> made(c.nodes.size());
-        for (std::size_t i = 0; i < c.nodes.size(); ++i) {
-            if (!c.nodes[i].existing) {
-                made[i][0] = make_probed(h, c.nodes[i].key);
+        for (staged& n : c.nodes) {
+            if (!n.existing) {
+                n.made_key = make_key(h, n);
             }
-            made[i][1] = make_probed(h, c.nodes[i].text);
+            n.made_text = make_probed(h, n.text);
         }
-        set_aside_doomed(c.doomed);
+        set_aside_doomed(c);
         std::forward<Arrange>(arrange)();
         nodes_type& nodes = *nodes_of();
-        for (std::size_t i = 0; i < c.nodes.size(); ++i) {
-            const staged& n = c.nodes[i];
+        for (const staged& n : c.nodes) {
             if (!n.existing) {
                 [[maybe_unused]] const bool inserted =
                     nodes
-                        .emplace(n.id, n.parent, n.group, n.ordinal, made[i][0], n.kind, n.number,
-                                 n.scalar, made[i][1])
+                        .emplace(n.id, n.parent, n.group, n.ordinal, n.made_key, n.kind, n.number,
+                                 n.scalar, n.made_text)
                         .second;
                 BOOST_ASSERT(inserted);
             }
         }
-        for (std::size_t i = 0; i < c.nodes.size(); ++i) {
-            if (c.nodes[i].existing) {
-                replace_value(c.nodes[i], made[i][1]);
+        for (const staged& n : c.nodes) {
+            if (n.existing) {
+                replace_value(n, n.made_text);
             }
         }
-        for (const std::uint64_t id : c.doomed) {
-            erase_subtree(id);
-        }
+        erase_doomed(c);
         sync_header(c.next_id + c.created);
         return {};
     }
 
-    /** Moves the doomed nodes out of their groups, so that new nodes may take their places. */
-    void set_aside_doomed(const std::vector<std::uint64_t>& doomed) noexcept {
+    /** Moves the doomed roots out of their groups, so that new nodes may take their places. */
+    void set_aside_doomed(const change& c) noexcept {
         auto& ids = nodes_of()->template get<by_id>();
-        for (const std::uint64_t id : doomed) {
+        for (const std::uint64_t id : c.doomed) {
             ids.modify(ids.find(id), [](node_type& n) noexcept { n.group = set_aside(n.group); });
         }
     }
@@ -1847,30 +2115,100 @@ private:
         set_scalar(array, s);
     }
 
-    /** Erases a node and its subtree, children first, each one's strings zeroed and freed. */
-    void erase_subtree(std::uint64_t id) {
+    /** Erases the member `id` of the object `o` and its subtree, the key count kept. */
+    void erase_child(const node_type& o, std::uint64_t id) noexcept {
+        scalar_type counts = o.scalar;
+        const std::uint64_t object = o.id;
+        erase_subtree(id);
+        set_word(counts, key_count_at, word(counts, key_count_at) - 1);
+        set_scalar(object, counts);
+        sync_header(read_header().next_id);
+    }
+
+    /**
+     Erases `n` elements of `array`, of `length`, from `at`, as a splice that inserts nothing does
+     it: the elements set aside, the later ones moved into their places, then each one's subtree
+     erased, found in the group it was set aside to.
+    */
+    void erase_range(std::uint64_t array, std::uint64_t length, std::uint64_t at,
+                     std::uint64_t n) noexcept {
+        auto& order = nodes_of()->template get<by_order>();
+        for (std::uint64_t i = 0; i < n; ++i) {
+            order.modify(order.find(std::make_tuple(array, index_group, at + i)),
+                         [](node_type& e) noexcept { e.group = set_aside(e.group); });
+        }
+        for (std::uint64_t o = at + n; o < length; ++o) {
+            renumber(array, o, o - n);
+        }
+        for (std::uint64_t i = 0; i < n; ++i) {
+            erase_subtree(order.find(std::make_tuple(array, set_aside(index_group), at + i))->id);
+        }
+        sync_header(read_header().next_id);
+        set_length_word(array, length - n);
+    }
+
+    /** Erases the change's doomed subtrees, in the order their roots were staged. */
+    void erase_doomed(const change& c) noexcept {
+        for (const std::uint64_t id : c.doomed) {
+            erase_subtree(id);
+        }
+    }
+
+    /**
+     Erases a node and its subtree, children first, each node's strings zeroed and freed, and
+     allocates nothing: an erasure needs no room and cannot fail.
+
+     The nodes are listed breadth first through their own scalars, which no index reads and which
+     die with them, each holding the id of the node after it and of the one before; the list is
+     then erased from its end. Each scalar is written by a `modify` that changes no key, so no
+     index moves a node, and the allocator zeroes the scalar with its node's block.
+    */
+    void erase_subtree(std::uint64_t id) noexcept {
         nodes_type& nodes = *nodes_of();
-        const auto& order = nodes.template get<by_order>();
-        // Each node's children are listed after it, so the list read backwards is children first.
-        std::vector<std::uint64_t> subtree{id};
-        std::size_t listed = 0;
-        while (listed < subtree.size()) {
-            const std::uint64_t parent = subtree[listed++];
+        auto& ids = nodes.template get<by_id>();
+        auto& order = nodes.template get<by_order>();
+        // A node joins the list at its end, after `previous`, and the node there before it is
+        // followed by it.
+        const auto listed_last = [](std::uint64_t previous) noexcept {
+            return [previous](node_type& n) noexcept {
+                set_word(n.scalar, next_listed_at, 0);
+                set_word(n.scalar, previous_listed_at, previous);
+            };
+        };
+        const auto followed_by = [](std::uint64_t next) noexcept {
+            return [next](node_type& n) noexcept { set_word(n.scalar, next_listed_at, next); };
+        };
+        const node_type* last = &*ids.find(id);
+        ids.modify(ids.iterator_to(*last), listed_last(0));
+        for (const node_type* listed = last; listed != nullptr;
+             listed = listed_after(*listed, next_listed_at)) {
+            const std::uint64_t parent = listed->id;
             for (auto it = order.lower_bound(std::make_tuple(parent));
                  it != order.end() && it->parent == parent; ++it) {
-                subtree.push_back(it->id);
+                order.modify(it, listed_last(last->id));
+                ids.modify(ids.iterator_to(*last), followed_by(it->id));
+                last = &*it;
             }
         }
-        auto& ids = nodes.template get<by_id>();
         heap& h = heap_of(storage());
-        for (const std::uint64_t victim : std::views::reverse(subtree)) {
-            const auto found = ids.find(victim);
-            byte_string key = found->key;
-            byte_string text = found->text;
-            ids.erase(found);
+        for (const node_type* victim = last; victim != nullptr;) {
+            const node_type* before = listed_after(*victim, previous_listed_at);
+            byte_string key = victim->key;
+            byte_string text = victim->text;
+            ids.erase(ids.iterator_to(*victim));
             free_string(h, key);
             free_string(h, text);
+            victim = before;
         }
+    }
+
+    /**
+     The node whose id the scalar of `n`, listed by @ref erase_subtree, holds at `at`, or null at
+     an end of the list.
+    */
+    [[nodiscard]] const node_type* listed_after(const node_type& n, std::size_t at) const noexcept {
+        const std::uint64_t id = word(n.scalar, at);
+        return id == 0 ? nullptr : find_in(*nodes_of(), id);
     }
 
     /**
@@ -1884,16 +2222,16 @@ private:
             return errc::capacity;
         }
         change c = start_change();
-        for (std::uint64_t i = 0; i < fill; ++i) {
-            add_element(c, array, length + i, nullptr);
-        }
-        if (last != nullptr) {
-            add_element(c, array, length + fill, last);
-        }
-        if (const auto read = read_values(c); !read.has_value()) {
-            return read;
-        }
-        if (const auto done = write(c, [] {}); !done.has_value()) {
+        const auto stage = [&]() -> result<void> {
+            for (std::uint64_t i = 0; i < fill; ++i) {
+                add_element(c, array, length + i, nullptr);
+            }
+            if (last != nullptr) {
+                add_element(c, array, length + fill, last);
+            }
+            return read_values(c);
+        };
+        if (const auto done = write(c, stage, [] {}); !done.has_value()) {
             return done;
         }
         set_length_word(array, length + fill + (last != nullptr ? 1 : 0));

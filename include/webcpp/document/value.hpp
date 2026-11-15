@@ -29,11 +29,15 @@
 #include <webcpp/document/literal.hpp>
 #include <webcpp/document/traits.hpp>
 
+#include <array>
+#include <charconv>
 #include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <limits>
+#include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -191,6 +195,134 @@ private:
     std::uint64_t parent_ = 0;
 };
 
+/** A missing member's key, in UTF-8, in the document's allocator `A`, rebound. */
+template <class A>
+using key_string = std::basic_string<char, std::char_traits<char>, rebound<A, char>>;
+
+/**
+ `key` held in `alloc`, or nothing when, with exceptions, `alloc` has no room for it: a handle that
+ could not hold its key reads `undefined` and fails a change with @ref errc::capacity.
+*/
+template <class A>
+std::optional<key_string<A>> hold_key(std::string_view key, const A& alloc) noexcept {
+    auto held = bad_alloc_as_capacity([&]() -> result<key_string<A>> {
+        return key_string<A>(key.data(), key.size(), rebound<A, char>(alloc));
+    });
+    if (!held.has_value()) {
+        return std::nullopt;
+    }
+    return std::optional<key_string<A>>(std::move(held.unsafe_value()));
+}
+
+/** A copy of a held key in its own allocator, as @ref hold_key holds it; nothing for none. */
+template <class String>
+std::optional<String> copy_key(const std::optional<String>& key) noexcept {
+    if (!key.has_value()) {
+        return std::nullopt;
+    }
+    return hold_key(std::string_view(*key), key->get_allocator());
+}
+
+/** The decimal digits of an array's index, as `Object.assign` keys an element: on the stack. */
+struct index_key {
+    /** The digits, in the first `size` places. */
+    std::array<char, std::numeric_limits<std::uint64_t>::digits10 + 1> digits{};
+
+    /** How many digits there are. */
+    std::size_t size = 0;
+
+    /** The digits of `index`. */
+    explicit index_key(std::uint64_t index) noexcept
+        : size(static_cast<std::size_t>(
+              std::to_chars(digits.data(), digits.data() + digits.size(), index).ptr -
+              digits.data())) {}
+
+    /** The digits, valid while this object lives. */
+    [[nodiscard]] std::string_view view() const noexcept { return {digits.data(), size}; }
+};
+
+/**
+ The members `Object.assign` sets from a source's children, in the target document's allocator:
+ the keys in UTF-8, all in one buffer, and an entry per child that copies its value.
+
+ The keys are copied, not views of the source: the tree may move the source's image while it finds
+ its room, when the source is the target's document.
+*/
+template <class Traits, class Allocator>
+class assigned_members {
+public:
+    /**
+     Stages the children of the node `parent` of `from`, each keyed by its index when `elements`;
+     only the allocator's `std::bad_alloc` can leave it.
+    */
+    assigned_members(const tree_view<Traits>& from, const node<Traits>& parent, bool elements,
+                     const Allocator& alloc)
+        : keys_(rebound<Allocator, char>(alloc)),
+          entries_(rebound<Allocator, literal_entry<Traits>>(alloc)) {
+        std::size_t count = 0;
+        std::size_t bytes = 0;
+        for (const node<Traits>* c = from.first_child(parent.id); c != nullptr;
+             c = from.next_sibling(*c)) {
+            ++count;
+            bytes += elements ? index_key(c->ordinal).size : key_size(*c);
+        }
+        // Sized once, so that no key moves after an entry points at it.
+        keys_.resize(bytes);
+        entries_.resize(count);
+        std::size_t at = 0;
+        std::size_t i = 0;
+        for (const node<Traits>* c = from.first_child(parent.id); c != nullptr;
+             c = from.next_sibling(*c), ++i) {
+            const std::size_t size = elements ? write_index(c->ordinal, at) : write_key(*c, at);
+            entries_[i].key = std::string_view(keys_.data() + at, size);
+            entries_[i].value.from = &from;
+            entries_[i].value.from_id = c->id;
+            at += size;
+        }
+    }
+
+    /** The entries, valid while this object lives. */
+    [[nodiscard]] std::span<const literal_entry<Traits>> entries() const noexcept {
+        return entries_;
+    }
+
+private:
+    /** Whether keys are stored as UTF-16 code units. */
+    static constexpr bool utf16_text = std::same_as<typename Traits::string, utf16>;
+
+    /** The size of the UTF-8 of the key of `n`. */
+    static std::size_t key_size(const node<Traits>& n) noexcept {
+        if constexpr (utf16_text) {
+            return static_cast<std::size_t>(utf8_size(n.key.units()));
+        } else {
+            return n.key.chars().size();
+        }
+    }
+
+    /** Writes the digits of `index` at `at` of the keys; their count. */
+    std::size_t write_index(std::uint64_t index, std::size_t at) noexcept {
+        const index_key key(index);
+        std::ranges::copy(key.view(), keys_.begin() + static_cast<std::ptrdiff_t>(at));
+        return key.size;
+    }
+
+    /** Writes the UTF-8 of the key of `n` at `at` of the keys; its size. */
+    std::size_t write_key(const node<Traits>& n, std::size_t at) noexcept {
+        if constexpr (utf16_text) {
+            return static_cast<std::size_t>(to_utf8(n.key.units(), keys_.data() + at));
+        } else {
+            std::ranges::copy(n.key.chars(), keys_.begin() + static_cast<std::ptrdiff_t>(at));
+            return n.key.chars().size();
+        }
+    }
+
+    /** The keys, one after another. */
+    std::vector<char, rebound<Allocator, char>> keys_;
+
+    /** The entries, in the source's order. */
+    std::vector<literal_entry<Traits>, rebound<Allocator, literal_entry<Traits>>> entries_;
+};
+
 /** What the library's other parts reach inside documents and handles: their tree and their node. */
 struct access {
     /** The tree of a document, or null when it was moved from. */
@@ -251,6 +383,11 @@ struct access {
  fails with @ref errc::type). It holds the document's address and node ids, so it stays valid when
  the document grows and its image moves; it reads `undefined` once its node is erased, and is
  invalid once its document is moved from or destroyed.
+
+ A handle of a missing member holds its key, in the document's allocator, so making or copying one
+ of a long key allocates there; with exceptions, a key the allocator has no room for is not held,
+ and the handle reads `undefined` and fails a change with @ref errc::capacity. Any other handle
+ allocates nothing.
 
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
@@ -641,13 +778,69 @@ public:
         return equals(a, b);
     }
 
+    /**
+     A handle of the same place; a missing member's key is copied in the allocator of the
+     document, not in the one `select_on_container_copy_construction` gives.
+
+     @param other The handle.
+    */
+    basic_const_value(const basic_const_value& other) noexcept
+        : doc_(other.doc_),
+          id_(other.id_),
+          index_(other.index_),
+          key_(detail::copy_key(other.key_)),
+          place_(other.place_) {}
+
+    /**
+     A handle of the same place, which takes a missing member's key.
+
+     @param other The handle.
+    */
+    basic_const_value(basic_const_value&& other) noexcept = default;
+
+    /**
+     Makes this a handle of the place of `other`, a missing member's key copied in the allocator of
+     `other`'s document.
+
+     @param other The handle.
+     @return This handle.
+    */
+    basic_const_value& operator=(const basic_const_value& other) noexcept {
+        if (this != &other) {
+            assign(other, detail::copy_key(other.key_));
+        }
+        return *this;
+    }
+
+    /**
+     Makes this a handle of the place of `other`, taking a missing member's key.
+
+     @param other The handle.
+     @return This handle.
+    */
+    basic_const_value& operator=(basic_const_value&& other) noexcept {
+        if (this != &other) {
+            assign(other, std::move(other.key_));
+        }
+        return *this;
+    }
+
+    /** Gives back a missing member's key. */
+    ~basic_const_value() = default;
+
 private:
-    // A missing member's key is held on the process heap, whose exhaustion ends the program, as
-    // the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
+    /** The allocator of the document's working state. */
+    using allocator_type = Storage::allocator_type;
+
+    /** A missing member's key, held in the document's allocator. */
+    using key_type = detail::key_string<allocator_type>;
+
     /**
      A handle of `doc` at the place `where`: the node or container `id`, and a missing element's
-     `index` or member's `key`.
+     `index` or member's `key`, held in the document's allocator.
+
+     With exceptions, a key the allocator has no room for is not held: the handle reads
+     `undefined`, and a change through it fails with @ref errc::capacity.
     */
     basic_const_value(basic_document<Traits, Storage>* doc, detail::place where, std::uint64_t id,
                       std::uint64_t index, std::string_view key) noexcept
@@ -655,10 +848,24 @@ private:
         : doc_(where == detail::place::nothing ? nullptr : doc),
           id_(where == detail::place::nothing ? 0 : id),
           index_(where == detail::place::element ? index : 0),
-          key_(where == detail::place::member ? key : std::string_view()),
+          key_(where == detail::place::member && doc_ != nullptr
+                   ? detail::hold_key(key, doc_->get_allocator())
+                   : std::nullopt),
           place_(doc_ == nullptr ? detail::place::nothing : where) {}
 
-    // NOLINTEND(bugprone-exception-escape)
+    /** Takes the place of `other`, with `key` its key held for this handle. */
+    void assign(const basic_const_value& other, std::optional<key_type>&& key) noexcept {
+        // Emptied first, the key is made anew from `key` with its allocator, not assigned into
+        // this one's.
+        key_.reset();
+        if (key.has_value()) {
+            key_.emplace(std::move(*key));
+        }
+        doc_ = other.doc_;
+        id_ = other.id_;
+        index_ = other.index_;
+        place_ = other.place_;
+    }
 
     /** The tree of the handle's document, or null when it names nothing or the document none. */
     [[nodiscard]] const detail::tree<Traits, typename Storage::allocator_type>* tree_ptr()
@@ -676,7 +883,9 @@ private:
         const detail::node<Traits>* n = nullptr;
         switch (place_) {
             case detail::place::node: n = t->find(id_); break;
-            case detail::place::member: n = t->member(id_, key_); break;
+            case detail::place::member:
+                n = key_.has_value() ? t->member(id_, std::string_view(*key_)) : nullptr;
+                break;
             case detail::place::element: n = t->element(id_, index_); break;
             case detail::place::nothing: break;
         }
@@ -735,8 +944,11 @@ private:
     /** A missing element's index. */
     std::uint64_t index_ = 0;
 
-    /** A missing member's key, in UTF-8. */
-    std::string key_;
+    /**
+     A missing member's key, in UTF-8, in the document's allocator; none for another place, and
+     none for a missing member whose key the allocator had no room for.
+    */
+    std::optional<key_type> key_;
 
     /** What the handle names. */
     detail::place place_ = detail::place::nothing;
@@ -886,11 +1098,21 @@ public:
                 return store_undefined();
             }
             // The tree reads the source before it changes anything, so it may be this tree.
-            detail::prepared<Traits> p;
-            p.copy_of(*from, n->id);
-            return store(p.value());
+            detail::item<Traits> copy;
+            copy.from = from;
+            copy.from_id = n->id;
+            return store(copy);
         } else {
-            detail::prepared<Traits> p;
+            // A handle of nothing has no document whose allocator could hold the prepared value:
+            // the value is prepared in the standard allocator, so that its own error comes first.
+            if (this->doc_ == nullptr) {
+                detail::prepared<Traits> p;
+                if (const auto made = detail::prepare(v, p); !made.has_value()) {
+                    return made;
+                }
+                return errc::type;
+            }
+            detail::prepared<Traits, allocator_type> p(this->doc_->get_allocator());
             if (const auto made = detail::prepare(v, p); !made.has_value()) {
                 return made;
             }
@@ -912,9 +1134,6 @@ public:
         return writable_tree()->erase_member(n->id, key);
     }
 
-    // The source's keys and ids are staged on the process heap, whose exhaustion ends the program,
-    // as the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
     /**
      `Object.assign(v, source)`: sets each member of `source` here, in its order, as one operation.
 
@@ -940,25 +1159,13 @@ public:
             return errc::type;
         }
         const detail::tree_view<Traits>& from = *source.tree_ptr();
-        // The keys are owned here, in UTF-8, before an entry points at one: the tree may move the
-        // source's image while it finds its room, when the source is this document.
-        std::vector<std::string> keys;
-        std::vector<std::uint64_t> ids;
-        for (const detail::node<Traits>* c = from.first_child(s->id); c != nullptr;
-             c = from.next_sibling(*c)) {
-            keys.push_back(elements ? std::to_string(c->ordinal) : utf8_key(*c));
-            ids.push_back(c->id);
-        }
-        std::vector<detail::literal_entry<Traits>> entries(keys.size());
-        for (std::size_t i = 0; i < keys.size(); ++i) {
-            entries[i].key = keys[i];
-            entries[i].value.from = &from;
-            entries[i].value.from_id = ids[i];
-        }
-        return writable_tree()->set_members(target->id, entries);
+        auto* t = writable_tree();
+        return detail::bad_alloc_as_capacity([&]() -> result<void> {
+            const detail::assigned_members<Traits, allocator_type> members(from, *s, elements,
+                                                                           t->get_allocator());
+            return t->set_members(target->id, members.entries());
+        });
     }
-
-    // NOLINTEND(bugprone-exception-escape)
 
     /**
      `Array.prototype.push`: appends each value.
@@ -1081,6 +1288,9 @@ private:
     friend class basic_const_value;
     friend struct detail::access;
 
+    /** The allocator of the document's working state. */
+    using allocator_type = Storage::allocator_type;
+
     /** A handle of `doc` at the place `where`, as the read-only handle's. */
     basic_value(basic_document<Traits, Storage>* doc, detail::place where, std::uint64_t id,
                 std::uint64_t index, std::string_view key) noexcept
@@ -1110,18 +1320,6 @@ private:
         return std::pair(detail::access::tree_of(v), detail::access::node_of(v));
     }
 
-    /** A key of `n`, in UTF-8: what the tree's operations take. */
-    static std::string utf8_key(const detail::node<Traits>& n) {
-        if constexpr (std::same_as<typename Traits::string, utf16>) {
-            const std::u16string_view units = n.key.units();
-            std::string out(static_cast<std::size_t>(detail::utf8_size(units)), '\0');
-            detail::to_utf8(units, out.data());
-            return out;
-        } else {
-            return std::string(n.key.chars());
-        }
-    }
-
     /** Stores an item at this place: the node replaced, or the member or element created. */
     result<void> store(const detail::item<Traits>& v) noexcept {
         auto* t = writable_tree();
@@ -1131,7 +1329,10 @@ private:
         switch (this->place_) {
             case detail::place::node: return t->assign(this->id_, v);
             case detail::place::member: {
-                const auto set = t->set_member(this->id_, this->key_, v);
+                if (!this->key_.has_value()) {
+                    return errc::capacity;
+                }
+                const auto set = t->set_member(this->id_, std::string_view(*this->key_), v);
                 if (!set.has_value()) {
                     return set.error();
                 }
@@ -1143,9 +1344,6 @@ private:
         return errc::type;
     }
 
-    // A member's key is turned into UTF-8 on the process heap, whose exhaustion ends the program,
-    // as the library tolerates.
-    // NOLINTBEGIN(bugprone-exception-escape)
     /**
      Stores `undefined` at this place: a member erased, an element `null`, a root holding
      `undefined`.
@@ -1158,7 +1356,10 @@ private:
         switch (this->place_) {
             case detail::place::node: break;
             case detail::place::member: {
-                const auto erased = t->erase_member(this->id_, this->key_);
+                if (!this->key_.has_value()) {
+                    return errc::capacity;
+                }
+                const auto erased = t->erase_member(this->id_, std::string_view(*this->key_));
                 if (!erased.has_value()) {
                     return erased.error();
                 }
@@ -1181,14 +1382,13 @@ private:
             parent->kind == webcpp::document::kind::array) {
             return t->assign(this->id_, detail::empty_item<Traits>(webcpp::document::kind::null));
         }
-        const auto erased = t->erase_member(n->parent, utf8_key(*n));
+        // By its id: nothing is looked up by key, transcoded or allocated, and nothing can fail.
+        const auto erased = t->erase_member_by_id(n->parent, n->id);
         if (!erased.has_value()) {
             return erased.error();
         }
         return {};
     }
-
-    // NOLINTEND(bugprone-exception-escape)
 };
 
 /** A handle of a @ref document, reading and writing. */
@@ -1255,9 +1455,6 @@ basic_const_value<Traits, Storage> basic_document<Traits, Storage>::operator[](
 
 namespace detail {
 
-// A handle of a node holds no key, so copying one allocates nothing; were it to, the process heap's
-// exhaustion would end the program, as the library tolerates.
-// NOLINTBEGIN(bugprone-exception-escape)
 template <class Traits, class Storage, children_of Kind>
 auto children_iterator<Traits, Storage, Kind>::operator*() const noexcept -> value_type {
     if constexpr (Kind == children_of::values) {
@@ -1283,8 +1480,6 @@ auto children_iterator<Traits, Storage, Kind>::operator*() const noexcept -> val
         }
     }
 }
-
-// NOLINTEND(bugprone-exception-escape)
 
 template <class Traits, class Storage, children_of Kind>
 children_iterator<Traits, Storage, Kind>&

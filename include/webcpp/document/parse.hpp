@@ -70,20 +70,18 @@ struct parse_options {
  @param text The text.
  @param o The limits and the revivers.
  @return The document; @ref errc::syntax for malformed text, @ref errc::range for a number the
- traits' `number` refuses, @ref errc::capacity past a limit.
+ traits' `number` refuses, @ref errc::capacity past a limit or, with exceptions, when memory runs
+ out.
  @see "Parsing", in the guide.
 */
 template <class Traits = default_traits>
-// The parser ends the program where the process heap, which holds its frames and pending text,
-// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// Nothing escapes: with exceptions the parser makes an allocator with no room errc::capacity, and
+// with no selector no callback throws, though the analysis sees a callback's exception rethrown.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 result<basic_document<Traits, owned>> parse(std::string_view text,
                                             const parse_options& o = {}) noexcept {
     basic_parser<Traits, owned> p(o);
-    if (const result<void> written = p.write(text); !written.has_value()) {
-        return written.error();
-    }
-    return p.finish();
+    return p.finish(text);
 }
 
 /**
@@ -91,7 +89,9 @@ result<basic_document<Traits, owned>> parse(std::string_view text,
  @ref parse does.
 
  The document's image and the parse's working state are allocated through `alloc`; a text given
- whole, as here, leaves Boost.JSON's parser no state to suspend, so nothing else allocates.
+ whole, as here, leaves Boost.JSON's parser no state to suspend, so nothing else allocates. With
+ exceptions, an allocator that has no room is @ref errc::capacity; without them it ends the
+ program, as the allocator itself does.
 
  @tparam Traits The traits of the document.
  @tparam Allocator An allocator of `std::byte`.
@@ -102,17 +102,14 @@ result<basic_document<Traits, owned>> parse(std::string_view text,
  @see "Allocators", in the guide.
 */
 template <class Traits = default_traits, detail::byte_allocator Allocator>
-// The parser ends the program where the process heap, which holds its frames and pending text,
-// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// Nothing escapes: with exceptions the parser makes an allocator with no room errc::capacity, and
+// with no selector no callback throws, though the analysis sees a callback's exception rethrown.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 result<basic_document<Traits, basic_owned<Allocator>>> parse(std::string_view text,
                                                              const parse_options& o,
                                                              const Allocator& alloc) noexcept {
     basic_parser<Traits, basic_owned<Allocator>> p(o, alloc);
-    if (const result<void> written = p.write(text); !written.has_value()) {
-        return written.error();
-    }
-    return p.finish();
+    return p.finish(text);
 }
 
 /**
@@ -125,22 +122,22 @@ result<basic_document<Traits, basic_owned<Allocator>>> parse(std::string_view te
  @return The document; the errors of @ref parse, and @ref errc::capacity when the buffer is full.
 */
 template <class Traits = default_traits>
-// The parser ends the program where the process heap, which holds its frames and pending text,
-// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// Nothing escapes: with exceptions the parser makes an allocator with no room errc::capacity, and
+// with no selector no callback throws, though the analysis sees a callback's exception rethrown.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
                                                     std::string_view text,
                                                     const parse_options& o = {}) noexcept {
     basic_parser<Traits, external> p(buffer, o);
-    if (const result<void> written = p.write(text); !written.has_value()) {
-        return written.error();
-    }
-    return p.finish();
+    return p.finish(text);
 }
 
 /**
  Reads JSON text into a new document in a buffer its user owns, as @ref parse_into does, the
  parse's working state and the document's allocated through `alloc`.
+
+ Nothing else allocates, as with @ref parse. With exceptions, an allocator that has no room is
+ @ref errc::capacity; without them it ends the program, as the allocator itself does.
 
  @tparam Traits The traits of the document.
  @tparam Allocator An allocator of `std::byte`.
@@ -148,21 +145,19 @@ result<basic_document<Traits, external>> parse_into(std::span<std::byte> buffer,
  @param text The text.
  @param o The limits and the revivers.
  @param alloc The allocator of the working state of the parse and of the document's operations.
- @return The document; the errors of @ref parse_into.
+ @return The document; the errors of @ref parse_into, and @ref errc::capacity when `alloc` has no
+ room.
  @see "Allocators", in the guide.
 */
 template <class Traits = default_traits, detail::byte_allocator Allocator>
-// The parser ends the program where the process heap, which holds its frames and pending text,
-// runs out, as the library tolerates; with no selector, nothing else of it throws.
+// Nothing escapes: with exceptions the parser makes an allocator with no room errc::capacity, and
+// with no selector no callback throws, though the analysis sees a callback's exception rethrown.
 // NOLINTNEXTLINE(bugprone-exception-escape)
 result<basic_document<Traits, basic_external<Allocator>>> parse_into(
     std::span<std::byte> buffer, std::string_view text, const parse_options& o,
     const Allocator& alloc) noexcept {
     basic_parser<Traits, basic_external<Allocator>> p(buffer, o, alloc);
-    if (const result<void> written = p.write(text); !written.has_value()) {
-        return written.error();
-    }
-    return p.finish();
+    return p.finish(text);
 }
 
 /**
@@ -174,7 +169,7 @@ result<basic_document<Traits, basic_external<Allocator>>> parse_into(
  @return The document.
  @throws syntax_error For malformed text, with the byte offset where it was found.
  @throws range_error For a number the traits' `number` refuses.
- @throws capacity_error Past a limit.
+ @throws capacity_error Past a limit, or when memory runs out.
  @see "The sugar that throws", in the guide.
 */
 template <class Traits = default_traits>
@@ -187,10 +182,7 @@ template <class Traits>
     requires detail::exceptions_enabled<Traits>
 basic_document<Traits, owned> parse_or_throw(std::string_view text, const parse_options& o) {
     basic_parser<Traits, owned> p(o);
-    if (const result<void> written = p.write(text); !written.has_value()) {
-        detail::raise(written.error(), p.offset());
-    }
-    result<basic_document<Traits, owned>> made = p.finish();
+    result<basic_document<Traits, owned>> made = p.finish(text);
     if (!made.has_value()) {
         detail::raise(made.error(), p.offset());
     }

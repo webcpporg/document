@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <span>
 #include <string>
@@ -51,6 +52,30 @@
 #include <vector>
 
 namespace webcpp::document::detail {
+
+// Only the allocator's std::bad_alloc can leave `f`: the sizes it asks are of what memory already
+// holds, below every container's max_size, so no std::length_error.
+// NOLINTBEGIN(bugprone-exception-escape)
+
+/**
+ Calls `f`, which returns a `result`, and with exceptions turns an allocator's `std::bad_alloc`
+ into @ref errc::capacity, what an operation whose working state did not fit returns before it
+ changed anything. Without exceptions an allocator that fails ends the program, as it does.
+*/
+template <class F>
+auto bad_alloc_as_capacity(F&& f) noexcept -> decltype(std::forward<F>(f)()) {
+#ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+    try {
+        return std::forward<F>(f)();
+    } catch (const std::bad_alloc&) {
+        return errc::capacity;
+    }
+#else
+    return std::forward<F>(f)();
+#endif
+}
+
+// NOLINTEND(bugprone-exception-escape)
 
 /** An integer type that is a number: any but `bool` and the character types. */
 template <class T>
@@ -170,6 +195,14 @@ private:
     template <class T>
     using buffers = std::vector<buffer<T>, rebound<Allocator, buffer<T>>>;
 
+    /** A new buffer of `size` values of `T` in the allocator, added to `list`. */
+    template <class T>
+    buffer<T>& add(buffers<T>& list, std::size_t size) {
+        // Made, then moved in: a polymorphic allocator constructs an element with itself after the
+        // arguments, which a size and an allocator already are.
+        return list.emplace_back(buffer<T>(size, rebound<Allocator, T>(alloc_)));
+    }
+
     /** Holds `null` again, and owns nothing. */
     void clear() noexcept {
         item_ = item<Traits>{};
@@ -237,11 +270,27 @@ struct converter {
     /** Whether bytes are base64url text rather than base64. */
     static constexpr bool url = std::same_as<typename Traits::bytes, base64url>;
 
+    /** A buffer of bytes in `A`, rebound. */
+    template <class A>
+    using bytes_in = std::vector<std::byte, rebound<A, std::byte>>;
+
+    /**
+     How many characters of UTF-16 text become ASCII at a time, on the stack, to read as base64: a
+     whole number of base64's groups of four.
+    */
+    static constexpr std::size_t ascii_block = 256;
+
+    /**
+     Room for the longest text Date.prototype.toJSON writes, `+275760-09-13T00:00:00.000Z`, of 27
+     characters: longer text is no date.
+    */
+    static constexpr std::size_t date_text_room = 32;
+
     /** Prepares `v` from nothing; on failure `out` holds `null`. */
     template <class T>
-    static result<void> prepare_value(const T& v, prepared_t& out) {
+    static result<void> prepare_value(const T& v, prepared_t& out) noexcept {
         out.clear();
-        result<void> held = hold(out, v);
+        result<void> held = bad_alloc_as_capacity([&] { return hold(out, v); });
         if (!held.has_value()) {
             out.clear();
         }
@@ -260,9 +309,10 @@ struct converter {
 
     /** Prepares a JSON string from nothing, revived as asked; on failure `out` holds `null`. */
     static result<void> prepare_json_string(std::string_view utf8, bool revive_dates,
-                                            bool revive_bytes, prepared_t& out) {
+                                            bool revive_bytes, prepared_t& out) noexcept {
         out.clear();
-        result<void> held = hold_json_string(out, utf8, revive_dates, revive_bytes);
+        result<void> held = bad_alloc_as_capacity(
+            [&] { return hold_json_string(out, utf8, revive_dates, revive_bytes); });
         if (!held.has_value()) {
             out.clear();
         }
@@ -432,9 +482,10 @@ struct converter {
         // Under javascript_bytes, bytes are an object's shape, which no string has.
         if constexpr (!javascript_shape) {
             if (revive_bytes) {
-                if (result<std::vector<std::byte>> decoded = decode(text); decoded.has_value()) {
-                    const auto& bytes = owner.bytes_.emplace_back(
-                        decoded.unsafe_value().begin(), decoded.unsafe_value().end(), owner.alloc_);
+                if (result<bytes_in<Allocator>> decoded = decode(text, owner.alloc_);
+                    decoded.has_value()) {
+                    const auto& bytes =
+                        owner.bytes_.emplace_back(std::move(decoded.unsafe_value()));
                     return hold_form(owner, owner.item_, std::span<const std::byte>(bytes));
                 }
             }
@@ -519,8 +570,7 @@ struct converter {
         }
         out.kind = kind_t::string;
         if constexpr (utf16_text) {
-            auto& units =
-                owner.utf16_.emplace_back(static_cast<std::size_t>(utf16_length(v)), owner.alloc_);
+            auto& units = owner.add(owner.utf16_, static_cast<std::size_t>(utf16_length(v)));
             to_utf16(v, units.data());
             out.text = std::as_bytes(std::span(units));
         } else {
@@ -539,8 +589,7 @@ struct converter {
             if (!valid_utf16(v)) {
                 return errc::type;
             }
-            auto& chars =
-                owner.utf8_.emplace_back(static_cast<std::size_t>(utf8_size(v)), owner.alloc_);
+            auto& chars = owner.add(owner.utf8_, static_cast<std::size_t>(utf8_size(v)));
             to_utf8(v, chars.data());
             out.kind = kind_t::string;
             out.text = std::as_bytes(std::span(chars));
@@ -579,8 +628,7 @@ struct converter {
         if (members.empty()) {
             return {};
         }
-        const std::span<literal_entry<Traits>> entries =
-            owner.entries_.emplace_back(members.size(), owner.alloc_);
+        const std::span<literal_entry<Traits>> entries = owner.add(owner.entries_, members.size());
         out.entries = entries.data();
         out.entry_count = entries.size();
         for (std::size_t i = 0; i < members.size(); ++i) {
@@ -604,8 +652,7 @@ struct converter {
         if (elements.empty()) {
             return {};
         }
-        const std::span<literal_entry<Traits>> entries =
-            owner.entries_.emplace_back(elements.size(), owner.alloc_);
+        const std::span<literal_entry<Traits>> entries = owner.add(owner.entries_, elements.size());
         out.entries = entries.data();
         out.entry_count = entries.size();
         for (std::size_t i = 0; i < elements.size(); ++i) {
@@ -617,15 +664,60 @@ struct converter {
         return {};
     }
 
-    /** Base64 or base64url text, by the policy, decoded: @ref errc::type when it is not. */
-    static result<std::vector<std::byte>> decode(std::string_view text) {
+    /** Room for the bytes of base64 text of `size` characters, in `alloc`. */
+    template <class A>
+    static bytes_in<A> room_for_base64(std::size_t size, const A& alloc) {
         // Four characters make at most three bytes, and the last group of base64url's fewer.
-        std::vector<std::byte> out(((text.size() / 4) * 3) + 3);
+        return bytes_in<A>(((size / 4) * 3) + 3, rebound<A, std::byte>(alloc));
+    }
+
+    /**
+     Base64 or base64url text, by the policy, decoded into a buffer of `alloc`: @ref errc::type when
+     it is not.
+    */
+    template <class A>
+    static result<bytes_in<A>> decode(std::string_view text, const A& alloc) {
+        bytes_in<A> out = room_for_base64(text.size(), alloc);
         const result<std::uint64_t> size = read_base64(text, out.data(), url);
         if (!size.has_value()) {
             return errc::type;
         }
         out.resize(static_cast<std::size_t>(size.unsafe_value()));
+        return out;
+    }
+
+    /** A UTF-16 unit as its ASCII character, or a zero, which no date's or base64's text holds. */
+    static constexpr char ascii_of(char16_t unit) noexcept {
+        return unit < 0x80 ? static_cast<char>(unit) : '\0';
+    }
+
+    /**
+     UTF-16 base64 text, by the policy, decoded into a buffer of `alloc` a block at a time, made
+     ASCII on the stack, so that no copy of the text is allocated: @ref errc::type when it is not.
+    */
+    template <class A>
+    static result<bytes_in<A>> decode(std::u16string_view units, const A& alloc) {
+        bytes_in<A> out = room_for_base64(units.size(), alloc);
+        // Every block but the last holds whole groups, which decode alone, three bytes each; as
+        // padding only ends the text, one of them that ends in '=' is not base64.
+        std::array<char, ascii_block> chars{};
+        std::size_t done = 0;
+        std::size_t written = 0;
+        do {
+            const std::size_t count = std::min(units.size() - done, ascii_block);
+            std::ranges::transform(units.substr(done, count), chars.begin(), ascii_of);
+            done += count;
+            if (done != units.size() && chars[count - 1] == '=') {
+                return errc::type;
+            }
+            const result<std::uint64_t> size =
+                read_base64(std::string_view(chars.data(), count), out.data() + written, url);
+            if (!size.has_value()) {
+                return errc::type;
+            }
+            written += static_cast<std::size_t>(size.unsafe_value());
+        } while (done != units.size());
+        out.resize(written);
         return out;
     }
 
@@ -653,7 +745,7 @@ struct converter {
         } else if constexpr (std::same_as<T, date_ms>) {
             return read_date_of(n);
         } else if constexpr (std::same_as<T, std::vector<std::byte>>) {
-            return read_bytes(t, n);
+            return read_bytes(t, n, std::allocator<std::byte>());
         } else {
             if (n.kind != kind_t::bytes) {
                 return errc::type;
@@ -842,67 +934,70 @@ struct converter {
         }
     }
 
-    /**
-     Calls `f` with a string node's text as `std::string_view`: with `utf16`, its ASCII units, and
-     a zero for each other, which no date's or base64's text holds.
-    */
-    template <class F>
-    static auto with_ascii(const node_t& n, F&& f) {
+    /** A string node's text, as Date.prototype.toJSON's, as a date: else nothing. */
+    static std::optional<date_ms> date_of_text(const node_t& n) noexcept {
         if constexpr (utf16_text) {
+            // A date's text is short: longer text is none, and shorter is made ASCII on the stack.
             const std::u16string_view units = n.text.units();
-            std::string chars(units.size(), '\0');
-            std::ranges::transform(units, chars.begin(), [](char16_t unit) {
-                return unit < 0x80 ? static_cast<char>(unit) : '\0';
-            });
-            return std::forward<F>(f)(std::string_view(chars));
+            std::array<char, date_text_room> chars{};
+            if (units.size() > chars.size()) {
+                return std::nullopt;
+            }
+            std::ranges::transform(units, chars.begin(), ascii_of);
+            return read_date(std::string_view(chars.data(), units.size()));
         } else {
-            return std::forward<F>(f)(n.text.chars());
+            return read_date(n.text.chars());
         }
     }
 
     /** A date node, or a string that is exactly Date.prototype.toJSON's text, as a date. */
-    static result<date_ms> read_date_of(const node_t& n) {
+    static result<date_ms> read_date_of(const node_t& n) noexcept {
         if (n.kind == kind_t::date) {
             return n.template load<date_ms>();
         }
         if (n.kind != kind_t::string) {
             return errc::type;
         }
-        const std::optional<date_ms> date =
-            with_ascii(n, [](std::string_view text) { return read_date(text); });
+        const std::optional<date_ms> date = date_of_text(n);
         if (!date) {
             return errc::type;
         }
         return *date;
     }
 
-    /** A bytes node, or what the bytes policy reads as bytes, as bytes. */
-    static result<std::vector<std::byte>> read_bytes(const tree_t& t, const node_t& n) {
+    /** A bytes node, or what the bytes policy reads as bytes, as bytes in a buffer of `alloc`. */
+    template <class A>
+    static result<bytes_in<A>> read_bytes(const tree_t& t, const node_t& n, const A& alloc) {
         if (n.kind == kind_t::bytes) {
             const std::span<const std::byte> bytes = n.text.view();
-            return std::vector<std::byte>(bytes.begin(), bytes.end());
+            return bytes_in<A>(bytes.begin(), bytes.end(), rebound<A, std::byte>(alloc));
         }
         if constexpr (javascript_shape) {
             if (n.kind != kind_t::object) {
                 return errc::type;
             }
-            return read_byte_object(t, n);
+            return read_byte_object(t, n, alloc);
         } else {
             if (n.kind != kind_t::string) {
                 return errc::type;
             }
-            return with_ascii(n, [](std::string_view text) { return decode(text); });
+            if constexpr (utf16_text) {
+                return decode(n.text.units(), alloc);
+            } else {
+                return decode(n.text.chars(), alloc);
+            }
         }
     }
 
     /**
-     An object as bytes when it has the shape `JSON.stringify` gives a Uint8Array: keys exactly
-     `"0"` to `"n-1"`, each holding an integer from 0 to 255.
+     An object as bytes in a buffer of `alloc` when it has the shape `JSON.stringify` gives a
+     Uint8Array: keys exactly `"0"` to `"n-1"`, each holding an integer from 0 to 255.
     */
-    static result<std::vector<std::byte>> read_byte_object(const tree_t& t, const node_t& n) {
+    template <class A>
+    static result<bytes_in<A>> read_byte_object(const tree_t& t, const node_t& n, const A& alloc) {
         // As many keys as the indices, each found: the keys are exactly those.
         const std::uint64_t count = t.count(n.id);
-        std::vector<std::byte> out;
+        bytes_in<A> out{rebound<A, std::byte>(alloc)};
         out.reserve(static_cast<std::size_t>(count));
         for (std::uint64_t i = 0; i < count; ++i) {
             std::array<char, 24> key{};
@@ -953,69 +1048,72 @@ struct converter {
         return x.template load<number_type>() == y.template load<number_type>();
     }
 
-    /** The member of the object `object` of `t` whose key is the key of `child`, or null. */
-    static const node_t* member_like(const tree_t& t, std::uint64_t object, const node_t& child) {
-        if constexpr (utf16_text) {
-            // Keys enter in UTF-8, so a stored one always has its UTF-8.
-            const std::u16string_view units = child.key.units();
-            std::string key(static_cast<std::size_t>(utf8_size(units)), '\0');
-            to_utf8(units, key.data());
-            return t.member(object, key);
-        } else {
-            return t.member(object, child.key.chars());
-        }
+    /**
+     The member of the object `object` of `t` whose key is the key of `child`, or null: the two
+     trees have the same traits, so the key is looked for as it is stored.
+    */
+    static const node_t* member_like(const tree_t& t, std::uint64_t object,
+                                     const node_t& child) noexcept {
+        return t.member_stored(object, child.key.chars());
     }
 
     /**
-     Pairs the children of two containers of the same kind and size to compare: elements by index,
-     members by key; false when a key of `x` is not in `y`.
+     The node of `b` that stands where `child`, a child of the node `x` of `a`, stands under `y`:
+     the element of the same index, the member of the same key.
     */
-    static bool pair_children(const tree_t& a, const node_t& x, const tree_t& b, const node_t& y,
-                              std::vector<std::pair<const node_t*, const node_t*>>& pending) {
+    static const node_t* counterpart(const tree_t& b, const node_t& x, const node_t& y,
+                                     const node_t& child) noexcept {
         if (x.kind == kind_t::array) {
-            const node_t* d = b.first_child(y.id);
-            for (const node_t* c = a.first_child(x.id); c != nullptr && d != nullptr;
-                 c = a.next_sibling(*c)) {
-                pending.emplace_back(c, d);
-                d = b.next_sibling(*d);
-            }
-            return true;
+            return b.element(y.id, child.ordinal);
         }
-        for (const node_t* c = a.first_child(x.id); c != nullptr; c = a.next_sibling(*c)) {
-            const node_t* d = member_like(b, y.id, *c);
-            if (d == nullptr) {
-                return false;
-            }
-            pending.emplace_back(c, d);
-        }
-        return true;
+        return member_like(b, y.id, child);
     }
 
-    /** Whether two subtrees are equal, walked with a stack of their own rather than recursion. */
-    static bool equal_trees(const tree_t& a, const node_t* x, const tree_t& b, const node_t* y) {
+    /**
+     Whether two subtrees are equal: `x` walked in document order through its nodes' links, each
+     node paired with its counterpart in `y`, so that no stack is allocated and nothing can fail.
+    */
+    static bool equal_trees(const tree_t& a, const node_t* x, const tree_t& b,
+                            const node_t* y) noexcept {
         if (x == nullptr || y == nullptr) {
             return x == y;
         }
-        std::vector<std::pair<const node_t*, const node_t*>> pending{{x, y}};
-        while (!pending.empty()) {
-            const auto [p, q] = pending.back();
-            pending.pop_back();
+        const node_t* p = x;
+        const node_t* q = y;
+        while (true) {
             if (!same_value(a, *p, b, *q)) {
                 return false;
             }
-            const bool container = p->kind == kind_t::array || p->kind == kind_t::object;
-            if (container && !pair_children(a, *p, b, *q, pending)) {
-                return false;
+            // Down to the first child: containers of one kind and size, so `q` has as many.
+            if (const node_t* child = a.first_child(p->id)) {
+                q = counterpart(b, *p, *q, *child);
+                p = child;
+                if (q == nullptr) {
+                    return false;
+                }
+                continue;
+            }
+            // Else to the next sibling of the nearest node that has one, up to `x`.
+            while (true) {
+                if (p == x) {
+                    return true;
+                }
+                const node_t* parent_p = a.find(p->parent);
+                const node_t* parent_q = b.find(q->parent);
+                if (const node_t* sibling = a.next_sibling(*p)) {
+                    q = counterpart(b, *parent_p, *parent_q, *sibling);
+                    p = sibling;
+                    if (q == nullptr) {
+                        return false;
+                    }
+                    break;
+                }
+                p = parent_p;
+                q = parent_q;
             }
         }
-        return true;
     }
 };
-
-// A conversion ends the program where the process heap, which holds a prepared value's transcoded
-// text and literal entries, a value read as a std::string or a std::vector, or equal's stack, runs
-// out, as the library tolerates.
-// NOLINTBEGIN(bugprone-exception-escape)
 
 /**
  Turns a C++ value into an item: @ref errc::type for text invalid in its encoding or a
@@ -1060,6 +1158,10 @@ item<Traits> empty_item(webcpp::document::kind k) noexcept {
     return made;
 }
 
+// A value read as a std::string, a std::u16string or a std::vector is the program's own, in the
+// standard allocator, not the document's: its exhaustion ends the program, as the library
+// tolerates of what it hands the program; read_bytes_with reads bytes into an allocator softly.
+// NOLINTBEGIN(bugprone-exception-escape)
 /**
  Reads a node as `T`: @ref errc::type for a null node (undefined) or another kind, @ref errc::range
  for a number that is not an integer, does not fit `T`, or that `T` cannot hold exactly.
@@ -1079,6 +1181,23 @@ result<T> read(const tree_view<Traits>& t, const node<Traits>* n) noexcept {
     return converter<Traits>::template read_as<T>(t, *n);
 }
 
+// NOLINTEND(bugprone-exception-escape)
+
+/**
+ Reads a node as bytes, as @ref read reads `std::vector<std::byte>`, into a buffer of `alloc`: a
+ bytes node, text of the traits' base64 policy, or under `javascript_bytes` an object of a
+ Uint8Array's shape; @ref errc::type for a null node or another, and with exceptions
+ @ref errc::capacity when `alloc` has no room for the bytes.
+*/
+template <class Traits, class Allocator>
+result<std::vector<std::byte, rebound<Allocator, std::byte>>> read_bytes_with(
+    const tree_view<Traits>& t, const node<Traits>* n, const Allocator& alloc) noexcept {
+    if (n == nullptr) {
+        return errc::type;
+    }
+    return bad_alloc_as_capacity([&] { return converter<Traits>::read_bytes(t, *n, alloc); });
+}
+
 /**
  Whether two subtrees are equal, structurally: the same kind; numbers by value; strings, dates and
  bytes by value; arrays element by element; objects with the same keys, each with an equal value,
@@ -1089,8 +1208,6 @@ bool equal(const tree_view<Traits>& a, const node<Traits>* x, const tree_view<Tr
            const node<Traits>* y) noexcept {
     return converter<Traits>::equal_trees(a, x, b, y);
 }
-
-// NOLINTEND(bugprone-exception-escape)
 
 }  // namespace webcpp::document::detail
 
