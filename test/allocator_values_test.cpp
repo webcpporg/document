@@ -395,6 +395,53 @@ void view_members() {
     BOOST_TEST_EQ(a.resource().bytes_in_use(), 0U);
 }
 
+// A document's const reads ask its resource for nothing, as a standard container's do, so that any
+// number of threads may make them at once whatever the resource: a lookup by a key of any length,
+// a missing member of a short key, get, ==, iteration, the views, image, compact_size, stringify,
+// and stringify_to of a value nested 16 deep in chunks of 4096 bytes. A missing member of a long
+// key is one of the reads that allocate: its handle holds the key, once.
+template <class Traits>
+void const_reads_ask_nothing() {
+    arena a(16 * mebibyte);
+    const sample_values f;
+    const std::string json = R"({"a":1,")" + f.key + R"(":")" + f.text +
+                             R"(","list":[1,[2,{"x":3}]],"deep":)" + std::string(15, '[') +
+                             std::string(15, ']') + "}";
+    const auto d = in_arena<Traits>(a, json);
+    const auto other = in_arena<Traits>(a, json);
+    const std::string long_missing(200, 'm');
+    std::string written;
+    const std::uint64_t before = a.resource().allocations();
+    {
+        BOOST_TEST(d[f.key].is_string());
+        BOOST_TEST_EQ(d["a"].template get<std::int64_t>().value(), 1);
+        BOOST_TEST(d["k"].is_undefined());
+        BOOST_TEST(d == other);
+        std::uint64_t elements = 0;
+        for (const auto element : d["list"]) {
+            elements += element.is_undefined() ? 0 : 1;
+        }
+        BOOST_TEST_EQ(elements, 2U);
+        const auto o = d.root().as_object();
+        require(BOOST_TEST(o.has_value()));
+        BOOST_TEST_EQ(o->size(), 4U);
+        BOOST_TEST(o->contains(f.key));
+        BOOST_TEST(!d.image().empty());
+        BOOST_TEST_GT(d.compact_size(), 0U);
+        BOOST_TEST_EQ(wd::stringify(d, 2), wd::stringify(other, 2));
+        BOOST_TEST(wd::stringify_to(
+                       d, [&written](std::string_view piece) { written.append(piece); }, 2)
+                       .has_value());
+    }
+    BOOST_TEST_EQ(a.resource().allocations(), before);
+    BOOST_TEST_EQ(written, parsed<Traits>(json).root().stringify(2));
+    {
+        const auto missing = d[long_missing];
+        BOOST_TEST(missing.is_undefined());
+        BOOST_TEST_EQ(a.resource().allocations(), before + 1);
+    }
+}
+
 // Under js_traits, a bound by key compares a UTF-8 key with the stored UTF-16 ones as it is
 // transcoded: U+10000's high surrogate comes before U+E000, and a prefix before its extensions.
 void bounds_by_utf16_units() {
@@ -671,6 +718,8 @@ int main() {
     array_methods<wd::js_traits>();
     view_members<wd::default_traits>();
     view_members<wd::js_traits>();
+    const_reads_ask_nothing<wd::default_traits>();
+    const_reads_ask_nothing<wd::js_traits>();
     bounds_by_utf16_units();
     external_document();
     nothing_reports_value_first<wd::default_traits>();

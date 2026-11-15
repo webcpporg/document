@@ -21,10 +21,10 @@ include::{examples}/document_quick_start.cpp[tag=stringify,indent=0]
 The indent is JavaScript's: 0 writes compactly, a larger one is clamped to 10 spaces, and an empty
 array or object is written `[]` or `{}` at any indent. A value that is `undefined`, a handle of
 nothing or a document that holds `undefined`, writes no text, as `JSON.stringify(undefined)`
-returns none. `stringify` returns a `std::string`, in the standard allocator whatever the document's
-(<<document-allocators-outside>>), so its failure is a `std::bad_alloc`: the standard allocator's,
-for the text, or, with exceptions, the document's allocator's, for its stack. A program that must
-not meet one, or that keeps its text in memory of its own, writes to a sink.
+returns none. `stringify` returns a `std::string`, in the standard allocator whatever the
+document's, and keeps its stack there too (<<document-allocators-outside>>): it asks the document's
+allocator for nothing, and its failure is the standard allocator's `std::bad_alloc`. A program that
+must not meet one, or that keeps its text in memory of its own, writes to a sink.
 
 [#document-stringify-to]
 === In pieces, to a sink
@@ -48,10 +48,12 @@ include::{examples}/document_streaming.expected[lines=12..13]
 The first sink writes a bar after each piece of 8 bytes; the second keeps the first piece, then
 fails, which stops the writing there.
 
-`stringify_to` allocates only its stack, which takes the place of recursion, and the chunk it has
-not yet handed to the sink, both in the document's allocator (<<document-allocators>>). With
-exceptions, an allocator that has no room for them is `errc::capacity`, which stops the writing as a
-sink's failure does. A sink that appends to a string of the program's choosing, a
+`stringify_to` keeps its stack, which takes the place of recursion, and the chunk it has not yet
+handed to the sink in room of its own, 16 levels of the stack and 4096 bytes of the chunk, and
+allocates only past them, in the document's allocator (<<document-allocators>>): a value nested 16
+deep or less, written in chunks of at most 4096 bytes, allocates nothing. With exceptions, an
+allocator that has no room for them is `errc::capacity`, which stops the writing as a sink's failure
+does. A sink that appends to a string of the program's choosing, a
 `std::pmr::string` among them, keeps the text in memory the program chooses
 (<<document-allocators-resource>>).
 

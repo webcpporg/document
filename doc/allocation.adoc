@@ -13,8 +13,9 @@ default is `std::allocator<std::byte>`, the global heap. A program that gives a
 `std::pmr::memory_resource` instead keeps a document's memory where it chooses: in a buffer of its
 own, in an arena released at the end of a request, or in a resource that counts. This section names
 the storages, shows a document in a resource, lists how documents are made in an allocator, how
-moves and copies treat it and what happens when it has no room, names what stays outside it, and
-says which of document's types can be shared between processes.
+moves and copies treat it and what happens when it has no room, names what stays outside it, lists
+the reads that allocate in it, and says which of document's types can be shared between
+processes.
 
 [#document-allocators-storages]
 === The storages
@@ -75,7 +76,8 @@ comes from the global aligned `operator new` in its form that returns null.
 *The working state* of every operation on a document, owned or external, is in the same allocator,
 rebound: the records a change stages before it changes anything, the stack of a deep copy and of a
 compaction, the parser's frames, path and pending text, its selectors and their callbacks, the
-writer's stack and the piece it holds back for its sink, the key a handle of a missing member
+frames of `stringify_to`'s stack past the 16 it has room for and the piece it holds back for its
+sink once it holds more than its own room of 4096 bytes, the key a handle of a missing member
 holds, the buffers in which a value is prepared to be stored, and the keys `Object.assign` takes
 from its source. For an external document that is all the allocator holds. A lookup by key
 allocates nothing, whatever the key's length, and neither does a comparison with `==`, which walks
@@ -217,9 +219,9 @@ allocations leaves the document as it was. A few places have their own way to sa
   of the text;
 * a handle of a missing member whose key finds no room reads `undefined`, and a change through it
   is `errc::capacity`;
-* what has no result to return the failure in throws `std::bad_alloc`: `stringify`, whose result is
-  the text, and the move assignment between allocators that differ (<<document-allocators-moves>>);
-  and the sugar throws its `wd::capacity_error` (<<document-exceptions>>).
+* the move assignment between allocators that differ, which has no result to return the failure
+  in, throws `std::bad_alloc` (<<document-allocators-moves>>); and the sugar throws its
+  `wd::capacity_error` (<<document-exceptions>>).
 
 *Without exceptions,* an allocator cannot return null, so an allocator that fails ends the program,
 as it does for any standard container. A program built without exceptions sizes its resource for
@@ -240,7 +242,8 @@ A few allocations are not in the document's allocator, each for a reason of its 
   or to the `finish(last)` of a parser that was given no text before, never suspends, and
   allocates nothing there.
 * *What the program gets back.* A value returned to the program is of the program's own type, in
-  the standard allocator: the `std::string` that `stringify` returns, the `std::string` of
+  the standard allocator: the `std::string` that `stringify` returns, with the stack it writes it
+  with, so that `stringify` asks the document's allocator for nothing, the `std::string` of
   `get<std::string>()` and the other reads into a type that owns its memory, the text of
   `path_view::to_string()`, the message of an error code, and the exceptions of the sugar, which
   hold that message. `get` is `noexcept`, so the standard allocator's failure in a read ends the
@@ -255,6 +258,31 @@ A few allocations are not in the document's allocator, each for a reason of its 
   the default storage: their documents are `wd::owned` or `wd::external`. A `wd::image_pool`
   allocates its blocks once, from the global heap; a `wd::shared_pool` formats memory the program
   gives.
+
+[#document-allocators-reads]
+=== Reads from several threads
+
+A standard container allocates nothing in a `const` member, so several threads may read one at
+once, whatever its resource. Most of a document's `const` operations allocate nothing either: a
+lookup by key, `get` into a scalar or a view, `==`, iteration and the containers' views, `image`,
+`compact_size`, and `stringify`, which keeps its text and its stack in the standard allocator. A
+few allocate in the document's allocator, rebound:
+
+* `stringify_to`, for a value nested more than 16 containers deep, the frames of its stack past its
+  own room, and for a chunk larger than 4096 bytes, the piece it holds back once it holds more than
+  its own room;
+* `operator[]` of a document or a handle, for a missing member whose key is longer than a
+  `std::basic_string` holds without allocating, which its standard library decides: the handle
+  holds a copy of the key, and so does each copy of such a handle;
+* `clone()`, `slice` and `concat`, which make documents in it, and `compact_into`, whose external
+  document keeps it, with their working state.
+
+Several threads that use these on one document at once need a resource that is safe to use from
+several threads, as `std::pmr::synchronized_pool_resource` is and as
+`std::pmr::monotonic_buffer_resource` and `std::pmr::unsynchronized_pool_resource` are not. The
+standard allocator is, so a `wd::document` and the documents a `wd::shared_document` shares are read
+by any number of threads at once with every `const` operation (<<document-sharing>>), and so are the
+reads into a type of the program's own, `get<std::string>()` among them, which allocate there.
 
 [#document-allocators-shareable]
 === What can be shared
@@ -284,8 +312,10 @@ array methods and the containers' views; a parse of a whole text, with selectors
 `stringify_to` into a `std::pmr::string` of the same resource, at every indent and chunk, a
 document nested 10,000 levels deep among them. Where the global heap is reached on purpose, the
 count is exact: a parse in chunks calls `operator new` as often as Boost.JSON's stack grows, and
-`stringify` as often as its `std::string` does. With exceptions, each operation runs again over a
-resource that fails at its first allocation, then its second, and so on until the operation
+`stringify` as often as its `std::string` and the frames of its stack past its own room need, while
+it asks the document's resource for nothing. A dozen small texts written by `stringify_to` in a
+64 KiB arena, as the example's, take nothing of it. With exceptions, each operation runs again over
+a resource that fails at its first allocation, then its second, and so on until the operation
 succeeds, and every failure must be `errc::capacity`, or the `std::bad_alloc` of the places that
 throw it, with the document equal to what it was. Both traits are covered, `js_traits` with its
 UTF-16 strings and keys among them, with strings and keys longer than any small-string buffer. The

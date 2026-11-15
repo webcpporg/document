@@ -42,9 +42,10 @@ inline constexpr std::uint64_t default_chunk = 4096;
  the traits' bytes policy.
 
  The text is a `std::string`, the program's value in the standard allocator whatever the
- document's. The writer's stack, a frame of 16 bytes for each container it is inside, with room
- for 16 frames at first and twice the room each time it is full, is in the document's allocator,
- rebound, and freed when it returns.
+ document's, and the writer's stack is in the same allocator: `stringify` asks the document's
+ allocator for nothing. The stack holds a frame of 16 bytes for each container the writer is
+ inside, the first 16 in room of its own and the deeper ones allocated, room for 16 at first and
+ twice the room each time it is full, and freed when it returns.
 
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.
@@ -52,9 +53,8 @@ inline constexpr std::uint64_t default_chunk = 4096;
  @param indent The spaces of each level, clamped to 10; 0 writes compactly.
  @return The text; empty when the value is `undefined`, since `JSON.stringify(undefined)` returns
  no text.
- @throws std::bad_alloc When the standard allocator has no room for the text or, with exceptions,
- the document's allocator none for the stack; without exceptions, an allocator that fails ends the
- program, as it does itself.
+ @throws std::bad_alloc When the standard allocator has no room for the text or the stack; without
+ exceptions, the standard allocator's failure ends the program, as it does itself.
  @see "Writing JSON", in the guide.
 */
 template <class Traits, class Storage>
@@ -65,9 +65,9 @@ std::string stringify(basic_const_value<Traits, Storage> v, std::uint32_t indent
         return text;
     }
     detail::string_output out(text);
-    // A string output fails only by throwing: a failure returned is the stack's, with exceptions,
-    // which the text a std::string returns cannot carry.
-    if (!detail::write_json(*t, detail::access::node_of(v), indent, out, t->get_allocator())) {
+    // The stack is in the text's allocator. A string output fails only by throwing: a failure
+    // returned is the stack's, with exceptions, which the text a std::string returns cannot carry.
+    if (!detail::write_json(*t, detail::access::node_of(v), indent, out, text.get_allocator())) {
         boost::throw_exception(std::bad_alloc());
     }
     return text;
@@ -95,12 +95,14 @@ std::string stringify(const basic_document<Traits, Storage>& d, std::uint32_t in
 /**
  Writes a value as @ref stringify does, in pieces of at most `chunk` bytes, to a sink.
 
- It allocates only its working state, in the document's allocator, rebound, and frees it when it
- returns: its stack, a frame of 16 bytes for each container it is inside, with room for 16 frames
- at first and twice the room each time it is full; and the piece it holds back until it is full,
- given the smaller of `chunk` and 4096 bytes the first time it holds more than a string's own
- small buffer does, then, for a larger chunk, twice its room, up to `chunk`, each time it is full.
- What the sink allocates is the program's own.
+ Its working state has room of its own, and it allocates only past it, in the document's
+ allocator, rebound, freed when it returns: its stack holds a frame of 16 bytes for each container
+ it is inside, the first 16 in its own room and the deeper ones allocated, room for 16 at first
+ and twice the room each time it is full; and the piece it holds back until it is full has 4096
+ bytes of its own room, so that a chunk of at most 4096 bytes allocates none, while a larger
+ chunk's piece, once it holds more, is allocated at 8192 bytes, then twice its room, up to
+ `chunk`, each time it is full. A value nested 16 deep or less, written in chunks of at most 4096
+ bytes, asks the document's allocator for nothing. What the sink allocates is the program's own.
 
  @tparam Traits The document's traits.
  @tparam Storage The document's storage.

@@ -10,8 +10,10 @@
  SerializeJSONArray and QuoteJSONString write, to an output that `stringify` keeps whole and
  `stringify_to` hands to a sink in chunks.
 
- Its working state, the stack and the piece `stringify_to` holds back, is in the document's
- allocator, rebound, and is the only thing it allocates besides its output.
+ Its working state, the stack and the piece `stringify_to` holds back, has room of its own for a
+ value nested @ref first_frames deep and a piece of @ref first_piece_room bytes, and allocates
+ only past them, in the allocator it is given, rebound: the string's for `stringify`, the
+ document's for `stringify_to`. That and its output are all it allocates.
 */
 
 #ifndef WEBCPP_DOCUMENT_DETAIL_WRITER_HPP
@@ -48,15 +50,16 @@ namespace webcpp::document::detail {
 inline constexpr std::uint32_t max_indent = 10;
 
 /**
- The frames the writer's stack has room for at first, 16 bytes each: a document nested 16 deep
- is written with one allocation of its stack.
+ The frames the writer's stack holds in room of its own, 16 bytes each: a value nested 16 deep is
+ written with no allocation of its stack. The frames past them are allocated, room for 16 at
+ first and twice the room each time it is full.
 */
 inline constexpr std::size_t first_frames = 16;
 
 /**
- The room the piece `stringify_to` holds back takes at first when its chunk is larger: a chunk of
- the default size or smaller is allocated once, at its size, and a larger one, which may be larger
- than the whole text, grows by doubling to what the text needs.
+ The bytes of the room of its own the piece `stringify_to` holds back takes, the default chunk's:
+ a chunk of 4096 bytes or fewer allocates no piece. A larger chunk's piece, once it holds more,
+ is allocated at twice this room, then twice its room each time it is full, up to the chunk.
 */
 inline constexpr std::size_t first_piece_room = 4096;
 
@@ -111,21 +114,22 @@ private:
 
 /**
  The output of `stringify_to`: the text handed to a sink in pieces of at most `chunk` bytes, the
- piece it holds back until it is full in `Allocator`, rebound.
+ piece it holds back until it is full in room of its own of @ref first_piece_room bytes, or, for a
+ larger chunk, in `Allocator`, rebound, once it holds more.
 */
 template <class Sink, class Allocator>
 class chunked_output {
 public:
     /**
-     An output to `sink`, which outlives it, in pieces of at most `chunk` bytes, at least 1, the
-     piece it holds back in `alloc`.
+     An output to `sink`, which outlives it, in pieces of at most `chunk` bytes, at least 1, a
+     piece larger than its own room held back in `alloc`.
     */
     chunked_output(Sink& sink, std::uint64_t chunk, const Allocator& alloc) noexcept
         // A chunk of 0 would never hand anything over; one past the address space is all of it.
         : sink_(&sink),
           chunk_(static_cast<std::size_t>(
               std::clamp<std::uint64_t>(chunk, 1, std::numeric_limits<std::size_t>::max()))),
-          pending_(piece_allocator(alloc)) {}
+          larger_(piece_allocator(alloc)) {}
 
     /**
      Takes `text`, handing the sink each full piece; the sink's failure is returned, and with
@@ -134,22 +138,23 @@ public:
     result<void> put(std::string_view text) {
         while (!text.empty()) {
             // A full piece of the text itself is handed over without a copy.
-            if (pending_.empty() && text.size() >= chunk_) {
+            if (held_ == 0 && text.size() >= chunk_) {
                 if (const result<void> handed = hand(text.substr(0, chunk_)); !handed) {
                     return handed;
                 }
                 text.remove_prefix(chunk_);
                 continue;
             }
-            const std::size_t taken = std::min(chunk_ - pending_.size(), text.size());
-            if (const result<void> room = make_room(pending_.size() + taken); !room) {
+            const std::size_t taken = std::min(chunk_ - held_, text.size());
+            if (const result<void> room = make_room(held_ + taken); !room) {
                 return room;
             }
-            pending_.append(text.substr(0, taken));
+            std::ranges::copy(text.substr(0, taken), piece() + held_);
+            held_ += taken;
             text.remove_prefix(taken);
-            if (pending_.size() == chunk_) {
-                const result<void> handed = hand(pending_);
-                pending_.clear();
+            if (held_ == chunk_) {
+                const result<void> handed = hand({piece(), held_});
+                held_ = 0;
                 if (!handed) {
                     return handed;
                 }
@@ -160,17 +165,20 @@ public:
 
     /** Hands the sink what is left; the sink's failure is returned. */
     result<void> flush() {
-        if (pending_.empty()) {
+        if (held_ == 0) {
             return {};
         }
-        const result<void> handed = hand(pending_);
-        pending_.clear();
+        const result<void> handed = hand({piece(), held_});
+        held_ = 0;
         return handed;
     }
 
 private:
-    /** The allocator of the piece held back. */
+    /** The allocator of a piece larger than its own room. */
     using piece_allocator = rebound<Allocator, char>;
+
+    /** The first byte of the piece held back: in its own room, or in the larger one. */
+    [[nodiscard]] char* piece() noexcept { return larger_.empty() ? own_.data() : larger_.data(); }
 
     /** Hands one piece to the sink, a sink returning `void` succeeding. */
     result<void> hand(std::string_view piece) {
@@ -183,22 +191,26 @@ private:
     }
 
     /**
-     Makes room in the piece for `size` bytes, at most the chunk, before it takes them: the smaller
-     of the chunk and @ref first_piece_room the first time, then twice the room, up to the chunk,
-     so that each growth is one allocation.
+     Makes room in the piece for `size` bytes, at most the chunk, before it takes them: past its
+     own room, twice that room, then twice the room each time, up to the chunk, the piece held
+     moved into it, so that each growth is one allocation.
     */
     result<void> make_room(std::size_t size) {
-        if (size <= pending_.capacity()) {
+        const std::size_t room = larger_.empty() ? own_.size() : larger_.size();
+        if (size <= room) {
             return {};
         }
-        std::size_t room = room_ == 0 ? std::min(chunk_, first_piece_room) : room_;
-        while (room < size) {
-            room = room > chunk_ / 2 ? chunk_ : 2 * room;
+        std::size_t grown = room;
+        while (grown < size) {
+            grown = grown > chunk_ / 2 ? chunk_ : 2 * grown;
         }
-        if (const result<void> made = allocating([this, room] { pending_.reserve(room); }); !made) {
+        std::vector<char, piece_allocator> larger(larger_.get_allocator());
+        if (const result<void> made = allocating([&larger, grown] { larger.resize(grown); });
+            !made) {
             return made;
         }
-        room_ = room;
+        std::ranges::copy(std::string_view(piece(), held_), larger.data());
+        larger_.swap(larger);
         return {};
     }
 
@@ -208,17 +220,85 @@ private:
     /** The largest piece. */
     std::size_t chunk_;
 
-    /** The room the piece was last given, 0 before it was given any. */
-    std::size_t room_ = 0;
+    /** How many bytes of the text the piece holds, fewer than a chunk. */
+    std::size_t held_ = 0;
 
-    /** The text not yet handed over, shorter than a chunk. */
-    std::basic_string<char, std::char_traits<char>, piece_allocator> pending_;
+    /** The piece's room of its own. */
+    std::array<char, first_piece_room> own_{};
+
+    /** The piece's room once it holds more than its own, empty until then. */
+    std::vector<char, piece_allocator> larger_;
+};
+
+/**
+ The writer's stack: room of its own for @ref first_frames frames, and the deeper ones in
+ `Allocator`, rebound, room for @ref first_frames at first and twice the room each time it is
+ full.
+*/
+template <class Frame, class Allocator>
+class frame_stack {
+public:
+    /** An empty stack, its deeper frames in `alloc`. */
+    explicit frame_stack(const Allocator& alloc) noexcept
+        : deeper_(rebound<Allocator, Frame>(alloc)) {}
+
+    /** How many frames it holds. */
+    [[nodiscard]] std::size_t size() const noexcept { return size_; }
+
+    /** Whether it holds none. */
+    [[nodiscard]] bool empty() const noexcept { return size_ == 0; }
+
+    /** The innermost frame; the stack holds one. */
+    [[nodiscard]] Frame& back() noexcept {
+        return size_ <= first_frames ? own_[size_ - 1] : deeper_.back();
+    }
+
+    /** Removes the innermost frame; the stack holds one. */
+    void pop_back() noexcept {
+        if (size_ > first_frames) {
+            deeper_.pop_back();
+        }
+        --size_;
+    }
+
+    /**
+     Pushes `f`, room made first; with exceptions, @ref errc::capacity when the allocator has no
+     room, the stack as it was.
+    */
+    result<void> push(const Frame& f) {
+        if (size_ < first_frames) {
+            own_[size_++] = f;
+            return {};
+        }
+        if (deeper_.size() == deeper_.capacity()) {
+            const std::size_t room =
+                deeper_.capacity() == 0 ? first_frames : 2 * deeper_.capacity();
+            if (const result<void> made = allocating([this, room] { deeper_.reserve(room); });
+                !made) {
+                return made;
+            }
+        }
+        // There is room: it does not allocate.
+        deeper_.push_back(f);
+        ++size_;
+        return {};
+    }
+
+private:
+    /** The outermost frames. */
+    std::array<Frame, first_frames> own_{};
+
+    /** The frames past them, innermost last. */
+    std::vector<Frame, rebound<Allocator, Frame>> deeper_;
+
+    /** How many frames it holds. */
+    std::size_t size_ = 0;
 };
 
 /**
  The walk of @ref write_json over one subtree, which keeps the containers it is inside on a stack
- of its own, in `Allocator`, rebound: depth is not bounded by the API, and a recursion would be
- bounded by the thread's stack.
+ of its own, @ref frame_stack, the frames past its own room in `Allocator`, rebound: depth is not
+ bounded by the API, and a recursion would be bounded by the thread's stack.
 
  Tip: the stack holds ids, never nodes, and each step finds its node again, so that nothing the
  walk holds points into the image across a call of the output.
@@ -232,7 +312,7 @@ public:
     */
     json_writer(const tree_view<Traits>& t, std::uint32_t indent, Out& out,
                 const Allocator& alloc) noexcept
-        : tree_(&t), indent_(indent), out_(&out), stack_(frame_allocator(alloc)) {}
+        : tree_(&t), indent_(indent), out_(&out), stack_(alloc) {}
 
     /**
      Writes the subtree of `root`, a node that is not `undefined`; the output's failure ends it,
@@ -258,9 +338,6 @@ private:
         /** Whether no child is written yet. */
         bool first = true;
     };
-
-    /** The allocator of the stack. */
-    using frame_allocator = rebound<Allocator, frame>;
 
     /** Whether strings and keys are stored as UTF-16 code units. */
     static constexpr bool utf16_text = std::same_as<typename Traits::string, utf16>;
@@ -334,20 +411,14 @@ private:
     }
 
     /**
-     Pushes a frame, room made first: @ref first_frames frames, then twice the room each time it is
-     full; with exceptions, an allocator with no room stops the writing with @ref errc::capacity.
+     Pushes a frame, room made first; with exceptions, an allocator with no room stops the writing
+     with @ref errc::capacity.
     */
     bool push(const frame& f) {
-        if (stack_.size() == stack_.capacity()) {
-            const std::size_t room = stack_.capacity() == 0 ? first_frames : 2 * stack_.capacity();
-            if (const result<void> made = allocating([this, room] { stack_.reserve(room); });
-                !made) {
-                status_ = made;
-                return false;
-            }
+        if (const result<void> pushed = stack_.push(f); !pushed) {
+            status_ = pushed;
+            return false;
         }
-        // There is room: it does not allocate.
-        stack_.push_back(f);
         return true;
     }
 
@@ -494,7 +565,7 @@ private:
     Out* out_;
 
     /** The containers the walk is inside, the innermost last. */
-    std::vector<frame, frame_allocator> stack_;
+    frame_stack<frame, Allocator> stack_;
 
     /** The first failure, which stops the writing, or success. */
     result<void> status_{};
@@ -502,7 +573,8 @@ private:
 
 /**
  Writes the subtree of `root` as `JSON.stringify(value, null, indent)` does, `indent` clamped to
- @ref max_indent, its stack in `alloc`, rebound; a null `root`, `undefined`, writes nothing.
+ @ref max_indent, the frames of its stack past its own room in `alloc`, rebound; a null `root`,
+ `undefined`, writes nothing.
 */
 template <class Traits, class Out, class Allocator>
     requires output<Out>

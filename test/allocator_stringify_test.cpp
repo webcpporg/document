@@ -4,16 +4,18 @@
 // accompanying file LICENSE_1_0.txt or copy at
 // https://www.boost.org/LICENSE_1_0.txt)
 
-// The writer's working state in the document's allocator: stringify_to of a pmr::document, of a
-// pmr document under js_traits and of an external pmr document under base64url, into a
-// std::pmr::string on the document's own arena, at every indent and chunk, a document nested
-// 10,000 levels deep among them, makes no call of the global operator new and gives back to the
-// arena all it took; the writer allocates its stack and the piece it holds back alone, as often as
-// their rooms double; stringify calls the global operator new exactly as often as its std::string
-// grows; quote allocates through its output alone; and, with exceptions, a resource that fails at
-// any step is errc::capacity for stringify_to, the sink not called again, its text a prefix and the
-// document unchanged, and std::bad_alloc for stringify, while a sink's own std::bad_alloc
-// propagates.
+// The writer's working state past its own room in the document's allocator: stringify_to of a
+// pmr::document, of a pmr document under js_traits and of an external pmr document under
+// base64url, into a std::pmr::string on the document's own arena, at every indent and chunk, a
+// document nested 10,000 levels deep among them, makes no call of the global operator new and
+// gives back to the arena all it took; the writer allocates the frames of its stack past the 16 of
+// its own room and a piece larger than its own 4,096 bytes alone, as often as their rooms double,
+// so that a dozen small texts written in the example's 64 KiB arena take none of it; stringify asks
+// the document's allocator for nothing, and calls the global operator new exactly as often as its
+// std::string grows and its stack's deeper frames need; quote allocates through its output alone;
+// and, with exceptions, a resource that fails at any step is errc::capacity for stringify_to, the
+// sink not called again, its text a prefix and the document unchanged, while a sink's own
+// std::bad_alloc propagates.
 
 #include <webcpp/document.hpp>
 
@@ -214,12 +216,13 @@ wd::basic_document<Traits, wd::pmr::external> external_copy(std::vector<block>& 
 }
 
 /**
- The allocations of the writer's stack to hold `frames` frames at once: room for 16 frames first,
- then twice the room each time it is full.
+ The allocations of the writer's stack to hold `frames` frames at once: 16 in its own room, then,
+ past them, room for 16 frames first and twice the room each time it is full.
 */
 constexpr std::uint64_t stack_allocations(std::uint64_t frames) {
+    const std::uint64_t deeper = frames > 16 ? frames - 16 : 0;
     std::uint64_t count = 0;
-    for (std::uint64_t room = 0; room < frames; room = room == 0 ? 16 : 2 * room) {
+    for (std::uint64_t room = 0; room < deeper; room = room == 0 ? 16 : 2 * room) {
         ++count;
     }
     return count;
@@ -227,17 +230,13 @@ constexpr std::uint64_t stack_allocations(std::uint64_t frames) {
 
 /**
  The allocations of the piece `stringify_to` holds back, for a text of `size` bytes written in
- pieces smaller than any room: the smaller of `chunk` and 4096 bytes the first time, then twice the
- room, up to `chunk`, each time it is full; none while the piece fits the string's own buffer.
+ pieces smaller than any room: none while it fits its own room of 4096 bytes, then twice that
+ room, then twice the room, up to `chunk`, each time it is full.
 */
-std::uint64_t piece_allocations(std::uint64_t chunk, std::uint64_t size) {
+constexpr std::uint64_t piece_allocations(std::uint64_t chunk, std::uint64_t size) {
     const std::uint64_t most = std::min(chunk, size);
-    if (most <= std::pmr::string().capacity()) {
-        return 0;
-    }
-    std::uint64_t count = 1;
-    for (std::uint64_t room = std::min<std::uint64_t>(chunk, 4096); room < most;
-         room = std::min(chunk, 2 * room)) {
+    std::uint64_t count = 0;
+    for (std::uint64_t room = 4096; room < most; room = std::min(chunk, 2 * room)) {
         ++count;
     }
     return count;
@@ -363,10 +362,11 @@ void allocates_its_stack_and_piece(const Document& doc, arena& docs, arena& outs
     BOOST_TEST_EQ(docs.resource().bytes_in_use(), held);
 }
 
-// The writer allocates, in the document's resource, its stack and the piece it holds back alone,
-// as often as their rooms double, and takes back all of it; the output's string, on another arena,
-// holds all else. The deep text, about 40,000 bytes, fills pieces of 32,768 bytes and a piece of
-// 65,536 bytes only in part.
+// The writer allocates, in the document's resource, the frames of its stack past its own room and
+// a piece larger than its own alone, as often as their rooms double, and takes back all of it; the
+// output's string, on another arena, holds all else. The deep text, about 40,000 bytes, fills
+// pieces of 32,768 bytes and a piece of 65,536 bytes only in part; its pieces of 4096 bytes or
+// fewer are held in the piece's own room.
 void the_writer_allocates_its_stack_and_piece() {
     {
         const wd::document source = nested<wd::default_traits>();
@@ -390,7 +390,7 @@ void the_writer_allocates_its_stack_and_piece() {
         allocates_its_stack_and_piece(doc, docs, outs, expected, deep_frames, 4096);
     }
     {
-        // The run of 10,000 bytes reaches the sink without growing the piece past its first room.
+        // The run of 10,000 bytes reaches the sink without a piece larger than its own room.
         const auto source = sample<wd::js_traits>();
         const std::string expected = wd::stringify(source);
         arena docs(source.image().size() + working_room);
@@ -405,7 +405,7 @@ void the_writer_allocates_its_stack_and_piece() {
 /**
  stringify of a copy of `source` in an arena, at each of `indents`, calls the global operator new
  and operator delete exactly as often as a std::string that appends the writer's pieces of the same
- text does, and the arena makes the allocations of a stack of `frames` frames, and takes them back.
+ text does, and as the stack of `frames` frames needs; the arena makes no allocation.
 */
 template <class Traits>
 void calls_new_for_its_string_alone(const wd::basic_document<Traits>& source, std::uint64_t frames,
@@ -442,23 +442,45 @@ void calls_new_for_its_string_alone(const wd::basic_document<Traits>& source, st
             const std::string text = wd::stringify(doc, indent);
             const std::uint64_t news = global.news();
             const std::uint64_t deletes = global.deletes();
-            BOOST_TEST_EQ(news, reference_news);
-            BOOST_TEST_EQ(deletes, reference_deletes);
+            BOOST_TEST_EQ(news, reference_news + stack_allocations(frames));
+            BOOST_TEST_EQ(deletes, reference_deletes + stack_allocations(frames));
             BOOST_TEST(text == expected);
         }
-        BOOST_TEST_EQ(a.resource().allocations() - made, stack_allocations(frames));
+        BOOST_TEST_EQ(a.resource().allocations(), made);
         BOOST_TEST_EQ(a.resource().bytes_in_use(), held);
     }
 }
 
-// stringify returns a std::string, the program's value in the standard allocator: it calls the
-// global operator new for that string alone, its stack in the document's resource.
+// stringify returns a std::string, the program's value in the standard allocator, and keeps its
+// stack in the same allocator: it calls the global operator new for that string and the stack's
+// deeper frames alone, and asks the document's resource for nothing.
 void stringify_calls_new_for_its_string_alone() {
     const std::array<std::uint32_t, 3> indents{0, 2, 10};
     const std::array<std::uint32_t, 1> compact{0};
     calls_new_for_its_string_alone(sample<wd::default_traits>(), sample_frames, indents);
     calls_new_for_its_string_alone(sample<wd::js_traits>(), sample_frames, indents);
     calls_new_for_its_string_alone(nested<wd::default_traits>(), deep_frames, compact);
+}
+
+// A dozen small texts written by stringify_to in a 64 KiB arena, the example's, take nothing of it:
+// the stack and the piece fit their own room, and the arena holds the document alone, which stays
+// as it was.
+void small_texts_take_nothing() {
+    arena a(std::size_t{64} * 1024);
+    auto made = wd::parse(R"({"user":"Ada","langs":["Analytical","Note G"],"draft":true})",
+                          wd::parse_options(), a.allocator());
+    require(BOOST_TEST(made.has_value()));
+    const std::uint64_t allocations = a.resource().allocations();
+    const std::uint64_t held = a.resource().bytes_in_use();
+    for (std::size_t call = 0; call < 12; ++call) {
+        std::string out;
+        BOOST_TEST(wd::stringify_to(*made, [&out](std::string_view piece) {
+                       out.append(piece);
+                   }).has_value());
+        BOOST_TEST_EQ(out, R"({"user":"Ada","langs":["Analytical","Note G"],"draft":true})");
+    }
+    BOOST_TEST_EQ(a.resource().allocations(), allocations);
+    BOOST_TEST_EQ(a.resource().bytes_in_use(), held);
 }
 
 // quote appends to a std::pmr::string on an arena, UTF-8 and UTF-16, long texts with escapes,
@@ -540,33 +562,17 @@ void capacity_at_every_step(const Document& doc, const Source& source,
 }
 
 /**
- stringify of `doc`, whose working state `failing` holds, with every budget from 0 until it
- succeeds: each step that fails throws std::bad_alloc, the document and the resource as they were,
- and as many steps fail as the stack of `frames` frames allocates.
+ stringify of `doc`, whose working state `failing` holds, with a budget of 0: it asks the resource
+ for nothing, so it writes the whole text, refused nothing.
 */
 template <class Document, class Source>
-void bad_alloc_at_every_step(const Document& doc, const Source& source,
-                             webcpp::test::failing_resource& failing, std::uint32_t indent,
-                             std::uint64_t frames) {
-    const std::string expected = wd::stringify(source, indent);
-    const std::uint64_t held = failing.bytes_in_use();
-    std::uint64_t budget = 0;
-    for (;; ++budget) {
-        failing.allow(budget);
-        bool thrown = false;
-        try {
-            const std::string text = wd::stringify(doc, indent);
-            BOOST_TEST(text == expected);
-        } catch (const std::bad_alloc&) {
-            thrown = true;
-        }
-        BOOST_TEST(same_image(doc, source));
-        BOOST_TEST_EQ(failing.bytes_in_use(), held);
-        if (!thrown || !BOOST_TEST_LT(budget, stack_allocations(frames))) {
-            break;
-        }
-    }
-    BOOST_TEST_EQ(budget, stack_allocations(frames));
+void stringify_asks_nothing(const Document& doc, const Source& source,
+                            webcpp::test::failing_resource& failing, std::uint32_t indent) {
+    const std::uint64_t refused = failing.refusals();
+    failing.allow(0);
+    const std::string text = wd::stringify(doc, indent);
+    BOOST_TEST(text == wd::stringify(source, indent));
+    BOOST_TEST_EQ(failing.refusals(), refused);
 }
 
 // A sink's own std::bad_alloc is the program's: it propagates, as anything a sink throws does, and
@@ -600,9 +606,9 @@ void a_sinks_bad_alloc_propagates() {
 constexpr std::uint64_t unlimited = std::uint64_t{1} << 40U;
 
 // With exceptions, a resource that has no room for the writer's stack or piece, at any step, makes
-// stringify_to errc::capacity and stringify throw std::bad_alloc, and changes nothing: for the
-// document nested 10,000 levels deep, owned under the default traits and js_traits and external
-// under base64url, and for the sample with an indent.
+// stringify_to errc::capacity, and changes nothing, while stringify, which asks it for nothing,
+// writes: for the document nested 10,000 levels deep, owned under the default traits and js_traits
+// and external under base64url, and for the sample with an indent.
 void a_resource_with_no_room() {
     webcpp::test::failing_resource failing(std::pmr::new_delete_resource(), unlimited);
     {
@@ -613,7 +619,7 @@ void a_resource_with_no_room() {
             capacity_at_every_step(doc, source, failing, 0, chunk,
                                    stack_allocations(deep_frames) + piece_allocations(chunk, size));
         }
-        bad_alloc_at_every_step(doc, source, failing, 0, deep_frames);
+        stringify_asks_nothing(doc, source, failing, 0);
         failing.allow(unlimited);
     }
     {
@@ -639,7 +645,7 @@ void a_resource_with_no_room() {
         const auto doc = owned_copy(source, &failing);
         capacity_at_every_step(doc, source, failing, 2, 4096,
                                stack_allocations(sample_frames) + piece_allocations(4096, size));
-        bad_alloc_at_every_step(doc, source, failing, 2, sample_frames);
+        stringify_asks_nothing(doc, source, failing, 2);
         failing.allow(unlimited);
     }
     BOOST_TEST_EQ(failing.bytes_in_use(), 0U);
@@ -653,6 +659,7 @@ int main() {
     stringify_to_calls_no_global_new();
     the_writer_allocates_its_stack_and_piece();
     stringify_calls_new_for_its_string_alone();
+    small_texts_take_nothing();
     quote_allocates_through_its_output();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     a_resource_with_no_room();
