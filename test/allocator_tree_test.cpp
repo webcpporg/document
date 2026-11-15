@@ -134,7 +134,7 @@ void members_in_resource() {
     arena a(16 * mebibyte);
     {
         document d = take(document::create(a.allocator()));
-        require(BOOST_TEST(d.root().set(wd::object{}).has_value()));
+        require(BOOST_TEST(d.root().set(wd::object{})));
         // The keys, and the handles that name them, are made before anything is counted.
         std::vector<std::string> keys;
         keys.reserve(members);
@@ -181,7 +181,7 @@ void arrays_in_resource() {
     arena a(16 * mebibyte);
     {
         document d = take(document::create(a.allocator()));
-        require(BOOST_TEST(d.root().set(wd::array{}).has_value()));
+        require(BOOST_TEST(d.root().set(wd::array{})));
         auto list = d.root();
         const auto text = long_string_of<Traits>();
         const std::uint64_t taken = a.resource().allocations();
@@ -238,7 +238,7 @@ void copies_in_resource() {
     {
         const document source = sample<Traits>(b.allocator());
         document d = take(document::create(a.allocator()));
-        require(BOOST_TEST(d.root().set(wd::object{}).has_value()));
+        require(BOOST_TEST(d.root().set(wd::object{})));
         auto copy = d.root()["copy"];
         auto again = d.root()["again"];
         const std::uint64_t taken = a.resource().allocations();
@@ -355,23 +355,6 @@ std::uint64_t id_of(const detail::tree_view<Traits>& t, std::uint64_t object,
     const detail::node<Traits>* n = t.member(object, key);
     require(BOOST_TEST(n != nullptr));
     return n->id;
-}
-
-/**
- Whether two trees hold the same nodes, each with the same id, place, key and value, and the same
- next id: what an operation that fails must leave as it was. It allocates nothing.
-*/
-template <class Traits>
-bool same_tree(const pmr_fixture<Traits>& a, const pmr_fixture<Traits>& b) {
-    const auto same_node = [](const detail::node<Traits>& x, const detail::node<Traits>& y) {
-        return x.id == y.id && x.parent == y.parent && x.group == y.group &&
-               x.ordinal == y.ordinal && x.kind == y.kind && x.number == y.number &&
-               x.scalar == y.scalar && std::ranges::equal(x.key.view(), y.key.view()) &&
-               std::ranges::equal(x.text.view(), y.text.view());
-    };
-    return a.next_id() == b.next_id() &&
-           std::ranges::equal(a.t.nodes()->template get<detail::by_id>(),
-                              b.t.nodes()->template get<detail::by_id>(), same_node);
 }
 
 /**
@@ -650,6 +633,23 @@ void erasures_keep_the_image(const std::array<std::uint64_t, 11>& pinned) {
 }
 
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
+
+/**
+ Whether two trees hold the same nodes, each with the same id, place, key and value, and the same
+ next id: what an operation that fails must leave as it was. It allocates nothing.
+*/
+template <class Traits>
+bool same_tree(const pmr_fixture<Traits>& a, const pmr_fixture<Traits>& b) {
+    const auto same_node = [](const detail::node<Traits>& x, const detail::node<Traits>& y) {
+        return x.id == y.id && x.parent == y.parent && x.group == y.group &&
+               x.ordinal == y.ordinal && x.kind == y.kind && x.number == y.number &&
+               x.scalar == y.scalar && std::ranges::equal(x.key.view(), y.key.view()) &&
+               std::ranges::equal(x.text.view(), y.text.view());
+    };
+    return a.next_id() == b.next_id() &&
+           std::ranges::equal(a.t.nodes()->template get<detail::by_id>(),
+                              b.t.nodes()->template get<detail::by_id>(), same_node);
+}
 
 /** More allocations than any operation here makes: a run that reaches it never succeeded. */
 constexpr std::uint64_t step_limit = 100000;

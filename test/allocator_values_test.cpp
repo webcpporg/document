@@ -471,7 +471,7 @@ void bounds_by_utf16_units() {
 // the same resource.
 template <class Document, class Kept>
 void external_scenario(Document& d, const sample_values& f, Kept& kept) {
-    BOOST_TEST(d.root().set(f.members).has_value());
+    BOOST_TEST(d.root().set(f.members));
     const auto missing = d[f.other_key];
     auto copy = missing;
     BOOST_TEST(copy.set(f.elements).has_value());
@@ -528,9 +528,9 @@ void refused_first() {
     const sample_values f;
     auto d = in_arena<Traits>(a, R"({"a":1,"o":{},"l":[],"gone":2})");
     auto nothing = d["missing"]["x"];
-    auto member = d["o"]["new"];
-    auto element = d["l"][std::uint64_t{3}];
-    auto gone = d["gone"];
+    const auto member = d["o"]["new"];
+    const auto element = d["l"][std::uint64_t{3}];
+    const auto gone = d["gone"];
     BOOST_TEST(d["o"].set(1).has_value());
     BOOST_TEST(d["l"].set(2).has_value());
     const auto erased = d.root().erase("gone");

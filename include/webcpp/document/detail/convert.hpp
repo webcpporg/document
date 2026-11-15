@@ -766,7 +766,8 @@ struct converter {
         std::uint64_t written = 0;
         do {
             const std::size_t count = std::min(units.size() - done, ascii_block);
-            std::ranges::transform(units.substr(done, count), chars.begin(), ascii_of);
+            std::ranges::transform(std::u16string_view(units.data() + done, count), chars.begin(),
+                                   ascii_of);
             done += count;
             if (done != units.size() && chars[count - 1] == '=') {
                 return errc::type;

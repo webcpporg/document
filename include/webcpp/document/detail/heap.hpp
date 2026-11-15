@@ -632,8 +632,10 @@ private:
         if constexpr (standard) {
             // std::allocator allocates with the global operator new: its form that returns null
             // keeps a failure a value without exceptions too.
-            return {static_cast<std::byte*>(::operator new(static_cast<std::size_t>(size),
-                                                           std::align_val_t{16}, std::nothrow))};
+            buffer made;
+            made.bytes = static_cast<std::byte*>(
+                ::operator new(static_cast<std::size_t>(size), std::align_val_t{16}, std::nothrow));
+            return made;
         } else {
             block_allocator blocks(alloc_);
             const std::size_t count = blocks_of(size);

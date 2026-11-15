@@ -26,7 +26,7 @@ namespace webcpp::document {
 
 namespace detail {
 
-/** An output of @ref quote: a string, appended to by `append(data, size)`. */
+/** An output of @ref quote, a string that `append(data, size)` appends to. */
 template <class Out>
 concept appendable =
     requires(Out& out, const char* data, std::size_t size) { out.append(data, size); };

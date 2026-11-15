@@ -758,8 +758,6 @@ void running_out() {
 
 #endif  // WEBCPP_DOCUMENT_NO_EXCEPTIONS
 
-}  // namespace
-
 // finish is the parser's member as it was published, whose address is taken without a cast; the
 // last chunk is finish_with's.
 static_assert(
@@ -788,8 +786,8 @@ void allocations_when_needed() {
         strings += std::string(i == 0 ? "" : ",") + R"("not base64, )" + std::string(i, 'x') + '"';
         objects += std::string(i == 0 ? "" : ",") + R"({"a":1,"0":2})";
     }
-    strings += "]";
-    objects += "]";
+    strings += ']';
+    objects += ']';
     BOOST_TEST_EQ(parse_allocations<wd::default_traits>(strings, true),
                   parse_allocations<wd::default_traits>(strings, false));
     BOOST_TEST_EQ(parse_allocations<wd::js_traits>(objects, true),
@@ -824,6 +822,8 @@ void allocations_when_needed() {
     BOOST_TEST_EQ(b.value().text.size(), 5U);
     BOOST_TEST_EQ(a.resource().allocations(), decoded);
 }
+
+}  // namespace
 
 int main() {
     const std::vector<sample> texts = samples();

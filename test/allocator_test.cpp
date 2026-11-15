@@ -215,14 +215,14 @@ public:
         ++control_->allocations;
         auto* block =
             static_cast<std::byte*>(::operator new((n * sizeof(T)) + 16, std::align_val_t{16}));
-        return static_cast<T*>(static_cast<void*>(block + offset()));
+        return reinterpret_cast<T*>(block + offset());
     }
 
     /** Gives back what @ref allocate made. */
     void deallocate(T* p, std::size_t /*n*/) noexcept {
         ++control_->deallocations;
         // A block is given back from the 16-aligned address it was made at.
-        auto* block = static_cast<std::byte*>(static_cast<void*>(p));
+        auto* block = reinterpret_cast<std::byte*>(p);
         const std::size_t past = reinterpret_cast<std::uintptr_t>(block) % 16;
         ::operator delete(block - past, std::align_val_t{16});
     }
@@ -621,15 +621,15 @@ void explicit_rebinding() {
     const std::string json = R"({"list":[1,")" + text + R"(",{"x":true}],")" + key + R"(":)" +
                              std::string(40, '[') + std::string(40, ']') + "}";
     {
-        auto whole = wd::parse<Traits>(json, {}, alloc);
+        auto whole = wd::parse<Traits>(json, wd::parse_options(), alloc);
         require(BOOST_TEST(whole.has_value()));
-        parser p({}, alloc);
+        parser p(wd::parse_options(), alloc);
         std::uint64_t seen = 0;
         BOOST_TEST(p.on("$.list[*]", [&seen](const auto&, wd::path_view) { ++seen; }).has_value());
         for (std::size_t at = 0; at < json.size(); at += 7) {
             BOOST_TEST(p.write(std::string_view(json).substr(at, 7)).has_value());
         }
-        auto chunked = p.finish();
+        const auto chunked = p.finish();
         require(BOOST_TEST(chunked.has_value()));
         BOOST_TEST_EQ(seen, 3U);
         auto& d = *whole;
@@ -639,10 +639,10 @@ void explicit_rebinding() {
         BOOST_TEST(d["o"].set(wd::object()).has_value());
         BOOST_TEST(d["o"].assign_from(d["list"]).has_value());
         BOOST_TEST(d["list"].push(text, d["o"]).has_value());
-        auto sliced = d["list"].slice(1);
-        auto joined = d["list"].concat(d["list"], text);
-        auto popped = d["list"].pop();
-        auto spliced = d["list"].splice(0, 1, text);
+        const auto sliced = d["list"].slice(1);
+        const auto joined = d["list"].concat(d["list"], text);
+        const auto popped = d["list"].pop();
+        const auto spliced = d["list"].splice(0, 1, text);
         require(BOOST_TEST(sliced.has_value() && joined.has_value() && popped.has_value() &&
                            spliced.has_value()));
         BOOST_TEST(d.compact().has_value());
@@ -759,9 +759,10 @@ void holding_nothing() {
     BOOST_TEST(none.root().is_undefined());
     BOOST_TEST(none.image().empty());
     BOOST_TEST_EQ(none.capacity(), 0U);
-    BOOST_TEST(none.root().set(1).error() == wd::errc::type);
-    BOOST_TEST(none.root().set(members).error() == wd::errc::type);
-    BOOST_TEST(none.root()["key"].set(elements).error() == wd::errc::type);
+    auto root = none.root();
+    BOOST_TEST(root.set(1).error() == wd::errc::type);
+    BOOST_TEST(root.set(members).error() == wd::errc::type);
+    BOOST_TEST(root["key"].set(elements).error() == wd::errc::type);
     BOOST_TEST(none.clone().error() == wd::errc::type);
     BOOST_TEST_EQ(global.news(), 0U);
     BOOST_TEST_EQ(a.resource().allocations(), 0U);
@@ -861,8 +862,7 @@ void capacity_until_it_fits(webcpp::test::interprocess_failing_resource& failing
 // An allocator of Boost.Interprocess fails with its own bad_alloc, which derives from
 // std::exception alone: it is errc::capacity as std::bad_alloc is, at every allocation of the
 // image, of a change's staging, of a prepared value, of a missing member's key, of the parser's
-// working state and selectors, of the writer's, and of the array methods' copies; and a move
-// assignment that cannot copy throws std::bad_alloc.
+// working state and selectors, of the writer's, and of the array methods' copies.
 void interprocess_failure_is_capacity() {
     webcpp::test::interprocess_failing_resource failing(std::pmr::new_delete_resource(), 0);
     const std::pmr::polymorphic_allocator<std::byte> alloc(&failing);
@@ -878,9 +878,10 @@ void interprocess_failure_is_capacity() {
         auto d = wd::from_image(source->image(), alloc);
         return d.has_value() ? d->reserve(1U << 20U).error() : d.error();
     });
-    capacity_until_it_fits(failing, [&] { return error_of(wd::parse(json, {}, alloc)); });
+    capacity_until_it_fits(failing,
+                           [&] { return error_of(wd::parse(json, wd::parse_options(), alloc)); });
     capacity_until_it_fits(failing, [&]() -> boost::system::error_code {
-        wd::pmr::parser p({}, alloc);
+        wd::pmr::parser p(wd::parse_options(), alloc);
         if (const auto added = p.on("$.list[*]", [](const auto&, wd::path_view) {}); !added) {
             return added.error();
         }
@@ -921,6 +922,15 @@ void interprocess_failure_is_capacity() {
         }
         return d->compact().error();
     });
+}
+
+// A move assignment that cannot copy the image into an allocator of Boost.Interprocess, which
+// fails with its own bad_alloc, throws std::bad_alloc and leaves the source as it was.
+void interprocess_failure_throws_from_a_move() {
+    webcpp::test::interprocess_failing_resource failing(std::pmr::new_delete_resource(), 1);
+    const std::pmr::polymorphic_allocator<std::byte> alloc(&failing);
+    const auto source = wd::parse(R"({"name":"document","list":[1,2]})");
+    require(BOOST_TEST(source.has_value()));
     auto target = wd::pmr::document::create(alloc);
     auto other = wd::from_image(source->image());
     require(BOOST_TEST(target.has_value() && other.has_value()));
@@ -939,7 +949,8 @@ void interprocess_failure_is_capacity() {
     }
     failing.allow(std::uint64_t{1} << 40U);
     BOOST_TEST(thrown);
-    BOOST_TEST(same_image(from, *other));
+    // The assignment threw before it took anything: `from` is read as it was.
+    BOOST_TEST(same_image(from, *other));  // NOLINT(bugprone-use-after-move)
 }
 
 #endif  // WEBCPP_DOCUMENT_NO_EXCEPTIONS
@@ -966,6 +977,7 @@ int main() {
     copies_select_allocator();
     full_allocator_is_capacity();
     interprocess_failure_is_capacity();
+    interprocess_failure_throws_from_a_move();
 #endif
     return boost::report_errors();
 }
