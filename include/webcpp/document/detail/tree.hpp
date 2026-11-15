@@ -469,6 +469,19 @@ public:
 
     // NOLINTEND(bugprone-exception-escape)
 
+    /**
+     The member of the object `object` whose key is `stored`, its bytes in the traits' encoding, as
+     a node holds a key, or null: nothing is transcoded.
+    */
+    [[nodiscard]] const node<Traits>* member_stored(std::uint64_t object,
+                                                    std::string_view stored) const noexcept {
+        const nodes_type* nodes = nodes_of();
+        if (nodes == nullptr || !is_kind(find_in(*nodes, object), kind_t::object)) {
+            return nullptr;
+        }
+        return member_in(*nodes, object, stored);
+    }
+
     /** The element `index` of the array `array`, or null. */
     [[nodiscard]] const node<Traits>* element(std::uint64_t array,
                                               std::uint64_t index) const noexcept {
@@ -805,6 +818,7 @@ public:
     using view::find;
     using view::first_child;
     using view::member;
+    using view::member_stored;
     using view::next_sibling;
 
     // An operation ends the program where the process heap, which holds what it stages, runs

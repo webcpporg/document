@@ -13,10 +13,13 @@
 #ifndef WEBCPP_TEST_DOCUMENT_COUNTING_HPP
 #define WEBCPP_TEST_DOCUMENT_COUNTING_HPP
 
+#include <boost/throw_exception.hpp>
+
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <memory_resource>
+#include <new>
 
 namespace webcpp::test {
 
@@ -86,6 +89,53 @@ private:
     std::uint64_t deallocations_ = 0;
     std::uint64_t in_use_ = 0;
     std::size_t largest_alignment_ = 0;
+};
+
+/**
+ A memory resource that hands out what `upstream` gives for its first `budget` allocations and fails
+ every later one with `std::bad_alloc`, through `boost::throw_exception`: an allocator that runs out
+ at a chosen step of an operation, for tests built with exceptions.
+*/
+class failing_resource final : public std::pmr::memory_resource {
+public:
+    /** A resource over `upstream`, which outlives it, that allows `budget` allocations. */
+    failing_resource(std::pmr::memory_resource* upstream, std::uint64_t budget) noexcept
+        : upstream_(upstream), budget_(budget) {}
+
+    /** Allows `budget` more allocations from now. */
+    void allow(std::uint64_t budget) noexcept { budget_ = budget; }
+
+    /** The allocations it refused. */
+    [[nodiscard]] std::uint64_t refusals() const noexcept { return refusals_; }
+
+    /** The bytes handed out and not yet taken back. */
+    [[nodiscard]] std::uint64_t bytes_in_use() const noexcept { return in_use_; }
+
+private:
+    void* do_allocate(std::size_t bytes, std::size_t alignment) override {
+        if (budget_ == 0) {
+            ++refusals_;
+            boost::throw_exception(std::bad_alloc());
+        }
+        --budget_;
+        void* memory = upstream_->allocate(bytes, alignment);
+        in_use_ += bytes;
+        return memory;
+    }
+
+    void do_deallocate(void* memory, std::size_t bytes, std::size_t alignment) override {
+        in_use_ -= bytes;
+        upstream_->deallocate(memory, bytes, alignment);
+    }
+
+    [[nodiscard]] bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {
+        return this == &other;
+    }
+
+    std::pmr::memory_resource* upstream_;
+    std::uint64_t budget_;
+    std::uint64_t refusals_ = 0;
+    std::uint64_t in_use_ = 0;
 };
 
 /**
