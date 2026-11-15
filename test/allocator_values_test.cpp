@@ -8,10 +8,10 @@
 // the keys of missing members and their copies, erasure, Object.assign, deep equality, the array
 // methods and the containers' views of a pmr document, of default_traits and of js_traits, and of
 // an external one, make no call of the global operator new and give back to the resource all they
-// took; the documents the array methods make are in the same resource; a handle of nothing reports
-// its value's own error first; and, with exceptions, an allocator that runs out at any step of
-// set, push, concat, splice or Object.assign is errc::capacity with the document as it was, while
-// an erasure asks the allocator for nothing and cannot fail.
+// took; the documents the array methods make are in the same resource; a change a place cannot
+// take is refused first, with nothing allocated; and, with exceptions, an allocator that runs out
+// at any step of set, push, concat, splice or Object.assign is errc::capacity with the document as
+// it was, while an erasure asks the allocator for nothing and cannot fail.
 
 #include <webcpp/document.hpp>
 
@@ -518,27 +518,43 @@ void external_document() {
     BOOST_TEST_EQ(a.resource().bytes_in_use(), 0U);
 }
 
-// A handle of nothing reports a value's own error before its place's errc::type, as when the
-// value is prepared first: its value is prepared in the standard allocator, since there is no
-// document whose allocator could hold it, so nothing here is counted.
+// A change a place cannot take is refused with errc::type before its value is prepared, ahead of
+// the value's own errors, and allocates nothing, in the document's resource or the global heap: a
+// handle of nothing, a missing member of what is no longer an object, a missing element of what is
+// no longer an array, and a node erased since.
 template <class Traits>
-void nothing_reports_value_first() {
+void refused_first() {
     arena a(mebibyte);
     const sample_values f;
-    auto d = in_arena<Traits>(a, R"({"a":1})");
+    auto d = in_arena<Traits>(a, R"({"a":1,"o":{},"l":[],"gone":2})");
     auto nothing = d["missing"]["x"];
+    auto member = d["o"]["new"];
+    auto element = d["l"][std::uint64_t{3}];
+    auto gone = d["gone"];
+    BOOST_TEST(d["o"].set(1).has_value());
+    BOOST_TEST(d["l"].set(2).has_value());
+    const auto erased = d.root().erase("gone");
+    BOOST_TEST(erased.has_value() && *erased);
+    const std::uint64_t before = a.resource().allocations();
+    const global_count global;
     BOOST_TEST(nothing.is_undefined());
-    BOOST_TEST(nothing.set(std::numeric_limits<boost::decimal::decimal64_t>::infinity()).error() ==
-               wd::errc::range);
     const wd::date_ms late{std::chrono::milliseconds{wd::detail::date_limit_ms + 1}};
-    BOOST_TEST(nothing.set(late).error() == wd::errc::range);
-    BOOST_TEST(nothing.set(std::string_view("\xFF")).error() == wd::errc::type);
-    BOOST_TEST(nothing.set(1).error() == wd::errc::type);
-    BOOST_TEST(nothing.set(f.text).error() == wd::errc::type);
-    BOOST_TEST(nothing.set(f.members).error() == wd::errc::type);
+    for (auto place : {nothing, member, element, gone}) {
+        BOOST_TEST(
+            place.set(std::numeric_limits<boost::decimal::decimal64_t>::infinity()).error() ==
+            wd::errc::type);
+        BOOST_TEST(place.set(late).error() == wd::errc::type);
+        BOOST_TEST(place.set(std::string_view("\xFF")).error() == wd::errc::type);
+        BOOST_TEST(place.set(1).error() == wd::errc::type);
+        BOOST_TEST(place.set(f.text).error() == wd::errc::type);
+        BOOST_TEST(place.set(f.members).error() == wd::errc::type);
+        BOOST_TEST(place.set(f.elements).error() == wd::errc::type);
+    }
     BOOST_TEST(nothing.set(d["a"]).error() == wd::errc::type);
     BOOST_TEST(nothing.set(wd::undefined).error() == wd::errc::type);
-    same_value(d, parsed<Traits>(R"({"a":1})"));
+    BOOST_TEST_EQ(global.news(), 0U);
+    BOOST_TEST_EQ(a.resource().allocations(), before);
+    same_value(d, parsed<Traits>(R"({"a":1,"o":1,"l":2})"));
 }
 
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
@@ -722,8 +738,8 @@ int main() {
     const_reads_ask_nothing<wd::js_traits>();
     bounds_by_utf16_units();
     external_document();
-    nothing_reports_value_first<wd::default_traits>();
-    nothing_reports_value_first<wd::js_traits>();
+    refused_first<wd::default_traits>();
+    refused_first<wd::js_traits>();
 #ifndef WEBCPP_DOCUMENT_NO_EXCEPTIONS
     failures_change_nothing<wd::default_traits>();
     failures_change_nothing<wd::js_traits>();

@@ -750,6 +750,9 @@ void holding_nothing() {
     using document = wd::basic_document<wd::default_traits, Storage>;
     arena a(mebibyte);
     const wd::document source = sample();
+    // Literals hold their values in the standard allocator: made before anything is counted.
+    const wd::object members{{"key", wd::array{1, "text"}}};
+    const wd::array elements{1, 2};
     const global_count global;
     document none = document::nothing(a.allocator());
     BOOST_TEST(none.get_allocator().resource() == &a.resource());
@@ -757,6 +760,8 @@ void holding_nothing() {
     BOOST_TEST(none.image().empty());
     BOOST_TEST_EQ(none.capacity(), 0U);
     BOOST_TEST(none.root().set(1).error() == wd::errc::type);
+    BOOST_TEST(none.root().set(members).error() == wd::errc::type);
+    BOOST_TEST(none.root()["key"].set(elements).error() == wd::errc::type);
     BOOST_TEST(none.clone().error() == wd::errc::type);
     BOOST_TEST_EQ(global.news(), 0U);
     BOOST_TEST_EQ(a.resource().allocations(), 0U);

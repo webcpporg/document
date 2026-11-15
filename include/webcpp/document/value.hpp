@@ -1074,7 +1074,9 @@ public:
      @ref date_ms (within JavaScript's range, else @ref errc::range); `nullptr` or @ref null; the
      literals @ref object and @ref array; a handle or a document of the same traits, copied deeply;
      and @ref undefined, which erases a member, stores `null` in an element and makes a root hold
-     `undefined`. Numbers are stored by value.
+     `undefined`. Numbers are stored by value. A change this place cannot take is refused before
+     the value is prepared, so that a refusal allocates nothing and comes before the value's own
+     errors.
 
      @tparam T The value's type.
      @param v The value.
@@ -1103,14 +1105,10 @@ public:
             copy.from_id = n->id;
             return store(copy);
         } else {
-            // A handle of nothing has no document whose allocator could hold the prepared value:
-            // the value is prepared in the standard allocator, so that its own error comes first.
-            if (this->doc_ == nullptr) {
-                detail::prepared<Traits> p;
-                if (const auto made = detail::prepare(v, p); !made.has_value()) {
-                    return made;
-                }
-                return errc::type;
+            // A change this place cannot take is refused before the value is prepared, so that a
+            // refusal allocates nothing.
+            if (const result<void> refused = refusal(); !refused.has_value()) {
+                return refused;
             }
             detail::prepared<Traits, allocator_type> p(this->doc_->get_allocator());
             if (const auto made = detail::prepare(v, p); !made.has_value()) {
@@ -1318,6 +1316,46 @@ private:
     static result<std::pair<const detail::tree_view<Traits>*, const detail::node<Traits>*>>
     copy_from(const basic_const_value<Traits, S>& v) noexcept {
         return std::pair(detail::access::tree_of(v), detail::access::node_of(v));
+    }
+
+    /**
+     Why a change of this place is refused before anything is prepared for it: @ref errc::type for
+     a handle of nothing, a document that holds nothing, a node no longer there, a missing member
+     of what is no object or of a key that is not UTF-8, and a missing element of what is no array;
+     @ref errc::capacity for a missing member whose key found no room. Success otherwise.
+    */
+    [[nodiscard]] result<void> refusal() const noexcept {
+        const auto* t = writable_tree();
+        if (t == nullptr) {
+            return errc::type;
+        }
+        const auto is = [t](std::uint64_t id, webcpp::document::kind k) {
+            const detail::node<Traits>* n = t->find(id);
+            return n != nullptr && n->kind == k;
+        };
+        switch (this->place_) {
+            case detail::place::node:
+                if (t->find(this->id_) == nullptr) {
+                    return errc::type;
+                }
+                return {};
+            case detail::place::member:
+                if (!this->key_.has_value()) {
+                    return errc::capacity;
+                }
+                if (!is(this->id_, webcpp::document::kind::object) ||
+                    !detail::valid_utf8(std::string_view(*this->key_))) {
+                    return errc::type;
+                }
+                return {};
+            case detail::place::element:
+                if (!is(this->id_, webcpp::document::kind::array)) {
+                    return errc::type;
+                }
+                return {};
+            case detail::place::nothing: break;
+        }
+        return errc::type;
     }
 
     /** Stores an item at this place: the node replaced, or the member or element created. */
