@@ -228,12 +228,6 @@ document's content as it was. A few places have their own way to say it:
   in, throws `std::bad_alloc` (<<document-allocators-moves>>); and the sugar throws its
   `wd::capacity_error` (<<document-exceptions>>).
 
-The MSVC STL's checked iterators (`_ITERATOR_DEBUG_LEVEL` above 0, the default of a debug build)
-add an allocation of their own: each standard container allocates a proxy through its allocator,
-rebound, whenever it is constructed or moved, in its `noexcept` constructors as well. An allocator
-that has no room for such a proxy ends the program there, as it would for any standard container
-in that build, before the document can return `errc::capacity`. A release build allocates no proxy.
-
 *Without exceptions,* an allocator cannot return null, so an allocator that fails ends the program,
 as it does for any standard container. A program built without exceptions sizes its resource for
 what it does, as the example's 64 KiB are sized for its documents, or gives the resource an upstream
@@ -284,8 +278,8 @@ few allocate in the document's allocator, rebound:
   its own room;
 * `operator[]` of a document or a handle, for a missing member whose key is longer than a
   `std::basic_string` holds without allocating, which its standard library decides (with the MSVC
-  STL's checked iterators, none: each string allocates a proxy, <<document-allocators-failure>>):
-  the handle holds a copy of the key, and so does each copy of such a handle;
+  STL's checked iterators, of a debug build, none: each string allocates a proxy): the handle holds
+  a copy of the key, and so does each copy of such a handle;
 * `clone()`, `slice` and `concat`, which make documents in it, and `compact_into`, whose external
   document keeps it, with their working state.
 
@@ -329,9 +323,10 @@ document's resource for nothing. A dozen small texts written by `stringify_to` i
 the example's, take nothing of it. With exceptions, each operation runs again over a resource that
 fails at its first allocation, then its second, and so on until the operation succeeds, and every
 failure must be `errc::capacity`, or the `std::bad_alloc` of the places that throw it, with the
-document equal to what it was. Under the MSVC STL's checked iterators, the resources neither count
-nor refuse a block of a proxy's size and alignment, which they cannot tell from the document's own:
-the proxies come back with the rest, and a failure at the document's blocks of that size is proven
-on the other standard libraries. Both traits are covered, `js_traits` with its UTF-16 strings and
+document equal to what it was. Under the MSVC STL's checked iterators, of a debug build, each
+standard container allocates a proxy through its allocator, and the resources neither count nor
+refuse a block of a proxy's size and alignment, which they cannot tell from the document's own: the
+proxies come back with the rest, and a failure at the document's blocks of that size is proven on
+the other standard libraries. Both traits are covered, `js_traits` with its UTF-16 strings and
 keys among them, with strings and keys longer than any small-string buffer. The tests run on every
 target, natively, on emscripten, and for wasm32-wasip2 and wasm32-wasip3 (<<document-testing>>).
